@@ -1,0 +1,17 @@
+{
+  "name": "byother-tc-jc",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --experimental-strip-types --test --test-concurrency=1 test/*.test.ts test/*.test.js",
+    "start": "node db/migrate.js && node --experimental-strip-types server/index.js"
+  },
+  "dependencies": {
+    "nodemailer": "^10.3.1",
+    "pg": "^8.23.1"
+  },
+  "engines": {
+    "node": ">=22.6"
+  }
+}

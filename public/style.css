@@ -1,0 +1,61 @@
+/* byOther Project Desk: minimalist, Calibri Light. Brand: navy #1B1462, gray #808080 (from the logo). */
+:root{--navy:#1B1462;--navy-soft:#ececf8;--gray:#808080;--ink:#1f2433;--muted:#7b8294;--line:#eceef2;--bg:#f7f8fa;--card:#fff;--green:#17803d;--red:#c0392b;--amber:#b36b00;--radius:10px}
+*{box-sizing:border-box}
+html{font-family:"Calibri Light",Calibri,"Carlito","Segoe UI",system-ui,-apple-system,sans-serif;font-weight:300}
+body{margin:0;background:var(--bg);color:var(--ink);font-size:16px;line-height:1.45}
+strong,b,th,label,button,.pill,.kpi .v,h1,h2,h3,.tabs a,header.top nav a{font-family:"Calibri",Carlito,"Segoe UI",system-ui,sans-serif}
+.boot{padding:3rem;text-align:center;color:var(--muted)}
+a{color:var(--navy)}
+/* header */
+header.top{background:#fff;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:1.6rem;padding:0 1.5rem;height:62px;position:sticky;top:0;z-index:5}
+header.top .logo{height:44px;width:auto;display:block}
+header.top nav{display:flex;gap:.1rem;flex:1;margin-left:.5rem;overflow-x:auto}
+header.top nav a{color:var(--muted);text-decoration:none;padding:.4rem .8rem;font-weight:400;font-size:15px;border-bottom:2px solid transparent}
+header.top nav a:hover{color:var(--navy)}header.top nav a.on{color:var(--navy);border-bottom-color:var(--navy);font-weight:600}
+header.top .who{font-size:13px;color:var(--muted);white-space:nowrap}
+main{max-width:1240px;margin:0 auto;padding:1.6rem 1.5rem 4rem}
+h1{font-size:1.9rem;font-weight:300;letter-spacing:-.01em;margin:.2rem 0 1.1rem;color:var(--navy)}
+h2{font-size:1.05rem;font-weight:600;margin:0 0 .8rem;color:var(--ink)}
+.sub{color:var(--muted);margin:-.6rem 0 1.2rem}
+/* surfaces */
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:1.1rem 1.25rem;margin-bottom:1rem}
+.grid{display:grid;gap:.9rem}.kpis{grid-template-columns:repeat(auto-fit,minmax(168px,1fr))}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:.85rem 1.05rem}
+.kpi .l{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:400}
+.kpi .v{font-size:1.65rem;font-weight:300;margin-top:.1rem;color:var(--navy)}
+.kpi.good .v{color:var(--green)}.kpi.warn .v{color:var(--amber)}.kpi.bad .v{color:var(--red)}
+/* tables */
+table{width:100%;border-collapse:collapse}th,td{padding:.55rem .65rem;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
+th{font-size:11.5px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);font-weight:600}
+th.n,td.n{text-align:right;font-variant-numeric:tabular-nums}tr.total td{font-weight:600;background:#fafbfc}
+tbody tr.link{cursor:pointer}tbody tr.link:hover{background:#fafbfd}
+.scroll{overflow-x:auto}.neg{color:var(--red)}.pos{color:var(--green)}.muted{color:var(--muted)}
+/* controls: one look for every form in the app */
+button,.btn{font:inherit;font-family:"Calibri",Carlito,system-ui,sans-serif;font-weight:600;font-size:14px;border-radius:8px;border:1px solid #dfe2e8;background:#fff;color:var(--ink);padding:.42rem .95rem;cursor:pointer}
+button:hover{border-color:#c4c9d4}
+button.primary{background:var(--navy);border-color:var(--navy);color:#fff}button.primary:hover{background:#2a1f8f}
+button.danger{color:var(--red)}button.small{padding:.18rem .6rem;font-size:13px}button:disabled{opacity:.5;cursor:default}
+input,select,textarea{font:inherit;padding:.5rem .65rem;border:1px solid #dfe2e8;border-radius:8px;background:#fff;color:var(--ink);max-width:100%}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--navy);box-shadow:0 0 0 3px var(--navy-soft)}
+label{display:block;font-size:11.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.07em;margin-bottom:.25rem}
+.form{display:grid;gap:.9rem;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));align-items:end}.form .wide{grid-column:1/-1}.form input,.form select,.form textarea{width:100%}
+.row{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap}.spread{justify-content:space-between}
+.tabs{display:flex;gap:.2rem;border-bottom:1px solid var(--line);margin-bottom:1.1rem;flex-wrap:wrap}
+.tabs a{padding:.5rem .95rem;text-decoration:none;color:var(--muted);font-weight:400;border-bottom:2px solid transparent;margin-bottom:-1px;cursor:pointer}
+.tabs a.on{color:var(--navy);border-bottom-color:var(--navy);font-weight:600}
+.pill{display:inline-block;padding:.08rem .6rem;border-radius:99px;font-size:12px;font-weight:600;background:#eef0f4;color:#4a5163}
+.pill.Approved,.pill.Paid,.pill.Active,.pill.Won,.pill.Valid{background:#e3f4e8;color:#17632f}.pill.Pending,.pill.Requested,.pill.Expiring{background:#fdf0d6;color:#8a5200}.pill.Rejected,.pill.Declined,.pill.Expired,.pill.Missing,.pill.Lost{background:#fbe4e1;color:#9a2a1d}
+.err{background:#fdf2f1;border:1px solid #f4c9c4;color:#9a2a1d;padding:.6rem .8rem;border-radius:8px;margin:.6rem 0;font-weight:400}
+.ok{background:#f0faf3;border:1px solid #c2e6cd;color:#17632f;padding:.6rem .8rem;border-radius:8px;margin:.6rem 0;font-weight:400}
+.soon{text-align:center;color:var(--muted);padding:2.5rem 1rem}
+.modal-bg{position:fixed;inset:0;background:rgba(20,22,40,.42);display:flex;align-items:flex-start;justify-content:center;padding:6vh 1rem;overflow:auto;z-index:20}
+.modal{background:#fff;border-radius:14px;max-width:720px;width:100%;padding:1.3rem 1.5rem;box-shadow:0 24px 60px rgba(20,22,40,.25)}
+.login{max-width:380px;margin:12vh auto;padding:0 1rem;text-align:center}.login img{width:260px;max-width:100%;margin-bottom:1rem}.login .card{padding:1.6rem;text-align:left}
+.trade-row{display:grid;grid-template-columns:1fr 160px auto;gap:.5rem;margin-bottom:.5rem}
+.edit{cursor:pointer;border-bottom:1px dashed #b4bac6}
+td:has(> button){white-space:normal;min-width:230px}
+.widgets{display:grid;gap:1rem;grid-template-columns:repeat(auto-fit,minmax(340px,1fr))}.widgets .card{margin:0}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--green);margin-right:.45rem}
+@media(max-width:700px){header.top{flex-wrap:wrap;height:auto;padding:.6rem 1rem;gap:.8rem}main{padding:1rem}.trade-row{grid-template-columns:1fr}}
+input[type=checkbox],input[type=radio]{width:auto!important;padding:0;accent-color:var(--navy)}
+.modal{max-width:900px}

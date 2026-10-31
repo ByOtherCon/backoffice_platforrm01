@@ -1,0 +1,34 @@
+# Render Blueprint: app + database + a disk for uploaded files. See README, "Putting it online".
+databases:
+  - name: byother-db
+    plan: basic-256mb
+    databaseName: byother
+    user: byother
+services:
+  - type: web
+    name: byother-desk
+    runtime: node
+    plan: starter
+    buildCommand: npm ci --omit=dev
+    startCommand: node db/migrate.js && node --experimental-strip-types server/index.js
+    healthCheckPath: /api/health
+    autoDeploy: true
+    disk:
+      name: files
+      mountPath: /var/data
+      sizeGB: 10
+    envVars:
+      - key: NODE_VERSION
+        value: 22.12.0
+      - key: NODE_ENV
+        value: production
+      - key: UPLOAD_DIR
+        value: /var/data/uploads
+      - key: DATABASE_URL
+        fromDatabase: { name: byother-db, property: connectionString }
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false

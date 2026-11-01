@@ -1,5 +1,6 @@
 // byOther Project Desk front end. All data is inserted with textContent (never innerHTML).
 import { h, usd, pct, cls, notice, guard, modal, formModal, field, todayStr, num } from '/ui.js';
+import * as estimating from '/estimating.js';
 const $app = document.getElementById('app');
 const state = { user: null, trades: [], gcs: [] };
 const MANAGERS = ['Super Admin', 'Sub Admin', 'Exec Assistant'];
@@ -118,7 +119,7 @@ async function newProjectModal() {
     err, h('div', { class: 'row', style: 'margin-top:1rem;justify-content:flex-end' }, h('button', { class: 'primary', type: 'submit' }, 'Create project'))));
 }
 
-const TABS = [['trades', 'Trade Overview'], ['cos', 'Change Orders'], ['billing', 'Progress Billing'], ['costs', 'Costs & Payables'], ['labor', 'Labor'], ['docs', 'Documents']];
+const TABS = [['trades', 'Trade Overview'], ['cos', 'Change Orders'], ['billing', 'Progress Billing'], ['costs', 'Costs & Payables'], ['labor', 'Labor'], ['docs', 'Documents'], ['origin', 'Bid History']];
 async function projectView(id, tab = 'trades') {
   const p = await api('GET', '/projects/' + id);
   const canEdit = isManager();
@@ -130,6 +131,7 @@ async function projectView(id, tab = 'trades') {
   else if (tab === 'costs') content = await costsTab(p, canEdit, reload);
   else if (tab === 'labor') content = await laborTab(p, canEdit, reload);
   else if (tab === 'docs') content = await docsTab(p, canEdit, reload);
+  else if (tab === 'origin') content = await estimating.originCard(id);
   else content = h('div', { class: 'card soon' }, h('h2', {}, TABS.find((t) => t[0] === tab)[1]), h('p', {}, 'Coming in the next build step.'));
   return shell('projects', [
     h('p', {}, h('a', { href: '#/projects' }, '← All projects')),
@@ -585,154 +587,9 @@ async function createProposalFolders(plan) { const root = await pickFolder(); co
 async function saveDocToFolder(doc) { const root = await pickFolder(); const res = await fetch(`/api/documents/${doc.id}/file`); if (!res.ok) throw new Error('Could not download that file.'); return `${root.name}/${await writeFile(root, doc.name.includes('.') ? doc.name : doc.name + '.pdf', await res.blob())}`; }
 const folderNote = () => (hasFolderAccess() ? '' : h('p', { class: 'muted', style: 'font-size:13px' }, 'Saving to a folder on your computer works in Chrome or Edge on a desktop. In this browser, use the download links instead.'));
 
-// ------------------------------------------------------------------ estimating
-const canEstimate = () => ['Super Admin', 'Sub Admin', 'Estimator'].includes(state.user.role);
-const EST_TABS = [['bids', 'Bid Opportunities'], ['proposals', 'Proposal Tracker'], ['submissions', 'Submission Tracker'], ['insights', 'Insights']];
-async function estimatingView(arg) {
-  const tab = EST_TABS.some(([t]) => t === arg) ? arg : 'bids'; const detailId = arg && !EST_TABS.some(([t]) => t === arg) ? arg : null; const err = h('div'); const w = canEstimate();
-  const search = state.estSearch || ''; const sbox = h('input', { placeholder: 'Find a project, GC, or proposal #', value: search, onchange: (e) => { state.estSearch = e.target.value; render(); } });
-  const data = tab === 'insights' ? null : await api('GET', `/opportunities?tab=${tab}&q=${encodeURIComponent(search)}${state.estAll ? '&all=1' : ''}`); const st = data?.stats || (await api('GET', '/opportunities?tab=proposals')).stats;
-  const kpi = (l, v, tone = '') => h('div', { class: 'kpi ' + tone }, h('div', { class: 'l' }, l), h('div', { class: 'v' }, v));
-  const head = h('div', { class: 'grid kpis' }, kpi('Open leads', st.openLeads), kpi('Accepted this month', st.accepted), kpi('Working now', st.working), kpi('Submitted this month', st.submitted), kpi('Follow-ups due', st.awaitingFollowUp, st.awaitingFollowUp ? 'warn' : ''), kpi('Interested', st.interested, st.interested ? 'good' : ''));
-  const tabs = h('div', { class: 'tabs', style: 'margin-top:1rem' }, EST_TABS.map(([t, l]) => h('a', { class: t === tab ? 'on' : '', href: '#/estimating/' + t }, l)));
-  let body;
-  if (tab === 'bids') body = bidsPanel(data, err, w, await api('GET', '/bids/status')); else if (tab === 'insights') body = await insightsPanel(err); else body = await trackerPanel(tab, data, err, w);
-  const detail = detailId ? await opportunityDetail(detailId, err, w) : '';
-  return shell('estimating', [h('div', { class: 'row spread' }, h('h1', {}, 'Estimating'), h('div', { class: 'row' }, sbox, w && h('button', { onclick: importForm }, 'Import leads'), w && h('button', { class: 'primary', onclick: () => leadForm(null) }, '+ Opportunity'))), h('p', { class: 'sub' }, 'Florida bid invitations to proposals to awarded projects. Accepted work stays in the Proposal Tracker; an award builds the project.'), head, tabs, err, detail, body]);
-}
-function leadForm(o) {
-  const f = { name: h('input', { value: o?.name ?? '' }), gc: h('input', { value: o?.gc ?? '' }), city: h('input', { value: o?.city ?? '' }), address: h('input', { value: o?.address ?? '' }), due: h('input', { type: 'date', value: o?.due ?? '' }), time: h('input', { type: 'time', value: o?.dueTime ?? '' }), tier: h('select', {}, [1, 2, 3, 4].map((n) => h('option', { value: n }, `Tier ${n}`))), type: h('select', {}, ['Retail', 'Restaurant', 'Office / Medical / Other'].map((t) => h('option', { value: t }, t))), mall: h('input', { type: 'checkbox' }), contact: h('input', { value: o?.contact ?? '' }), email: h('input', { type: 'email', value: o?.email ?? '' }), phone: h('input', { value: o?.phone ?? '' }), link: h('input', { type: 'url', value: o?.link ?? '', placeholder: 'https://… BuildingConnected invitation' }), notes: h('textarea', { rows: 2 }) };
-  f.tier.value = o?.tier ?? 2; f.type.value = o?.type ?? 'Retail'; f.mall.checked = !!o?.mall; f.notes.value = o?.notes ?? '';
-  formModal(o ? `Edit ${o.name}` : 'Add an opportunity', [field('Project', f.name, 'wide'), field('GC', f.gc), field('City (Florida)', f.city), field('Address', f.address, 'wide'), field('Bid due', f.due), field('Time', f.time), field('Region', f.tier), field('Type', f.type), field('', h('label', { style: 'text-transform:none;letter-spacing:0;font-size:15px;font-weight:400' }, f.mall, ' In a shopping center / mall')), field('Contact', f.contact), field('Email', f.email), field('Phone', f.phone), field('Invitation link', f.link, 'wide'), field('Notes', f.notes, 'wide')],
-    async () => { const b = { name: f.name.value, gc: f.gc.value, city: f.city.value, address: f.address.value, due: f.due.value || null, dueTime: f.time.value || null, tier: f.tier.value, type: f.type.value, mall: f.mall.checked, contact: f.contact.value, email: f.email.value, phone: f.phone.value, link: f.link.value, notes: f.notes.value }; await api(o ? 'PUT' : 'POST', '/opportunities' + (o ? '/' + o.id : ''), b); render(); });
-}
-async function importForm() {
-  const conn = (await api('GET', '/estimating/connection')).buildingConnected; const csv = h('textarea', { rows: 8, placeholder: 'Paste the CSV here, or choose a file below. First row = headings (Project, GC / Company, City, State, Bid Due, …).' }); const file = h('input', { type: 'file', accept: '.csv,text/csv' }); const out = h('div');
-  file.onchange = async () => { if (file.files[0]) csv.value = await file.files[0].text(); };
-  formModal('Import bid invitations', [h('p', { class: conn.connected ? 'ok wide' : 'muted wide' }, conn.note), field('CSV', csv, 'wide'), field('File', file, 'wide'), out],
-    async () => { const r = await api('POST', '/opportunities/import', { csv: csv.value, source: 'BuildingConnected' }); if (r.added) render(); throw new Error(`Added ${r.added}, already had ${r.duplicates}, skipped ${r.skipped.length}.${r.skipped.length ? ' ' + r.skipped.slice(0, 4).join(' | ') : ''}${r.added ? '' : ''}`); }, 'Import');
-}
-const BID_RULES = "One List, Ordered By Week Then Region And Project Type. Week Of Uses Monday–Sunday. Undated Leads Stay Visible, Including All Tier 1 Opportunities. New Leads Decline One Day Past Due; Reviewing Leads Decline Two Days Past Due. Undated Leads Remain Open. Search Includes All Leads Seen In The Last 30 Calendar Days, Including Declined. Older Leads Must Be Added Manually. Reviewing Leads Also Appear In Proposal Tracker. Accepted Work Leaves The Lead Inbox. Accept / Decline Updates This Workspace Only.";
-const when = (iso) => (iso ? new Date(iso).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' }) : '');
-function bidFeedBar(feed, err, w) {
-  const bar = h('div', { class: 'card', style: 'padding:.7rem 1rem' });
-  const refresh = guard(err, async () => { await api('POST', '/bids/refresh', {}); render(); });
-  if (!feed.connected) { bar.append(h('div', { class: 'row spread' }, h('span', {}, feed.googleSetUp ? 'Bid invitations are read from your BuildingConnected emails. The owner connects Gmail once in Admin.' : 'Bid invitations will be read from your BuildingConnected emails once Gmail is connected (see Admin).'), isSuper() ? h('a', { href: '#/admin' }, 'Open Admin') : '')); return bar; }
-  const l = feed.last; const ok = feed.lastGood;
-  bar.append(h('div', { class: 'row spread' }, h('div', {}, feed.running ? h('strong', {}, 'Refreshing from Gmail…') : l?.status === 'Error' ? h('span', { class: 'neg' }, `Last refresh failed: ${l.error}`) : ok ? h('span', {}, 'Last refreshed ', h('strong', {}, when(ok.finished_at)), ` · ${ok.added} new, ${ok.updated} updated${ok.declined ? `, ${ok.declined} declined` : ''}`) : 'Not refreshed yet.', h('span', { class: 'muted', style: 'margin-left:.6rem;font-size:13px' }, `Automatic at 8:00 AM and 1:00 PM · ${feed.email}`)), w ? h('button', { class: 'primary', disabled: feed.running ? true : null, onclick: refresh }, feed.running ? 'Refreshing…' : 'Refresh now') : ''));
-  if (feed.running) setTimeout(() => { if (location.hash.startsWith('#/estimating')) render(); }, 2500);
-  return bar;
-}
-const fmtDay = (d) => { if (!d) return '—'; const dt = new Date(String(d).slice(0, 10) + 'T12:00:00'); return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', ...(dt.getFullYear() !== new Date().getFullYear() ? { year: 'numeric' } : {}) }); };
-const weekLabel = (name) => (name.startsWith('Week Of ') ? fmtDay(name.slice(8)) : name === 'Due This Week — Too Tight To Bid' ? 'This week' : name === 'Missed / Past Due' ? 'Past due' : name === 'No Bid Due Date Provided' ? 'No date' : name);
-const BID_COLS = [['week', 'Week Of'], ['project', 'Project / Location'], ['gc', 'General Contractors / Contact'], ['due', 'Bid Due'], ['status', 'Status'], ['invitation', 'Invitation'], ['onedrive', 'OneDrive Link']];
-function bidsPanel(data, err, w, feed) {
-  const accept = async (o) => { const est = await api('GET', '/team/estimators'); const who = h('select', {}, est.map((u) => h('option', { value: u.id }, u.name || u.email))); who.value = state.user.id;
-    formModal(`Accept ${o.name}`, [field('Estimator', who, 'wide'), h('p', { class: 'muted wide' }, 'This assigns the next proposal number and moves the lead to the Proposal Tracker.')], async () => { const r = await api('POST', `/opportunities/${o.id}/accept`, { estimatorId: who.value }); location.hash = '#/estimating/proposals'; throw new Error(`Accepted as ${r.proposalId}. Folder to create: ${r.folderPlan.root}`); }, 'Accept'); };
-  const decline = (o) => { const why = h('input', { placeholder: 'Too far, wrong trade, no capacity…' }); formModal(`Decline ${o.name}`, [field('Reason', why, 'wide')], async () => { await api('POST', `/opportunities/${o.id}/decline`, { reason: why.value }); render(); }, 'Decline'); };
-  // Status is changed right in the row. Moving to Accepted or Declined asks first, so the dropdown snaps back until that is confirmed.
-  const statusSelect = (o) => {
-    const opts = o.statusLabel === 'New' ? ['New', 'Reviewing', 'Accepted', 'Declined'] : o.statusLabel === 'Reviewing' ? ['Reviewing', 'Accepted', 'Declined'] : o.statusLabel === 'Declined' ? ['Declined', 'New'] : [o.statusLabel];
-    const sel = h('select', { disabled: !w || opts.length < 2 ? true : null, 'aria-label': 'Status', onchange: guard(err, async (e) => { const v = e.target.value; sel.value = o.statusLabel;
-      if (v === 'Reviewing') { await api('POST', `/opportunities/${o.id}/review`, {}); render(); } else if (v === 'Accepted') accept(o); else if (v === 'Declined') decline(o); else if (v === 'New') { await api('POST', `/opportunities/${o.id}/reopen`, {}); render(); } }) }, opts.map((x) => h('option', { value: x }, x)));
-    sel.value = o.statusLabel; return sel;
-  };
-  const inviteCell = (o) => { const inv = (o.invitations || []).filter((i) => i.link); const list = inv.length ? inv : o.link ? [{ gc: o.gc, link: o.link }] : [];
-    return h('td', { style: 'white-space:nowrap' }, list.length ? list.map((i) => h('div', {}, h('a', { href: i.link, target: '_blank', rel: 'noopener', title: `Open the ${i.gc} invitation on BuildingConnected (plans and project details)` }, list.length > 1 ? `View · ${i.gc.split(/[ ,]/)[0]}` : 'View Invitation'))) : '—', o.emailLink ? h('div', {}, h('a', { href: o.emailLink, target: '_blank', rel: 'noopener', class: 'muted', style: 'font-size:13px', title: 'The original email in Gmail' }, 'Email')) : ''); };
-  const rows = data.groups.flatMap((g) => g.rows.map((o) => ({ ...o, week: g.name })));
-  rows.forEach((o, i) => (o.rank = i));
-  const sort = state.bidSort || { key: 'week', dir: 1 };
-  const keyOf = { week: (o) => o.rank, project: (o) => o.name.toLowerCase(), gc: (o) => o.gc.toLowerCase(), due: (o) => o.due || '9999', status: (o) => o.statusLabel, invitation: (o) => (o.link || (o.invitations || []).some((i) => i.link) ? 0 : 1), onedrive: (o) => (o.folderUrl ? 0 : 1) }[sort.key];
-  rows.sort((a, b) => { const x = keyOf(a), y = keyOf(b); return (x < y ? -1 : x > y ? 1 : a.rank - b.rank) * sort.dir; });
-  const head = BID_COLS.map(([k, l]) => h('th', {}, h('button', { class: 'sortbtn', onclick: () => { state.bidSort = { key: k, dir: sort.key === k ? -sort.dir : 1 }; render(); } }, l, h('span', { class: sort.key === k ? 'on' : '' }, sort.key === k ? (sort.dir === 1 ? ' ↑' : ' ↓') : ' ↕'))));
-  return h('div', {}, bidFeedBar(feed, err, w),
-    h('div', { class: 'card' }, h('div', { class: 'row spread' }, h('h2', {}, 'Bid Opportunities'), h('div', { class: 'row' }, h('label', { style: 'text-transform:none;letter-spacing:0;font-size:14px;font-weight:400;margin:0' }, h('input', { type: 'checkbox', checked: state.estAll ? true : null, onchange: (e) => { state.estAll = e.target.checked; render(); } }), ' Include declined (last 30 days)'), h('span', { class: 'info-tip', tabindex: '0', 'aria-label': BID_RULES, 'data-tip': BID_RULES }, 'i'))),
-      rows.length ? h('div', { class: 'scroll' }, h('table', { class: 'biglist' }, h('thead', {}, h('tr', {}, ...head, h('th', {}, 'Actions'))),
-        h('tbody', {}, rows.map((o) => h('tr', { class: o.statusLabel === 'Declined' ? 'muted' : '' },
-          h('td', {}, h('div', {}, weekLabel(o.week)), h('div', { class: 'muted', style: 'font-size:12px' }, `Tier ${o.tier}`)),
-          h('td', { style: 'white-space:normal;min-width:240px' }, h('strong', {}, o.name), h('div', { class: 'muted', style: 'font-size:13px' }, [o.city, o.address, o.mall ? 'Shopping center' : '', o.type].filter(Boolean).join(' · '))),
-          h('td', { style: 'white-space:normal;min-width:200px' }, h('strong', {}, o.gc), o.additionalGcs ? h('div', { class: 'muted', style: 'font-size:13px' }, 'Also: ' + o.additionalGcs) : '', o.contact ? h('div', { class: 'muted', style: 'font-size:13px' }, o.contact) : '', o.email ? h('div', {}, h('a', { href: 'mailto:' + o.email, style: 'font-size:13px' }, o.email)) : '', o.phone ? h('div', { class: 'muted', style: 'font-size:13px' }, o.phone) : ''),
-          h('td', {}, fmtDay(o.due), o.dueTime ? h('div', { class: 'muted', style: 'font-size:12px' }, `${o.dueTime} Eastern`) : o.due ? h('div', { class: 'muted', style: 'font-size:12px' }, o.countdown) : ''),
-          h('td', {}, statusSelect(o), o.autoDeclined ? h('div', { class: 'muted', style: 'font-size:12px' }, 'Auto-declined') : ''),
-          inviteCell(o),
-          h('td', {}, o.folderUrl ? h('a', { href: o.folderUrl, target: '_blank', rel: 'noopener' }, 'Open folder') : h('span', { class: 'muted' }, '—')),
-          h('td', {}, h('div', { class: 'stack' }, w ? h('button', { class: 'small', onclick: () => leadForm(o) }, 'Edit Lead') : '', w && ['New', 'Reviewing'].includes(o.statusLabel) ? h('button', { class: 'small accept', onclick: () => accept(o) }, 'Accept') : '', w && ['New', 'Reviewing'].includes(o.statusLabel) ? h('button', { class: 'small', onclick: () => decline(o) }, 'Decline') : ''))))))) : h('p', { class: 'muted', style: 'padding:1rem 0' }, feed.connected ? 'No open leads. New invitations appear after the next refresh (8:00 AM and 1:00 PM), or press Refresh now.' : 'No open leads yet. Connect Gmail in Admin, or add one by hand.')));
-}
-async function priceForm(o) {
-  const trades = (await api('GET', '/admin/trades')).filter((t) => !t.archived); const have = new Map(o.tradePrices.map((p) => [p.tradeId, p.amount])); const inputs = trades.map((t) => [t, num(have.get(t.id) ?? '', { placeholder: '—' })]); const total = h('strong', {}, usd(o.total));
-  inputs.forEach(([, i]) => (i.oninput = () => (total.textContent = usd(inputs.reduce((n, [, x]) => n + (Number(x.value) || 0), 0)))));
-  formModal(`Price trades · ${o.name}`, [h('div', { class: 'wide' }, inputs.map(([t, i]) => h('div', { class: 'trade-row', style: 'grid-template-columns:1fr 180px' }, h('span', { style: 'align-self:center' }, t.name), i)), h('div', { class: 'row', style: 'justify-content:space-between;margin-top:.5rem' }, h('span', { class: 'muted' }, 'Proposal total'), total))],
-    async () => { await api('PUT', `/opportunities/${o.id}/trade-prices`, { prices: inputs.filter(([, i]) => i.value !== '' && Number(i.value) > 0).map(([t, i]) => ({ tradeId: t.id, amount: i.value })) }); render(); }, 'Save prices');
-}
-function submitForm(o) {
-  const f = { date: h('input', { type: 'date', value: todayStr(), max: todayStr() }), method: h('select', {}, ['Email', 'via BuildingConnected', 'PlanHub', 'Other'].map((m) => h('option', { value: m }, m))), price: num('', { placeholder: `Leave blank for ${usd(o.total)}` }), link: h('input', { type: 'url', placeholder: 'https://… submitted proposal' }), note: h('input') };
-  formModal(`${o.submissions.length ? 'Resubmit' : 'Submit'} · ${o.name}`, [field('Date actually sent', f.date), field('How', f.method), field('Price', f.price), field('Proposal link', f.link), field('Note', f.note, 'wide')], async () => { await api('POST', `/opportunities/${o.id}/submissions`, { date: f.date.value, method: f.method.value, price: f.price.value, link: f.link.value, note: f.note.value }); location.hash = '#/estimating/submissions'; render(); }, 'Record submission');
-}
-function followForm(o) {
-  const f = { kind: h('select', {}, ['First Email Sent', 'Call / Message', 'Final Email Sent', 'Reply Received', 'Note'].map((k) => h('option', { value: k }, k))), date: h('input', { type: 'date', value: todayStr() }), note: h('input', { placeholder: 'What was said' }) };
-  f.kind.value = ({ 'First Email': 'First Email Sent', 'Call / Message': 'Call / Message', 'Final Email': 'Final Email Sent' })[o.followup.stage] || 'Reply Received';
-  formModal(`Follow-up · ${o.name}`, [field('What happened', f.kind), field('Date', f.date), field('Note', f.note, 'wide')], async () => { await api('POST', `/opportunities/${o.id}/communications`, { kind: f.kind.value, date: f.date.value, note: f.note.value }); render(); }, 'Log it');
-}
-function resultForm(o, result) {
-  const why = h('input', { placeholder: result === 'Lost' ? 'Price too high, chose another bidder…' : 'Optional' });
-  formModal(result === 'Awarded' ? `Award · ${o.name}` : `Lost · ${o.name}`, [h('p', { class: 'muted wide' }, result === 'Awarded' ? 'This creates the project with the priced trades as its contract amounts, and starts Notice to Owner tracking.' : 'Recording why helps the Insights tab improve your pricing.'), field('Reason / note', why, 'wide')],
-    async () => { const r = await api('POST', `/opportunities/${o.id}/result`, { result, reason: why.value }); if (r.projectId) location.hash = '#/projects/' + r.projectId; render(); }, result === 'Awarded' ? 'Award and create project' : 'Mark lost');
-}
-async function trackerPanel(tab, data, err, w) {
-  const th = (t, n) => h('th', { class: n ? 'n' : '' }, t); const open = (o) => (location.hash = '#/estimating/' + o.id);
-  const folder = (o) => { const fp = o.folderPlan; const msg = h('div'); formModal('Folder for this proposal', [h('div', { class: 'wide' }, h('p', {}, 'This is the standard folder tree for the proposal:'), h('pre', { style: 'background:#f4f5f8;padding:.7rem;border-radius:8px;white-space:pre-wrap' }, (fp ? fp.root + '\n' + fp.folders.map((x) => '  ' + x).join('\n') : '')), hasFolderAccess() ? h('button', { type: 'button', onclick: guard(msg, async () => { const where = await createProposalFolders(fp); notice(msg, `Created in ${where}`, 'ok'); }) }, 'Create these folders on my computer…') : '', folderNote(), msg, h('p', { class: 'muted' }, 'Then paste the folder link on the opportunity (Edit) so it is one click away.'))], async () => {}, 'Close'); };
-  if (!data.rows.length) return h('div', { class: 'card soon' }, tab === 'proposals' ? 'No accepted proposals yet. Accept a lead from Bid Opportunities.' : 'Nothing submitted yet.');
-  return h('div', { class: 'card' }, h('div', { class: 'scroll' }, h('table', {}, tab === 'proposals'
-    ? [h('thead', {}, h('tr', {}, th('Proposal #'), th('Project'), th('GC'), th('Due'), th('Estimator'), th('Progress'), th('Priced', 1), th(''))),
-      h('tbody', {}, data.rows.map((o) => h('tr', {}, h('td', {}, o.proposalId || h('span', { class: 'pill Pending' }, 'Reviewing')), h('td', { class: 'edit', onclick: () => open(o) }, o.name), h('td', {}, o.gc), h('td', {}, o.due || '—', h('div', { class: 'muted', style: 'font-size:12px' }, o.countdown)), h('td', {}, o.estimator || '—'), h('td', {}, h('span', { class: 'pill' }, !o.acceptedDate ? 'Not accepted yet' : o.lastSubmission ? 'Submitted' : o.progress)), h('td', { class: 'n' }, o.total ? usd(o.total) : '—'),
-        h('td', {}, w && !o.acceptedDate ? [o.link ? h('a', { href: o.link, target: '_blank', rel: 'noopener', style: 'margin-right:.5rem' }, 'Open invitation') : '', h('button', { class: 'small primary', onclick: guard(err, async () => { const r = await api('POST', `/opportunities/${o.id}/accept`, {}); location.hash = '#/estimating/proposals'; render(); }) }, 'Accept'), ' ', h('button', { class: 'small', onclick: guard(err, async () => { const why = prompt('Why decline?'); if (why) { await api('POST', `/opportunities/${o.id}/decline`, { reason: why }); render(); } }) }, 'Decline')] : '', w && o.acceptedDate && !['Awarded', 'Lost'].includes(o.result) ? [h('button', { class: 'small', onclick: async () => priceForm(await api('GET', '/opportunities/' + o.id)) }, 'Price trades'), ' ', h('button', { class: 'small primary', onclick: () => submitForm(o) }, o.lastSubmission ? 'Resubmit' : 'Submit'), ' '] : '', h('button', { class: 'small', onclick: async () => folder(await api('GET', '/opportunities/' + o.id)) }, 'Folder'), ' ', w && h('button', { class: 'small', onclick: () => leadForm(o) }, 'Edit')))))]
-    : [h('thead', {}, h('tr', {}, th('Proposal #'), th('Project'), th('GC'), th('Ver'), th('Sent'), th('How'), th('Price', 1), th('Follow-up'), th('Result'), th(''))),
-      h('tbody', {}, data.rows.map((o) => { const s = o.lastSubmission; return h('tr', {}, h('td', {}, o.proposalId), h('td', { class: 'edit', onclick: () => open(o) }, o.name), h('td', {}, o.gc), h('td', {}, 'v' + s.version), h('td', {}, s.date), h('td', {}, s.method), h('td', { class: 'n' }, usd(s.price)),
-        h('td', {}, h('span', { class: 'pill ' + (o.followup.stage === 'Interested' ? 'Approved' : o.followup.due && o.followup.due <= todayStr() ? 'Pending' : '') }, o.followup.stage), o.followup.due ? h('div', { class: 'muted', style: 'font-size:12px' }, 'due ' + o.followup.due) : ''), h('td', {}, h('span', { class: 'pill ' + (o.result === 'Awarded' ? 'Approved' : o.result === 'Lost' ? 'Rejected' : 'Pending') }, o.result)),
-        h('td', {}, w && o.result === 'Pending' ? [h('button', { class: 'small', onclick: () => followForm(o) }, 'Log follow-up'), ' ', h('button', { class: 'small primary', onclick: () => resultForm(o, 'Awarded') }, 'Awarded'), ' ', h('button', { class: 'small', onclick: () => resultForm(o, 'Lost') }, 'Lost')] : o.projectId ? h('a', { href: '#/projects/' + o.projectId }, 'Open project') : '')); }))])));
-}
-async function opportunityDetail(id, err, w) {
-  const o = await api('GET', '/opportunities/' + id);
-  return h('div', { class: 'card', style: 'border-color:var(--navy)' }, h('div', { class: 'row spread' }, h('h2', {}, `${o.proposalId ? o.proposalId + ' · ' : ''}${o.name}`), h('a', { href: '#/estimating/' + (o.acceptedDate ? (o.lastSubmission ? 'submissions' : 'proposals') : 'bids') }, 'Close')),
-    h('p', { class: 'muted' }, [o.gc, o.city, o.due ? 'Bid due ' + o.due : '', o.estimator ? 'Estimator ' + o.estimator : ''].filter(Boolean).join(' · ')),
-    o.tradePrices.length ? h('p', {}, h('strong', {}, 'Priced: '), o.tradePrices.map((p) => `${p.name} ${usd(p.amount)}`).join(' · '), ` = ${usd(o.total)}`) : '', o.projectId ? h('p', {}, h('a', { href: '#/projects/' + o.projectId }, 'Open the project')) : '', o.lostReason ? h('p', {}, h('strong', {}, 'Lost: '), o.lostReason) : '',
-    o.communications.length ? h('p', {}, h('strong', {}, 'Follow-up: '), o.communications.map((c) => `${c.date} ${c.kind}${c.note ? ' (' + c.note + ')' : ''}`).join(' · ')) : '', h('div', { class: 'muted', style: 'font-size:13px' }, 'History: ' + o.events.slice(0, 8).map((e) => `${new Date(e.created_at).toLocaleDateString()} ${e.action}${e.who ? ' by ' + e.who : ''}`).join(' · ')),
-    o.acceptedDate ? await takeoffCard(o, err, w) : '',
-    w && !o.projectId ? h('div', { style: 'margin-top:.6rem' }, h('button', { class: 'small danger', onclick: guard(err, async () => { if (confirm(`Delete ${o.name}?`)) { await api('DELETE', '/opportunities/' + o.id); location.hash = '#/estimating/bids'; } }) }, 'Delete opportunity')) : '');
-}
-
-async function takeoffCard(o, err, w) {
-  const [runs, trades] = await Promise.all([api('GET', `/opportunities/${o.id}/takeoff`), api('GET', '/admin/trades')]); const tr = trades.filter((t) => !t.archived); const msg = h('div');
-  const file = h('input', { type: 'file', accept: '.pdf', style: 'display:none', onchange: guard(msg, async () => { const f = file.files[0]; if (!f) return; notice(msg, 'Reading the plans. This can take a minute or two…', 'ok'); const r = await uploadFile(`/opportunities/${o.id}/takeoff`, f); file.value = ''; if (r.error) { notice(msg, r.error); return; } render(); }) });
-  const runCard = (r) => {
-    const set = (it, b) => guard(msg, async () => { await api('PUT', `/takeoff/items/${it.id}`, b); render(); });
-    const sel = (it) => { const s2 = h('select', { disabled: !w || r.status === 'Applied' ? true : null, onchange: (e) => set(it, { tradeId: e.target.value || null })() }, h('option', { value: '' }, '—'), tr.map((t) => h('option', { value: t.id }, t.name))); s2.value = it.tradeId || ''; return s2; };
-    const numIn = (it, k, ph) => h('input', { type: 'number', step: '0.01', min: '0', value: it[k] ?? '', placeholder: ph, style: 'width:90px', disabled: !w || r.status === 'Applied' ? true : null, onchange: (e) => set(it, { [k]: e.target.value === '' ? null : e.target.value })() });
-    const chk = (it, k) => h('input', { type: 'checkbox', checked: it[k] ? true : null, disabled: !w || r.status === 'Applied' ? true : null, onchange: (e) => set(it, { [k]: e.target.checked })() });
-    const sections = ['Demolition keynote', 'Wall type', 'Paint', 'Carpentry', 'Other']; const th = (t) => h('th', {}, t);
-    return h('div', { style: 'margin-top:1rem;border-top:1px solid var(--line);padding-top:.8rem' }, h('div', { class: 'row spread' }, h('strong', {}, `Read ${new Date(r.createdAt).toLocaleString()}${r.by ? ' by ' + r.by : ''}`), h('span', { class: 'pill ' + (r.status === 'Applied' ? 'Approved' : r.status === 'Verified' ? 'Valid' : 'Pending') }, r.status)),
-      r.warnings.map((x) => h('div', { class: 'err' }, x)),
-      sections.map((sec) => { const items = r.items.filter((i) => i.section === sec); if (!items.length) return ''; return h('div', { style: 'margin-top:.6rem' }, h('label', {}, sec + (sec === 'Carpentry' ? ' (only items the matrix assigns to us are included)' : '')),
-        h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, th('Use'), th('OK'), th('Code'), th('What the plans say'), th('Sheet'), sec === 'Carpentry' ? th('Who') : '', th('Qty'), th('Unit'), th('$ / unit'), th('Trade'), th('Total'), th(''))),
-          h('tbody', {}, items.map((it) => h('tr', { class: it.include ? '' : 'muted' }, h('td', {}, chk(it, 'include')), h('td', {}, chk(it, 'verified')), h('td', {}, it.code || ''), h('td', { style: 'white-space:normal;min-width:260px' }, it.description), h('td', {}, it.sheet || ''), sec === 'Carpentry' ? h('td', {}, h('span', { class: 'pill ' + (it.responsibility === 'Contractor' ? 'Approved' : it.responsibility === 'By others' ? 'Declined' : 'Pending') }, it.responsibility)) : '', h('td', {}, numIn(it, 'quantity', 'Qty')), h('td', {}, it.unit || ''), h('td', {}, numIn(it, 'unitPrice', '$')), h('td', {}, sel(it)), h('td', { class: 'n' }, it.lineTotal != null ? usd(it.lineTotal) : ''),
-            h('td', {}, w && r.status !== 'Applied' ? h('button', { class: 'small danger', onclick: guard(msg, async () => { await api('DELETE', `/takeoff/items/${it.id}`); render(); }) }, '×') : ''))))))); }),
-      w && r.status !== 'Applied' ? h('div', { class: 'row', style: 'margin-top:.8rem' }, h('button', { onclick: () => { const d = h('input'), s2 = h('select', {}, sections.map((x) => h('option', { value: x }, x))); formModal('Add an item the plans missed', [field('Section', s2), field('Description', d, 'wide')], async () => { await api('POST', `/takeoff/${r.id}/items`, { section: s2.value, description: d.value }); render(); }, 'Add'); } }, '+ Add item'),
-        h('button', { onclick: guard(msg, async () => { await api('POST', `/takeoff/${r.id}/verify`, {}); render(); }) }, 'Mark verified'), h('button', { class: 'primary', disabled: r.status !== 'Verified' ? true : null, title: r.status !== 'Verified' ? 'Verify every included item first' : '', onclick: guard(msg, async () => { const x = await api('POST', `/takeoff/${r.id}/apply`, {}); notice(msg, `Applied to ${x.trades} trade prices. Review them under Price trades.`, 'ok'); render(); }) }, 'Apply to proposal prices')) : '');
-  };
-  return h('div', { style: 'margin-top:1rem;border-top:1px solid var(--line);padding-top:.8rem' }, h('div', { class: 'row spread' }, h('h2', {}, 'Plan takeoff (AI-assisted)'), w && h('div', { class: 'row' }, file, h('button', { onclick: () => file.click() }, 'Upload plans (PDF) and read them'))),
-    h('p', { class: 'muted' }, 'Reads demo keynotes, wall types, paint by code, and carpentry the responsibility matrix assigns to the contractor. You verify each item and add prices; nothing reaches the proposal until you apply it.'), msg, runs.map(runCard), runs.length ? '' : h('p', { class: 'muted' }, 'No takeoff yet.'));
-}
-
-async function insightsPanel(err) {
-  const i = await api('GET', '/estimating/insights'); const th = (t, n) => h('th', { class: n ? 'n' : '' }, t); const rateTbl = (rows, label) => rows.length ? h('table', {}, h('thead', {}, h('tr', {}, th(label), th('Bids', 1), th('Won', 1), th('Lost', 1), th('Win rate', 1), th('Avg price', 1))), h('tbody', {}, rows.map((r) => h('tr', {}, h('td', {}, r.name), h('td', { class: 'n' }, r.bids ?? ''), h('td', { class: 'n' }, r.won), h('td', { class: 'n' }, r.lost), h('td', { class: 'n' }, r.winRate == null ? '—' : r.winRate + '%'), h('td', { class: 'n' }, r.avgPrice != null ? usd(r.avgPrice) : ''))))) : h('p', { class: 'muted' }, 'Nothing scored yet.');
-  const tm = num(i.target, { step: '1', disabled: !['Super Admin', 'Sub Admin'].includes(state.user.role) });
-  return h('div', {}, !i.enough ? h('p', { class: 'ok' }, 'Insights sharpen as bids are scored. Mark proposals Awarded or Lost; with 5 or more scored, win-rate forecasts switch on.') : '',
-    h('div', { class: 'grid kpis' }, h('div', { class: 'kpi' }, h('div', { class: 'l' }, 'Win rate'), h('div', { class: 'v' }, i.overall.winRate == null ? '—' : i.overall.winRate + '%')), h('div', { class: 'kpi' }, h('div', { class: 'l' }, 'Open proposals'), h('div', { class: 'v' }, i.pipeline.open)), h('div', { class: 'kpi' }, h('div', { class: 'l' }, 'Pipeline value'), h('div', { class: 'v' }, usd(i.pipeline.value))), h('div', { class: 'kpi good' }, h('div', { class: 'l' }, 'Expected awards'), h('div', { class: 'v' }, i.pipeline.expected == null ? '—' : usd(i.pipeline.expected)))),
-    h('div', { class: 'card', style: 'margin-top:1rem' }, h('div', { class: 'row spread' }, h('h2', {}, 'Margins you actually make, by trade'), h('div', { class: 'row' }, h('label', { style: 'margin:0' }, 'Target margin %'), tm, ['Super Admin', 'Sub Admin'].includes(state.user.role) && h('button', { class: 'small', onclick: guard(err, async () => { await api('PUT', '/settings/estimating', { targetMargin: tm.value }); render(); }) }, 'Save'))),
-      i.margins.length ? h('table', {}, h('thead', {}, h('tr', {}, th('Trade'), th('Projects', 1), th('Realized margin', 1), th('Target', 1), th('What to do'))), h('tbody', {}, i.margins.map((m) => h('tr', {}, h('td', {}, m.trade), h('td', { class: 'n' }, m.projects), h('td', { class: 'n ' + (m.gap > 0 ? 'neg' : 'pos') }, m.margin + '%'), h('td', { class: 'n' }, m.target + '%'), h('td', { style: 'white-space:normal' }, m.suggestion))))) : h('p', { class: 'muted' }, 'Appears once awarded projects have costs posted.')),
-    h('div', { class: 'card' }, h('h2', {}, 'By GC'), rateTbl(i.byGc, 'GC')), h('div', { class: 'card' }, h('h2', {}, 'By project type'), rateTbl(i.byType, 'Type')), h('div', { class: 'card' }, h('h2', {}, 'By trade priced'), rateTbl(i.byTrade, 'Trade')),
-    i.lossReasons.length ? h('div', { class: 'card' }, h('h2', {}, 'Why bids were lost'), h('table', {}, h('tbody', {}, i.lossReasons.map((r) => h('tr', {}, h('td', {}, r.reason), h('td', { class: 'n' }, r.n)))))) : '');
-}
+// ------------------------------------------------------------------ estimating (its own file)
+estimating.init({ api, state, render, shell, uploadFile, hasFolderAccess, createProposalFolders, folderNote, isSuper, canEstimate: () => ['Super Admin', 'Sub Admin', 'Estimator'].includes(state.user.role) });
+const estimatingView = estimating.estimatingView;
 
 // ------------------------------------------------------------------ admin
 // Admin master records. Every section uses the same add/edit form as the rest of the app.
@@ -774,11 +631,11 @@ const ROLE_LIST = ['Sub Admin', 'Exec Assistant', 'Estimator', 'Project Manager'
 async function usersSection() {
   const rows = await api('GET', '/admin/users'); const err = h('div');
   const userForm = (u) => {
-    const f = { email: h('input', { type: 'email', value: u?.email ?? '', disabled: !!u }), name: h('input', { value: u?.name ?? '' }), title: h('input', { value: u?.title ?? '', placeholder: 'Estimator, Exec Assistant…' }), role: h('select', {}, ROLE_LIST.map((r) => h('option', { value: r }, r))), pw: h('input', { type: 'password', autocomplete: 'new-password', placeholder: u ? 'Leave blank to keep' : 'Min 10 characters' }) };
+    const f = { email: h('input', { type: 'email', value: u?.email ?? '', disabled: !!u }), name: h('input', { value: u?.name ?? '' }), title: h('input', { value: u?.title ?? '', placeholder: 'Estimator, Exec Assistant…' }), phone: h('input', { type: 'tel', value: u?.phone ?? '', placeholder: 'Used in follow-up emails' }), role: h('select', {}, ROLE_LIST.map((r) => h('option', { value: r }, r))), pw: h('input', { type: 'password', autocomplete: 'new-password', placeholder: u ? 'Leave blank to keep' : 'Min 10 characters' }) };
     if (u) f.role.value = u.role;
-    formModal(u ? `Edit ${u.email}` : 'Add user', [field('Company email', f.email), field('Name', f.name), field('Title', f.title), field('Access level', f.role), field(u ? 'New password' : 'Password', f.pw)], async () => {
-      if (u) { const body = { name: f.name.value, title: f.title.value, role: f.role.value }; if (f.pw.value) body.password = f.pw.value; await api('PUT', '/admin/users/' + u.id, body); }
-      else await api('POST', '/admin/users', { email: f.email.value, name: f.name.value, title: f.title.value, role: f.role.value, password: f.pw.value });
+    formModal(u ? `Edit ${u.email}` : 'Add user', [field('Company email', f.email), field('Name', f.name), field('Title', f.title), field('Phone', f.phone), field('Access level', f.role), field(u ? 'New password' : 'Password', f.pw)], async () => {
+      if (u) { const body = { name: f.name.value, title: f.title.value, phone: f.phone.value, role: f.role.value }; if (f.pw.value) body.password = f.pw.value; await api('PUT', '/admin/users/' + u.id, body); }
+      else await api('POST', '/admin/users', { email: f.email.value, name: f.name.value, title: f.title.value, phone: f.phone.value, role: f.role.value, password: f.pw.value });
       render();
     }, u ? 'Save' : 'Add user');
   };
@@ -847,7 +704,7 @@ async function render() {
   const [, page = 'dashboard', id, tab] = location.hash.split('/');
   try {
     if (['admin'].includes(page) || (page === 'projects' && !id)) [state.trades, state.gcs] = await Promise.all([api('GET', '/admin/trades'), api('GET', '/admin/gcs')]).catch(() => [state.trades, state.gcs]);
-    const view = page === 'estimating' ? await estimatingView(id) : page === 'messages' ? await messagesView(id) : page === 'admin' ? await adminView() : page === 'receipts' ? await receiptsView() : page === 'compliance' ? await complianceView() : page === 'projects' ? (id ? await projectView(id, tab) : await projectsView()) : page === 'reports' ? await reportsView() : await dashboardView();
+    const view = page === 'estimating' ? await estimatingView(id, tab) : page === 'messages' ? await messagesView(id) : page === 'admin' ? await adminView() : page === 'receipts' ? await receiptsView() : page === 'compliance' ? await complianceView() : page === 'projects' ? (id ? await projectView(id, tab) : await projectsView()) : page === 'reports' ? await reportsView() : await dashboardView();
     if (token === rendering) { $app.replaceChildren(view); updateBell(); }
   } catch (e) { if (token === rendering && state.user) $app.replaceChildren(shell(page, h('div', { class: 'err' }, e.message))); }
 }

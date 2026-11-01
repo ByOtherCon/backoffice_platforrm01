@@ -50,3 +50,12 @@ Super Admin (owner only) · Sub Admin (can approve vendor payments, change pay r
 ## Layout
 - `src/lib/` pure rules, each with tests: `costing`, `payroll`, `compliance`, `estimating`, `overhead`, `forecast`, `split`
 - `server/` the API (one file per area) · `public/` the screens · `db/` migrations · `test/` ~135 tests
+
+## Estimating workflow (how an opportunity moves)
+- **Bid Opportunities** lists New opportunities only (Gmail BuildingConnected invitations, CSV, or **+ Opportunity**). A New one is declined automatically a set number of days after its bid due date (default 2, changeable on the Insights tab) and the system writes that in its Notes. No due date means it never expires.
+- **Reviewing** and **Accepted** move to the **Proposal Tracker** (statuses: Reviewing, Accepted, Started, Submitted, Decided Not To Submit). Accepting needs a due date and an estimator and assigns the proposal number (P + MMDD + sequence).
+- **Submitting** needs the proposal PDF. It is read by AI (when `ANTHROPIC_API_KEY` is set), you check every trade and amount, and the PDF lands in the opportunity's file list (the "submittal folder"). Every bid version is kept.
+- After submission: **Not Awarded** (needs a reason), **No Communication From GC**, or **Awarded — Create Project in JC**, which builds the project with a Bid History tab holding the lead, proposal and notes.
+- **Follow Ups**: one case per submitted version, cadence 7 / 3 / 2 / 4 / 2 business days (shortened only as far as a known start date requires). Sending is manual; you log emails and calls.
+- Every status change, edit, decline, upload and note is written to the opportunity's **Notes**.
+- Addresses are checked against the U.S. Census geocoder (free). If that service is unreachable you can use the address as entered; it is then marked as a format check only.

@@ -29,7 +29,8 @@ export async function rules() {
 }
 export async function options() {
   return { statuses: W.STATUSES, sources: W.SOURCES, projectTypes: W.PROJECT_TYPES, methods: W.METHODS, declineReasons: W.DECLINE_REASONS, dntsReasons: W.DNTS_REASONS, notAwardedReasons: W.NOT_AWARDED_REASONS,
-    proposalFilters: W.PROPOSAL_FILTERS, rules: await rules(), aiConnected: aiConnected() };
+    proposalFilters: W.PROPOSAL_FILTERS, rules: await rules(), aiConnected: aiConnected(),
+    trades: await q('SELECT id, name FROM trades WHERE NOT archived ORDER BY sort, name'), estimators: await q('SELECT id, name, email FROM app_users WHERE active AND role = ANY($1::text[]) ORDER BY name, email', [EST_ROLES]) };
 }
 
 // ------------------------------------------------------------------ reading

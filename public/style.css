@@ -59,3 +59,7 @@ td:has(> button){white-space:normal;min-width:230px}
 @media(max-width:700px){header.top{flex-wrap:wrap;height:auto;padding:.6rem 1rem;gap:.8rem}main{padding:1rem}.trade-row{grid-template-columns:1fr}}
 input[type=checkbox],input[type=radio]{width:auto!important;padding:0;accent-color:var(--navy)}
 .modal{max-width:900px}
+
+.info-tip{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:50%;border:1px solid #b4bac6;color:var(--muted);font:600 12px Calibri,Carlito,sans-serif;cursor:help;position:relative;user-select:none}
+.info-tip:hover,.info-tip:focus{background:var(--navy);color:#fff;border-color:var(--navy);outline:none}
+.info-tip:hover::after,.info-tip:focus::after{content:attr(data-tip);position:absolute;left:28px;top:-6px;width:min(420px,80vw);background:#1f2433;color:#fff;padding:.7rem .85rem;border-radius:10px;font:300 13.5px/1.45 Calibri,Carlito,sans-serif;z-index:30;box-shadow:0 10px 30px rgba(0,0,0,.25);white-space:normal;text-align:left}

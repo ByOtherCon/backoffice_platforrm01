@@ -16,13 +16,17 @@ export async function usageThisMonth() {
 export async function callClaude({ userId, kind, system, bytes, mime, prompt, tool, maxTokens = 4000 }) {
   if (!aiConnected()) throw new HttpError(503, 'AI is not connected yet. The file is saved; enter the details by hand, or connect the Anthropic API key on the server.');
   const u = await usageThisMonth(); if (u.tokens >= u.cap) throw new HttpError(429, 'The monthly AI usage cap has been reached. A Super Admin can raise it in Settings.');
-  const isPdf = mime === 'application/pdf', isImg = /^image\/(png|jpeg)$/.test(mime);
-  if (!isPdf && !isImg) throw bad('AI reading works on PDF, PNG or JPG files.');
-  const source = { type: 'base64', media_type: mime, data: bytes.toString('base64') };
+  const content = [];
+  if (bytes) { // a PDF or image goes in with the question; text-only calls (email reading) pass no file
+    const isPdf = mime === 'application/pdf', isImg = /^image\/(png|jpeg)$/.test(mime);
+    if (!isPdf && !isImg) throw bad('AI reading works on PDF, PNG or JPG files.');
+    content.push({ type: isPdf ? 'document' : 'image', source: { type: 'base64', media_type: mime, data: bytes.toString('base64') } });
+  }
+  content.push({ type: 'text', text: prompt });
   const res = await fetchImpl('https://api.anthropic.com/v1/messages', { method: 'POST', signal: AbortSignal.timeout(90000),
     headers: { 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-    body: JSON.stringify({ model: MODEL(), max_tokens: maxTokens, system, tools: [tool], tool_choice: { type: 'tool', name: tool.name }, messages: [{ role: 'user', content: [{ type: isPdf ? 'document' : 'image', source }, { type: 'text', text: prompt }] }] }) });
-  if (!res.ok) throw new HttpError(502, 'The AI service could not read this file. Check the API key and usage limits, or enter the details by hand.');
+    body: JSON.stringify({ model: MODEL(), max_tokens: maxTokens, system, tools: [tool], tool_choice: { type: 'tool', name: tool.name }, messages: [{ role: 'user', content }] }) });
+  if (!res.ok) throw new HttpError(502, 'The AI service could not read this. Check the API key and usage limits, or enter the details by hand.');
   const out = await res.json();
   await q('INSERT INTO ai_usage(user_id,kind,input_tokens,output_tokens) VALUES ($1,$2,$3,$4)', [userId, kind, out.usage?.input_tokens ?? null, out.usage?.output_tokens ?? null]);
   const call = (out.content || []).find((c) => c.type === 'tool_use' && c.name === tool.name);

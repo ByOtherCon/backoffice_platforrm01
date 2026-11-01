@@ -5,6 +5,8 @@ import { createProject, listProjects } from './projectApi.js';
 import { loadInputs } from './projects.js';
 import { registerLinkable } from './messaging.js';
 import { tradeStats } from '../src/lib/costing.ts';
+import * as R from '../src/lib/bidrules.ts';
+import { sweepDeclines } from './bids.js';
 
 registerLinkable('opportunity', { sql: 'SELECT name AS label FROM opportunities WHERE id=$1', route: (id) => `#/estimating/${id}` });
 export const EST_ROLES = ['Super Admin', 'Sub Admin', 'Estimator'];
@@ -27,28 +29,30 @@ async function loadAll(where = '', params = []) {
     const cs = comms.filter((c) => c.opportunity_id === r.id).map((c) => ({ id: c.id, kind: c.kind, date: c.comm_date, note: c.note, cycle: c.submission_id }));
     const last = ss.at(-1) ?? null;
     return { id: r.id, name: r.name, gc: r.gc_name, additionalGcs: r.additional_gcs, city: r.city, address: r.address, tier: r.tier, mall: r.mall, type: r.project_type, due: r.due_date, dueTime: r.due_time, contact: r.contact_name, email: r.contact_email, phone: r.contact_phone, link: r.invitation_link,
-      status: r.status, progress: r.progress, result: r.result, estimatorId: r.estimator_id, estimator: r.estimator, proposalId: r.proposal_id, acceptedDate: r.accepted_date, startDate: r.start_date, declinedReason: r.declined_reason, lostReason: r.lost_reason, folderUrl: r.folder_url, proposalUrl: r.proposal_url, notes: r.notes, source: r.source, projectId: r.project_id,
+      status: r.status, statusLabel: R.statusLabel(r.status), lastSeenAt: r.last_seen_at, emailLink: r.email_link, invitations: r.invitations ?? [], autoDeclined: r.auto_declined, progress: r.progress, result: r.result, estimatorId: r.estimator_id, estimator: r.estimator, proposalId: r.proposal_id, acceptedDate: r.accepted_date, startDate: r.start_date, declinedReason: r.declined_reason, lostReason: r.lost_reason, folderUrl: r.folder_url, proposalUrl: r.proposal_url, notes: r.notes, source: r.source, projectId: r.project_id,
       tradePrices: tp, total: r2(tp.reduce((n, p) => n + Math.round(p.amount * 100), 0) / 100), submissions: ss, communications: cs, lastSubmission: last,
       countdown: E.countdown(r.due_date, !!last, today), week: E.groupFor(r.due_date, today), followup: E.followupPlan(last, cs, { result: r.result }) };
   });
 }
-const isOpenLead = (o, today) => !o.acceptedDate && !['No Bid', 'Awarded', 'Lost', 'Submitted'].includes(o.status) && !E.expiredLead(o.due, today);
+const isOpenLead = (o) => !o.acceptedDate && ['New', 'Reviewing'].includes(o.status);
 const isWorking = (o) => o.acceptedDate && !o.lastSubmission && !['No Bid', 'Awarded', 'Lost'].includes(o.status);
 export async function list({ tab, search, showAll } = {}) {
+  await sweepDeclines();   // New leads decline one day past due, Reviewing two days; leads with no date stay open
   const today = E.todayEastern(); let all = await loadAll();
   const term = String(search || '').toLowerCase();
-  if (term) all = all.filter((o) => [o.name, o.gc, o.city, o.proposalId, o.address].some((v) => String(v || '').toLowerCase().includes(term)));
+  if (term) all = all.filter((o) => [o.name, o.gc, o.city, o.proposalId, o.address, o.additionalGcs].some((v) => String(v || '').toLowerCase().includes(term)));
   const month = today.slice(0, 7);
   const stats = { accepted: all.filter((o) => (o.acceptedDate || '').startsWith(month)).length, working: all.filter(isWorking).length, submitted: all.filter((o) => o.submissions.some((s) => s.date.startsWith(month))).length,
-    openLeads: all.filter((o) => isOpenLead(o, today)).length, awaitingFollowUp: all.filter((o) => o.lastSubmission && ['First Email', 'Call / Message', 'Final Email'].includes(o.followup.stage) && o.followup.due && o.followup.due <= today).length, interested: all.filter((o) => o.followup.stage === 'Interested' && o.result === 'Pending').length };
+    openLeads: all.filter(isOpenLead).length, awaitingFollowUp: all.filter((o) => o.lastSubmission && ['First Email', 'Call / Message', 'Final Email'].includes(o.followup.stage) && o.followup.due && o.followup.due <= today).length, interested: all.filter((o) => o.followup.stage === 'Interested' && o.result === 'Pending').length };
   let rows = all;
-  if (tab === 'bids') rows = showAll ? all.filter((o) => !o.acceptedDate) : all.filter((o) => isOpenLead(o, today));
-  else if (tab === 'proposals') rows = all.filter((o) => o.acceptedDate);
+  // Bid Opportunities: open leads. Searching, or ticking "include declined", also reaches declined leads seen in the last 30 days.
+  if (tab === 'bids') rows = all.filter((o) => isOpenLead(o) || ((term || showAll) && o.status === 'No Bid' && !o.acceptedDate && R.withinSearchWindow(o.lastSeenAt)));
+  // Proposal Tracker: accepted work, plus leads being Reviewed.
+  else if (tab === 'proposals') rows = all.filter((o) => o.acceptedDate || o.status === 'Reviewing');
   else if (tab === 'submissions') rows = all.filter((o) => o.submissions.length);
-  const rank = (a, b) => a.tier - b.tier || Number(b.mall) - Number(a.mall) || TYPES.indexOf(a.type) - TYPES.indexOf(b.type) || a.name.localeCompare(b.name);
   if (tab === 'bids') { const groups = new Map(); for (const o of rows) (groups.get(o.week) ?? groups.set(o.week, []).get(o.week)).push(o);
     const extra = ['Due This Week — Too Tight To Bid', 'Missed / Past Due', 'No Bid Due Date Provided'];
-    return { stats, groups: [...groups].sort(([a], [b]) => (a.startsWith('Week Of') ? 0 : 1) - (b.startsWith('Week Of') ? 0 : 1) || (a.startsWith('Week Of') ? a.localeCompare(b) : extra.indexOf(a) - extra.indexOf(b))).map(([name, rs]) => ({ name, rows: rs.sort(rank) })), count: rows.length }; }
+    return { stats, groups: [...groups].sort(([a], [b]) => (a.startsWith('Week Of') ? 0 : 1) - (b.startsWith('Week Of') ? 0 : 1) || (a.startsWith('Week Of') ? a.localeCompare(b) : extra.indexOf(a) - extra.indexOf(b))).map(([name, rs]) => ({ name, rows: rs.sort(R.rankLeads) })), count: rows.length }; }
   return { stats, rows, count: rows.length };
 }
 export async function get(id) {
@@ -124,7 +128,7 @@ export async function accept(user, id, b = {}) {
     const est = b.estimatorId || user.id;
     if (!(await t(`SELECT 1 FROM app_users WHERE id=$1 AND active AND role = ANY($2::text[])`, [est, EST_ROLES])).length) throw bad('Choose an estimator from the team list.');
     const today = E.todayEastern(), pid = E.nextProposalId((await t('SELECT proposal_id FROM opportunities WHERE proposal_id IS NOT NULL')).map((x) => x.proposal_id), today);
-    await t(`UPDATE opportunities SET status='Bidding', progress='In Progress', accepted_date=$2, start_date=$2, proposal_id=$3, estimator_id=$4, result='Pending', declined_reason=NULL WHERE id=$1`, [id, today, pid, est]);
+    await t(`UPDATE opportunities SET status='Bidding', progress='In Progress', accepted_date=$2, start_date=$2, proposal_id=$3, estimator_id=$4, result='Pending', declined_reason=NULL, auto_declined=false, last_seen_at=now() WHERE id=$1`, [id, today, pid, est]);
     await log(t, id, user, 'Accepted', `Proposal ${pid}`);
     return { proposalId: pid, folderPlan: E.folderPlan({ proposalId: pid, name: o.name, city: o.city, gc: o.gc_name, year: Number(today.slice(0, 4)) }) };
   });
@@ -134,12 +138,19 @@ export async function decline(user, id, reason) {
   await tx(async (t) => {
     const [o] = await t('SELECT accepted_date FROM opportunities WHERE id=$1 FOR UPDATE', [id]); if (!o) throw new HttpError(404, 'Opportunity not found.');
     if (o.accepted_date) throw new HttpError(409, 'Accepted work cannot be declined. Mark it as lost or no bid from its proposal.');
-    await t(`UPDATE opportunities SET status='No Bid', result='No Bid', declined_reason=$2 WHERE id=$1`, [id, why]); await log(t, id, user, 'Declined', why);
+    await t(`UPDATE opportunities SET status='No Bid', result='No Bid', declined_reason=$2, auto_declined=false, declined_at=now(), last_seen_at=now() WHERE id=$1`, [id, why]); await log(t, id, user, 'Declined', why);
   });
 }
 export async function reopenLead(user, id) {
-  const r = await q(`UPDATE opportunities SET status='New', result='Pending', declined_reason=NULL WHERE id=$1 AND accepted_date IS NULL AND status='No Bid' RETURNING id`, [id]);
+  const r = await q(`UPDATE opportunities SET status='New', result='Pending', declined_reason=NULL, auto_declined=false, last_seen_at=now() WHERE id=$1 AND accepted_date IS NULL AND status='No Bid' RETURNING id, due_date`, [id]);
   if (!r.length) throw bad('Only a declined lead can be reopened.'); await q('INSERT INTO opportunity_events(opportunity_id,user_id,action) VALUES ($1,$2,$3)', [id, user.id, 'Reopened']);
+  await sweepDeclines();   // a lead whose bid date has already passed goes straight back to Declined
+  const [now] = await q('SELECT status FROM opportunities WHERE id=$1', [id]); if (now.status === 'No Bid') throw bad('That bid date has already passed, so it would decline again. Change the due date first, or leave it declined.');
+}
+// Mark a lead as "being reviewed". It then also shows in the Proposal Tracker, and declines two days past due instead of one.
+export async function review(user, id) {
+  const r = await q(`UPDATE opportunities SET status='Reviewing', last_seen_at=now() WHERE id=$1 AND accepted_date IS NULL AND status='New' RETURNING id`, [id]);
+  if (!r.length) throw bad('Only a New lead can be moved to Reviewing.'); await q('INSERT INTO opportunity_events(opportunity_id,user_id,action) VALUES ($1,$2,$3)', [id, user.id, 'Reviewing']);
 }
 export async function setTradePrices(user, id, prices) {
   if (!Array.isArray(prices) || prices.length > 50) throw bad('Choose trades from Admin.');

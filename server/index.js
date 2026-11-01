@@ -20,6 +20,7 @@ import * as es from './estimating.js';
 import * as db from './dashboard.js';
 import * as rp from './reports.js';
 import * as tk from './takeoff.js';
+import * as bd from './bids.js';
 import { bootstrapOwner } from './bootstrap.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
@@ -148,6 +149,7 @@ route('PUT', '/api/opportunities/:id', async ({ user, params, body }) => { await
 route('DELETE', '/api/opportunities/:id', async ({ user, params }) => { estWrite(user); await es.remove(uuid(params.id)); return { ok: true }; });
 route('POST', '/api/opportunities/:id/accept', async ({ user, params, body }) => es.accept(estWrite(user), uuid(params.id), body));
 route('POST', '/api/opportunities/:id/decline', async ({ user, params, body }) => { await es.decline(estWrite(user), uuid(params.id), body.reason); return { ok: true }; });
+route('POST', '/api/opportunities/:id/review', async ({ user, params }) => { await es.review(estWrite(user), uuid(params.id)); return { ok: true }; });
 route('POST', '/api/opportunities/:id/reopen', async ({ user, params }) => { await es.reopenLead(estWrite(user), uuid(params.id)); return { ok: true }; });
 route('PUT', '/api/opportunities/:id/trade-prices', async ({ user, params, body }) => { await es.setTradePrices(estWrite(user), uuid(params.id), body.prices); return { ok: true }; });
 route('POST', '/api/opportunities/:id/submissions', async ({ user, params, body }) => es.addSubmission(estWrite(user), uuid(params.id), body));
@@ -162,6 +164,25 @@ route('PUT', '/api/takeoff/items/:id', async ({ user, params, body }) => { estWr
 route('DELETE', '/api/takeoff/items/:id', async ({ user, params }) => { estWrite(user); await tk.deleteItem(uuid(params.id)); return { ok: true }; });
 route('POST', '/api/takeoff/:id/verify', async ({ user, params }) => { estWrite(user); await tk.verifyRun(uuid(params.id)); return { ok: true }; });
 route('POST', '/api/takeoff/:id/apply', async ({ user, params }) => tk.applyRun(estWrite(user), uuid(params.id)));
+// Bid inbox feed: Gmail connection (owner only), refresh (estimators and up), settings and city tiers
+route('GET', '/api/bids/status', async ({ user }) => { estRead(user); return bd.refreshStatus(); });
+route('POST', '/api/bids/refresh', async ({ user }) => {
+  estWrite(user);
+  if (!(await bd.refreshStatus()).connected) throw new HttpError(409, 'Gmail is not connected yet. The owner connects it in Admin.');
+  if (!ai.aiConnected()) throw new HttpError(503, 'AI reading is not connected yet, so emails cannot be read. Add the Anthropic API key on the server.');
+  const r = await bd.runRefresh({ trigger: 'Manual', userId: user.id }); return { id: r.id };
+});
+route('PUT', '/api/bids/settings', async ({ user, body }) => { auth.requireRole(user, auth.APPROVERS); await bd.saveBidSettings(body); return { ok: true }; });
+route('GET', '/api/gmail/connect', async ({ user }) => { auth.requireRole(user, auth.SUPER); return { url: bd.connectUrl(user) }; });
+route('GET', '/api/gmail/callback', async ({ req, res, user }) => {
+  auth.requireRole(user, auth.SUPER); const p = new URL(req.url, 'http://x').searchParams;
+  if (p.get('error')) throw bad('Google did not allow the connection (' + p.get('error') + ').');
+  await bd.finishConnect(p.get('code'), p.get('state')); res.writeHead(302, { location: '/#/admin', 'cache-control': 'no-store' }); res.end(); return 'sent';
+});
+route('DELETE', '/api/gmail', async ({ user }) => { auth.requireRole(user, auth.SUPER); await bd.disconnect(); return { ok: true }; });
+route('GET', '/api/regions', async ({ user }) => { estRead(user); return bd.listRegions(); });
+route('PUT', '/api/regions', async ({ user, body }) => { auth.requireRole(user, auth.APPROVERS); await bd.saveRegion(body); return { ok: true }; });
+route('DELETE', '/api/regions/:city', async ({ user, params }) => { auth.requireRole(user, auth.APPROVERS); await bd.deleteRegion(decodeURIComponent(params.city)); return { ok: true }; });
 route('GET', '/api/estimating/insights', async ({ user }) => { estRead(user); return es.insights(); });
 route('PUT', '/api/settings/estimating', async ({ user, body }) => { auth.requireRole(user, auth.APPROVERS); await es.saveTarget(body.targetMargin); return { ok: true }; });
 route('GET', '/api/estimating/connection', async ({ user }) => { estRead(user); return { buildingConnected: { connected: !!(process.env.APS_CLIENT_ID && process.env.APS_CLIENT_SECRET), note: 'Live BuildingConnected sync needs an Autodesk Platform Services app (client ID and secret) and your approval. Until then, export your bid invitations as CSV and import them here.' } }; });
@@ -246,7 +267,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const port = Number(process.env.PORT) || 3000;
   if (!process.env.DATABASE_URL) { console.error('DATABASE_URL is not set.'); process.exit(1); }
   bootstrapOwner().then((r) => console.log(r.created ? `Created the owner login for ${r.email}. Remove ADMIN_PASSWORD from the host settings now.` : r.reason.startsWith('Set ') ? r.reason : 'Owner login already set up.')).catch((e) => console.error('bootstrap failed', e.message));
-  server.listen(port, () => console.log(`byOther Project Desk on port ${port}`));
+  server.listen(port, () => { console.log(`byOther Project Desk on port ${port}`); bd.startScheduler(); });
   const watch = () => cp.scan().then(() => cp.scanNtos()).then(() => cp.sendQueued()).catch((e) => console.error('compliance scan failed', e.message));
   setTimeout(watch, 15_000); setInterval(watch, 6 * 3600_000);
 }

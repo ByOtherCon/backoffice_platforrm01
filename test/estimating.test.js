@@ -76,8 +76,10 @@ test('accept assigns a proposal number and moves the lead to the proposal tracke
   const joy = (await call('GET', '/api/opportunities?tab=bids&q=joy', null, est)).body.groups[0].rows[0].id;
   assert.equal((await call('POST', `/api/opportunities/${joy}/decline`, {}, est)).status, 400);
   assert.equal((await call('POST', `/api/opportunities/${joy}/decline`, { reason: 'Too far out' }, est)).status, 200);
-  assert.equal((await call('GET', '/api/opportunities?tab=bids&q=joy', null, est)).body.count, 0);
-  assert.equal((await call('POST', `/api/opportunities/${joy}/reopen`, {}, est)).status, 200); assert.equal((await call('GET', '/api/opportunities?tab=bids&q=joy', null, est)).body.count, 1);
+  assert.equal((await call('GET', '/api/opportunities?tab=bids', null, est)).body.groups.flatMap((g) => g.rows).some((o) => o.id === joy), false);   // declined leads leave the inbox
+  const found = (await call('GET', '/api/opportunities?tab=bids&q=joy', null, est)).body.groups.flatMap((g) => g.rows);                              // ...but search still finds them for 30 days
+  assert.deepEqual(found.map((o) => [o.id, o.statusLabel]), [[joy, 'Declined']]);
+  assert.equal((await call('POST', `/api/opportunities/${joy}/reopen`, {}, est)).status, 200); assert.equal((await call('GET', '/api/opportunities?tab=bids&q=joy', null, est)).body.groups[0].rows[0].statusLabel, 'New');
   const s = (await call('GET', '/api/opportunities?tab=proposals', null, est)).body; assert.deepEqual([s.count, s.stats.accepted, s.stats.working], [2, 2, 2]);
 });
 

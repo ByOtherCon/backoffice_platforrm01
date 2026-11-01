@@ -36,9 +36,10 @@ test('setup: two projects on two GCs with costs, billing, labor, a receipt, and 
   assert.equal((await call('POST', '/api/receipts', { supplierId: s, reference: 'R1', date: '2026-10-12', tax: 0, lines: [{ description: '=HYPERLINK("http://evil.example","click")', amount: 100, projectId: pidA, projectTradeId: ptA2, itemKind: 'Materials' }, { description: 'Blades', amount: 50, overheadCategory: 'Tools', itemKind: 'Tools' }] }, owner)).status, 200);
   for (const [pid, pt, n, amt, held] of [[pidA, ptA1, 'I1', 20000, 2000], [pidB, null, 'I2', 30000, 3000]]) { const tr = pt ?? (await call('GET', `/api/projects/${pidB}`, null, owner)).body.trades[0].id; assert.equal((await call('POST', `/api/projects/${pid}/invoices`, { projectTradeId: tr, number: n, date: '2026-10-05', dueDate: '2026-11-04', amount: amt, retainageHeld: held }, owner)).status, 200); }
   const e = (await call('POST', '/api/admin/employees', { name: 'Alex', hourly_rate: 20 }, owner)).body; await q(`INSERT INTO labor_entries(project_id,project_trade_id,employee_id,work_date,hours,rate,pay,source) VALUES ($1,$2,$3,'2026-10-08',8,20,160,'Time clock')`, [pidA, ptA1, e.id]);
-  const o = (await call('POST', '/api/opportunities', { name: 'Lost Job', gc: 'Epic Construction', city: 'Tampa', due: '2026-11-20' }, est)).body.id; await call('POST', `/api/opportunities/${o}/accept`, {}, est);
-  const t = (await call('GET', '/api/admin/trades', null, owner)).body.find((x) => x.name === 'Paint').id; await call('PUT', `/api/opportunities/${o}/trade-prices`, { prices: [{ tradeId: t, amount: 9000 }] }, est);
-  await call('POST', `/api/opportunities/${o}/submissions`, { date: new Date().toISOString().slice(0, 10), method: 'Email' }, est); await call('POST', `/api/opportunities/${o}/result`, { result: 'Lost', reason: 'Price' }, est);
+  const o = (await q(`INSERT INTO opportunities(name,client_name,gc_name,city,due_date,source_key,source_type,project_type) VALUES ('Lost Job','Epic Construction','Epic Construction','Tampa','2026-11-20','lostjob','PlanHub','Retail') RETURNING id`))[0].id; await call('POST', `/api/opportunities/${o}/status`, { status: 'Accepted' }, est);
+  const t = (await call('GET', '/api/admin/trades', null, owner)).body.find((x) => x.name === 'Paint').id;
+  const up = await fetch(base + `/api/opportunities/${o}/files?kind=Proposal`, { method: 'POST', headers: { cookie: est, 'x-file-name': 'p.pdf' }, body: Buffer.from('%PDF-1.4\n%%EOF') }); const fileId = (await up.json()).fileId;
+  await call('POST', `/api/opportunities/${o}/submissions`, { fileId, date: new Date().toISOString().slice(0, 10), method: 'Email', prices: [{ tradeId: t, amount: 9000 }] }, est); await call('POST', `/api/opportunities/${o}/status`, { status: 'Not Awarded', reason: 'Price too high' }, est);
 });
 
 test('each role is offered only its own sources', async () => {
@@ -84,7 +85,7 @@ test('filters, date ranges, sorting and aging', async () => {
 
 test('a PM sees only assigned projects; estimators see estimating, including lost bids', async () => {
   assert.deepEqual((await run({ source: 'projects' }, pm)).body.rows.map((r) => r.project), ['Wingstop']); assert.deepEqual((await run({ source: 'labor' }, pm)).body.rows.map((r) => r.project), ['Wingstop']); assert.equal((await run({ source: 'project_trades' }, pm)).body.rows.every((r) => r.project === 'Wingstop'), true);
-  const o = (await run({ source: 'opportunities', filters: [{ col: 'result', op: 'eq', value: 'Lost' }] }, est)).body.rows; assert.deepEqual([o.length, o[0].lostReason, o[0].total], [1, 'Price', 9000]);
+  const o = (await run({ source: 'opportunities', filters: [{ col: 'result', op: 'eq', value: 'Lost' }] }, est)).body.rows; assert.deepEqual([o.length, o[0].lostReason, o[0].total], [1, 'Price too high', 9000]);
 });
 
 test('CSV export: opens cleanly in Excel, quotes commas and quotes, and defuses spreadsheet formulas', async () => {

@@ -78,8 +78,11 @@ test('connecting Gmail: only the owner, read-only access, a signed state, and th
 test('city tiers: edited by approvers, used to rank', async () => {
   assert.equal((await call('PUT', '/api/regions', { city: 'Orlando', tier: 1 }, est)).status, 403);
   assert.equal((await call('PUT', '/api/regions', { city: 'Orlando', tier: 9 }, sub)).status, 400);
-  for (const [city, tier] of [['Orlando', 1], ['Lutz', 2]]) assert.equal((await call('PUT', '/api/regions', { city, tier }, sub)).status, 200);
-  assert.deepEqual((await call('GET', '/api/regions', null, est)).body, [{ city: 'Orlando', tier: 1 }, { city: 'Lutz', tier: 2 }]);
+  const start = (await call('GET', '/api/regions', null, est)).body; const tierOf = (c) => start.find((r) => r.city === c)?.tier;
+  assert.deepEqual(['Orlando', 'Ocala', 'Sarasota', 'Tampa', 'Fort Myers', 'Miami', 'Jacksonville', 'Pensacola'].map(tierOf), [1, 1, 1, 2, 2, 3, 4, 4]);   // starting lists ship with the app
+  for (const [city, tier] of [['Orlando', 1], ['Lutz', 2], ['Zolfo Springs', 4]]) assert.equal((await call('PUT', '/api/regions', { city, tier }, sub)).status, 200);
+  const now = (await call('GET', '/api/regions', null, est)).body; assert.deepEqual(['Orlando', 'Lutz', 'Zolfo Springs'].map((c) => now.find((r) => r.city === c)?.tier), [1, 2, 4]);
+  assert.equal((await call('DELETE', '/api/regions/Zolfo%20Springs', null, sub)).status, 200);
 });
 
 test('Refresh reads the emails: new leads added, the same job from two GCs merged, non-Florida skipped, made-up details thrown away', async () => {
@@ -105,36 +108,41 @@ test('the list ranks and groups the new leads; a second refresh pays for nothing
 });
 
 test('a refresh never changes work that has been accepted, but keeps the lead seen', async () => {
-  const aldi = await lead('Aldi'); assert.equal((await call('POST', `/api/opportunities/${aldi.id}/accept`, {}, est)).status, 200);
+  const aldi = await lead('Aldi'); assert.equal((await call('POST', `/api/opportunities/${aldi.id}/status`, { status: 'Accepted' }, est)).status, 200);
   THREADS.t1.hid = 'h1b'; CLAUDE.t1 = { ...CLAUDE.t1, contactName: 'Someone Else', due: '2026-12-01', dueEvidence: 'Bid Due: 11/09/2026 5:00 PM EST' };
   await q(`UPDATE opportunities SET last_seen_at = now() - interval '5 days' WHERE id=$1`, [aldi.id]);
   await call('POST', '/api/bids/refresh', {}, est); await waitIdle(); const after = await lead('Aldi');
-  assert.deepEqual([after.contact_name, after.due_date, after.status], ['Brandon McMurray', '2026-11-09', 'Bidding']); assert.ok(Date.now() - new Date(after.last_seen_at) < 60000);
+  assert.deepEqual([after.contact_name, after.due_date, after.status], ['Brandon McMurray', '2026-11-09', 'Accepted']); assert.ok(Date.now() - new Date(after.last_seen_at) < 60000);
 });
 
-test('Reviewing: shows in the Proposal Tracker too', async () => {
-  const sg = await lead('Sunglass'); assert.equal((await call('POST', `/api/opportunities/${sg.id}/review`, {}, est)).status, 200); assert.equal((await call('POST', `/api/opportunities/${sg.id}/review`, {}, est)).status, 400);
-  const bids = (await call('GET', '/api/opportunities?tab=bids', null, est)).body.groups.flatMap((g) => g.rows); assert.deepEqual(bids.map((o) => o.statusLabel), ['Reviewing']);
+test('Reviewing moves to the Proposal Tracker (and out of Bid Opportunities)', async () => {
+  const sg = await lead('Sunglass'); assert.equal((await call('POST', `/api/opportunities/${sg.id}/status`, { status: 'Reviewing' }, est)).status, 200); assert.equal((await call('POST', `/api/opportunities/${sg.id}/status`, { status: 'Reviewing' }, est)).status, 400);
+  const bids = (await call('GET', '/api/opportunities?tab=bids', null, est)).body.groups.flatMap((g) => g.rows); assert.deepEqual(bids, []);
   const props = (await call('GET', '/api/opportunities?tab=proposals', null, est)).body.rows; assert.deepEqual(props.map((o) => o.statusLabel).sort(), ['Accepted', 'Reviewing']);
-  assert.equal((await call('POST', `/api/opportunities/${sg.id}/review`, {}, asst)).status, 403);
+  assert.equal((await call('POST', `/api/opportunities/${sg.id}/status`, { status: 'Reviewing' }, asst)).status, 403);
+  assert.equal((await q('SELECT proposal_id FROM opportunities WHERE id=$1', [sg.id]))[0].proposal_id, null);              // Reviewing does not assign a proposal number or folders
 });
 
-test('decline rules: New one day past due, Reviewing two days, undated leads and accepted work never', async () => {
+test('decline rules: New two days past due, Reviewing two days, undated leads and accepted work never; every decline is written into Notes', async () => {
   const mk = (name, status, due, accepted = false) => q(`INSERT INTO opportunities(name,gc_name,city,due_date,status,accepted_date,source_key) VALUES ($1,'GC','Orlando',$2,$3,$4,$1) RETURNING id`, [name, due, status, accepted ? today : null]);
-  await mk('R-new-due-today', 'New', today); await mk('R-new-yesterday', 'New', shift(today, -1)); await mk('R-rev-yesterday', 'Reviewing', shift(today, -1)); await mk('R-rev-2days', 'Reviewing', shift(today, -2)); await mk('R-undated-new', 'New', null); await mk('R-future', 'New', shift(today, 9)); await mk('R-accepted-late', 'Bidding', shift(today, -9), true);
-  const all = (await call('GET', '/api/opportunities?tab=bids&all=1', null, est)).body.groups.flatMap((g) => g.rows); const st = (n) => all.find((o) => o.name === n)?.statusLabel;
-  assert.deepEqual(['R-new-due-today', 'R-new-yesterday', 'R-rev-yesterday', 'R-rev-2days', 'R-undated-new', 'R-future'].map(st), ['New', 'Declined', 'Reviewing', 'Declined', 'New', 'New']);
-  assert.equal((await lead('R-accepted-late')).status, 'Bidding');
-  const d = await lead('R-new-yesterday'); assert.deepEqual([d.auto_declined, d.declined_reason], [true, 'Auto-declined: past its bid date']);
-  assert.equal((await call('POST', `/api/opportunities/${d.id}/reopen`, {}, est)).status, 400);                      // would just decline again; the message says why
+  await mk('R-new-due-today', 'New', today); await mk('R-new-yesterday', 'New', shift(today, -1)); await mk('R-new-2days', 'New', shift(today, -2)); await mk('R-rev-yesterday', 'Reviewing', shift(today, -1)); await mk('R-rev-2days', 'Reviewing', shift(today, -2)); await mk('R-undated-new', 'New', null); await mk('R-future', 'New', shift(today, 9)); await mk('R-accepted-late', 'Accepted', shift(today, -9), true);
+  await call('GET', '/api/opportunities?tab=bids', null, est);
+  const st = async (n) => (await lead(n)).status;
+  assert.deepEqual(await Promise.all(['R-new-due-today', 'R-new-yesterday', 'R-new-2days', 'R-rev-yesterday', 'R-rev-2days', 'R-undated-new', 'R-future', 'R-accepted-late'].map(st)), ['New', 'New', 'Declined', 'Reviewing', 'Declined', 'New', 'New', 'Accepted']);
+  const d = await lead('R-new-2days'); assert.deepEqual([d.auto_declined, d.declined_reason], [true, 'Auto-declined: past its bid date']);
+  const notes = (await call('GET', `/api/opportunities/${d.id}`, null, est)).body.notes; assert.match(notes[0].body, /Auto-declined by the system: it was New and its bid due date/);
+  assert.equal((await call('POST', `/api/opportunities/${d.id}/status`, { status: 'New' }, est)).status, 400);                // would just decline again; the message says why
+  assert.equal((await call('PUT', '/api/settings/estimating', { declineNewDays: 1 }, sub)).status, 200);                      // the stricter one-day rule is a setting
+  await call('GET', '/api/opportunities?tab=bids', null, est); assert.equal(await st('R-new-yesterday'), 'Declined');
+  assert.equal((await call('PUT', '/api/settings/estimating', { declineNewDays: 2 }, sub)).status, 200); assert.equal((await call('PUT', '/api/settings/estimating', { declineNewDays: 'x' }, sub)).status, 400);
 });
 
 test('search reaches declined leads seen in the last 30 days, and no further back', async () => {
   const seen = async (name, days) => q(`UPDATE opportunities SET last_seen_at = now() - ($2 || ' days')::interval WHERE name=$1`, [name, String(days)]);
-  await seen('R-new-yesterday', 10); await seen('R-rev-2days', 45);
+  await seen('R-new-2days', 10); await seen('R-rev-2days', 45);
   const find = async (qs) => (await call('GET', `/api/opportunities?tab=bids&q=${qs}`, null, est)).body.groups.flatMap((g) => g.rows.map((o) => o.name));
-  assert.deepEqual(await find('R-new-yesterday'), ['R-new-yesterday']); assert.deepEqual(await find('R-rev-2days'), []);
-  const inbox = (await call('GET', '/api/opportunities?tab=bids', null, est)).body.groups.flatMap((g) => g.rows.map((o) => o.name)); assert.ok(!inbox.includes('R-new-yesterday'));
+  assert.deepEqual(await find('R-new-2days'), ['R-new-2days']); assert.deepEqual(await find('R-rev-2days'), []);
+  const inbox = (await call('GET', '/api/opportunities?tab=bids', null, est)).body.groups.flatMap((g) => g.rows.map((o) => o.name)); assert.ok(!inbox.includes('R-new-2days'));
 });
 
 test('the 8:00 and 1:00 schedule: runs in those slots once, never at other times', async () => {
@@ -155,4 +163,28 @@ test('failures are reported, not hidden; leads already in the list are kept; set
   assert.equal((await call('PUT', '/api/bids/settings', { label: 'Building Connected' }, sub)).status, 200); gmailCalls = [];
   THREADS.t3.hid = 'h3b'; await call('POST', '/api/bids/refresh', {}, est); await waitIdle(); assert.ok(gmailCalls.some((c) => decodeURIComponent(c.replaceAll('+', ' ')).includes('label:"Building Connected"')));
   assert.equal((await call('DELETE', '/api/gmail', null, sub)).status, 403); assert.equal((await call('DELETE', '/api/gmail', null, owner)).status, 200); assert.equal((await call('GET', '/api/bids/status', null, est)).body.connected, false);
+});
+
+test('Gmail search follows the BuildingConnected rules: by sender and phrase, 50 newest, widen to 30 days only when nothing turns up, one retry', async () => {
+  await call('PUT', '/api/bids/settings', { label: '' }, sub);
+  assert.deepEqual(bd.GATHER_QUERIES(14, ''), ['from:buildingconnected.com newer_than:14d', '"invitation to bid" newer_than:14d', '"invited to bid" newer_than:14d']);
+  // connect again, then make the first (14 day) searches come back empty
+  const u = new URL((await call('GET', '/api/gmail/connect', null, owner)).body.url); await call('GET', `/api/gmail/callback?code=abc&state=${u.searchParams.get('state')}`, null, owner);
+  gmailCalls = []; let empty = true, flaked = false;
+  bd.setGoogleFetch(async (url, init) => { const x = new URL(url); if (x.pathname.endsWith('/threads') && x.searchParams.get('q')?.includes('newer_than:14d') && empty) { gmailCalls.push(x.searchParams.get('q')); return { ok: true, status: 200, json: async () => ({}) }; }
+    if (x.pathname.endsWith('/threads') && x.searchParams.get('q')?.includes('newer_than:30d') && !flaked) { flaked = true; gmailCalls.push('flake'); return { ok: false, status: 503, json: async () => ({}) }; }   // a transient failure is retried once
+    return googleStandIn(url, init); });
+  THREADS.t1.hid = 'h1c'; await call('POST', '/api/bids/refresh', {}, est); await waitIdle();
+  const qs = gmailCalls.filter((c) => c.includes('newer_than')); assert.ok(qs.some((c) => c.includes('invited to bid')) && qs.some((c) => c.includes('invitation to bid')));
+  assert.ok(gmailCalls.includes('flake')); assert.equal((await call('GET', '/api/bids/status', null, est)).body.last.status, 'Done');
+  assert.equal(gmailCalls.filter((c) => c.includes('newer_than:14d')).length, 3);                            // all three 14-day searches ran first; the 30-day one (which flaked once) came only after they found nothing
+  bd.setGoogleFetch(googleStandIn);
+});
+
+test('NDA-locked invitations are said so, and new leads carry their audit note', async () => {
+  const id = await q(`SELECT id FROM opportunities WHERE name ILIKE 'Sunglass%'`).then((r) => r[0].id);
+  const notes = (await call('GET', `/api/opportunities/${id}`, null, est)).body.notes.map((n) => n.body); assert.ok(notes.some((b) => /Added from a BuildingConnected email in Gmail/.test(b)));
+  const { mergeRecords } = bd; await mergeRecords([{ threadId: 'nda1', name: 'Locked Job', gc: 'Hidden GC', contact: '', email: '', phone: '', city: 'Orlando', address: '12 Locked Way', due: null, dueTime: null, link: 'https://app.buildingconnected.com/projects/locked', type: 'Retail', mall: false, scope: 'Painting', nda: true }], 'benny@byother.net');
+  const locked = (await q(`SELECT id FROM opportunities WHERE name='Locked Job'`))[0].id; const ln = (await call('GET', `/api/opportunities/${locked}`, null, est)).body;
+  assert.match(ln.notes.map((n) => n.body).join(' '), /locked behind an NDA/); assert.match(ln.notes.map((n) => n.body).join(' '), /No bid due date was provided/); assert.equal(ln.invitations[0].nda, true);
 });

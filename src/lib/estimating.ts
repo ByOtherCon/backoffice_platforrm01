@@ -16,8 +16,6 @@ export function countdown(due: string | null, submitted: boolean, today = todayE
   const n = businessDays(today, due);
   return due < today ? `Overdue · ${Math.abs(n)} Business Days` : due === today ? 'Due Today' : `${n} Business Days Left`;
 }
-// Leads two or more days past their bid date drop out of the inbox.
-export const expiredLead = (due: string | null, today = todayEastern()) => !!due && due <= shift(today, -2);
 // Inbox grouping: forward weeks start next Monday; a Monday deadline closes the prior week.
 export function groupFor(due: string | null, today = todayEastern()): string {
   if (!due) return 'No Bid Due Date Provided';
@@ -38,21 +36,6 @@ export const cleanName = (v: string) => { const s = String(v || '').normalize('N
 export function folderPlan(o: { proposalId?: string | null; name: string; city?: string | null; gc: string; year: number }) {
   const project = [o.proposalId, o.name, o.city].filter(Boolean).map((x) => cleanName(x as string)).join('_');
   return { root: ['ByOther', o.year, cleanName(o.gc), project].join('/'), folders: FOLDERS };
-}
-
-// Follow-up after a proposal is sent: first email, then a call or message, then a final email. Any reply marks the lead interested.
-export type Comm = { kind: string; date: string; cycle?: string | null };
-export function followupPlan(sub: { id: string; date: string } | null, comms: Comm[], opts: { paused?: boolean; result?: string } = {}) {
-  if (!sub) return { stage: 'Awaiting Submission', due: null as string | null };
-  if (opts.paused || ['Awarded', 'Lost'].includes(opts.result || '')) return { stage: 'Paused', due: null };
-  const log = comms.filter((c) => !c.cycle || c.cycle === sub.id);
-  if (log.some((c) => c.kind === 'Reply Received')) return { stage: 'Interested', due: null };
-  const first = log.find((c) => c.kind === 'First Email Sent');
-  if (!first) return { stage: 'First Email', due: addBusinessDays(sub.date, 2) };
-  const call = log.find((c) => c.kind === 'Call / Message' && c.date >= first.date);
-  if (!call) return { stage: 'Call / Message', due: addBusinessDays(first.date, 3) };
-  if (!log.some((c) => c.kind === 'Final Email Sent')) return { stage: 'Final Email', due: addBusinessDays(call.date, 5) };
-  return { stage: 'Sequence Complete', due: null };
 }
 
 // ---- lead import (BuildingConnected exports, pasted or uploaded as CSV)

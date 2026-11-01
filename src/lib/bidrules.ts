@@ -1,16 +1,5 @@
-// The bid inbox rules, exactly as the tooltip on the Bid Opportunities page states them.
-import { shift, todayEastern } from './estimating.ts';
+// Bid inbox helpers: search window, ranking, regions, and recognising the same job. Status and decline rules live in workflow.ts.
 
-// What the app calls a lead, as the user sees it.
-export const statusLabel = (status: string): 'New' | 'Reviewing' | 'Accepted' | 'Declined' =>
-  status === 'New' ? 'New' : status === 'Reviewing' ? 'Reviewing' : status === 'No Bid' ? 'Declined' : 'Accepted';
-
-// New leads decline one day past their due date; Reviewing leads two days past. Leads with no due date never auto-decline.
-export const declineAfterDays = (status: string): number | null => (status === 'New' ? 1 : status === 'Reviewing' ? 2 : null);
-export function autoDeclineDue(status: string, due: string | null, today = todayEastern()): boolean {
-  const d = declineAfterDays(status); if (d === null || !due) return false;
-  return today >= shift(due, d);
-}
 // Search covers every lead seen in the last 30 days, declined ones included. Older leads must be added by hand.
 export const SEARCH_DAYS = 30;
 export const withinSearchWindow = (lastSeen: Date | string, now = new Date()): boolean => now.getTime() - new Date(lastSeen).getTime() <= SEARCH_DAYS * 86400000;

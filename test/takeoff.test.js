@@ -36,9 +36,9 @@ test('setup: an accepted lead and the trades', async () => {
   for (const [n, i] of [['Demolition', 1], ['Framing & Drywall', 2], ['Paint', 3], ['Carpentry', 4]]) T[n] = (await call('POST', '/api/admin/trades', { name: n, sort: i }, est)).status === 403 ? null : null;
   await q(`INSERT INTO app_users(email,name,role,password_hash) VALUES ('boss@x.net','b','Super Admin',$1)`, [await hashPassword('correct horse battery')]); const owner = await login('boss@x.net');
   for (const [n, i] of [['Demolition', 1], ['Framing & Drywall', 2], ['Paint', 3], ['Carpentry', 4], ['Plumbing', 5]]) T[n] = (await call('POST', '/api/admin/trades', { name: n, sort: i }, owner)).body.id;
-  oid = (await call('POST', '/api/opportunities', { name: 'Aldi', gc: 'Sun Industrial', city: 'Orlando', due: shift(todayEastern(), 9) }, est)).body.id;
+  oid = (await q(`INSERT INTO opportunities(name,client_name,gc_name,city,due_date,source_key,source_type,project_type) VALUES ('Aldi','Sun Industrial','Sun Industrial','Orlando',$1,'aldi','PlanHub','Retail') RETURNING id`, [shift(todayEastern(), 9)]))[0].id;
   assert.equal((await up(`/api/opportunities/${oid}/takeoff`, PDF, 'plans.pdf', est)).status, 400);                  // lead not accepted yet
-  await call('POST', `/api/opportunities/${oid}/accept`, {}, est);
+  assert.equal((await call('POST', `/api/opportunities/${oid}/status`, { status: 'Accepted' }, est)).status, 200);
 });
 
 test('guards: PDF only, estimators only, honest when AI is not connected', async () => {

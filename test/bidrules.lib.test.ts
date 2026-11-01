@@ -2,17 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as R from '../src/lib/bidrules.ts';
 
-test('labels the way people talk about leads', () => {
-  assert.deepEqual(['New', 'Reviewing', 'Bidding', 'Submitted', 'Awarded', 'Lost', 'No Bid'].map(R.statusLabel), ['New', 'Reviewing', 'Accepted', 'Accepted', 'Accepted', 'Accepted', 'Declined']);
-});
-test('New declines one day past due; Reviewing two days past; undated leads never decline', () => {
-  assert.equal(R.autoDeclineDue('New', '2026-10-28', '2026-10-28'), false);   // due today: still open
-  assert.equal(R.autoDeclineDue('New', '2026-10-28', '2026-10-29'), true);    // one day past due
-  assert.equal(R.autoDeclineDue('Reviewing', '2026-10-28', '2026-10-29'), false);
-  assert.equal(R.autoDeclineDue('Reviewing', '2026-10-28', '2026-10-30'), true);   // two days past due
-  assert.equal(R.autoDeclineDue('New', null, '2030-01-01'), false); assert.equal(R.autoDeclineDue('Reviewing', null, '2030-01-01'), false);
-  for (const s of ['Bidding', 'Submitted', 'Awarded', 'No Bid']) assert.equal(R.autoDeclineDue(s, '2020-01-01', '2026-10-30'), false);   // accepted work and declined leads are left alone
-});
 test('search reaches back 30 days from when a lead was last seen', () => {
   const now = new Date('2026-10-31T12:00:00Z');
   assert.equal(R.withinSearchWindow('2026-10-01T12:00:00Z', now), true); assert.equal(R.withinSearchWindow('2026-09-30T11:59:00Z', now), false);

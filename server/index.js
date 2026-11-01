@@ -17,6 +17,8 @@ import * as ai from './ai.js';
 import * as oh from './overheadApi.js';
 import * as ms from './messaging.js';
 import * as es from './estimating.js';
+import * as fu from './followups.js';
+import { verifyAddress } from './address.js';
 import * as db from './dashboard.js';
 import * as rp from './reports.js';
 import * as tk from './takeoff.js';
@@ -141,22 +143,36 @@ route('POST', '/api/reports/export', async ({ user, body, res }) => { const f = 
 // Estimating. Read: management and estimators. Write: Super Admin, Sub Admin, Estimator.
 const estRead = (u) => { auth.requireRole(u, [...auth.MANAGE, 'Estimator']); return u; };
 const estWrite = (u) => { auth.requireRole(u, es.EST_ROLES); return u; };
-route('GET', '/api/opportunities', async ({ req, user }) => { estRead(user); return es.list({ tab: q1(req, 'tab'), search: q1(req, 'q'), showAll: q1(req, 'all') === '1' }); });
+route('GET', '/api/estimating/options', async ({ user }) => { estRead(user); return es.options(); });
+route('GET', '/api/gcs/known', async ({ user }) => { estRead(user); return es.knownGcs(); });
+route('POST', '/api/address/verify', async ({ user, body }) => { estRead(user); return verifyAddress(body, { florida: body.kind !== 'gc', label: body.kind === 'gc' ? 'GC address' : 'Project address' }); });
+route('GET', '/api/opportunities', async ({ req, user }) => { estRead(user); return es.list({ tab: q1(req, 'tab'), search: q1(req, 'q'), showAll: q1(req, 'all') === '1', filter: q1(req, 'filter') }); });
 route('POST', '/api/opportunities', async ({ user, body }) => es.create(estWrite(user), body));
 route('POST', '/api/opportunities/import', async ({ user, body }) => es.importLeads(estWrite(user), body));
 route('GET', '/api/opportunities/:id', async ({ user, params }) => { estRead(user); return es.get(uuid(params.id)); });
 route('PUT', '/api/opportunities/:id', async ({ user, params, body }) => { await es.update(estWrite(user), uuid(params.id), body); return { ok: true }; });
 route('DELETE', '/api/opportunities/:id', async ({ user, params }) => { estWrite(user); await es.remove(uuid(params.id)); return { ok: true }; });
-route('POST', '/api/opportunities/:id/accept', async ({ user, params, body }) => es.accept(estWrite(user), uuid(params.id), body));
-route('POST', '/api/opportunities/:id/decline', async ({ user, params, body }) => { await es.decline(estWrite(user), uuid(params.id), body.reason); return { ok: true }; });
-route('POST', '/api/opportunities/:id/review', async ({ user, params }) => { await es.review(estWrite(user), uuid(params.id)); return { ok: true }; });
-route('POST', '/api/opportunities/:id/reopen', async ({ user, params }) => { await es.reopenLead(estWrite(user), uuid(params.id)); return { ok: true }; });
+route('POST', '/api/opportunities/:id/status', async ({ user, params, body }) => es.transition(estWrite(user), uuid(params.id), body));
+route('POST', '/api/opportunities/:id/notes', async ({ user, params, body }) => { await es.addUserNote(estWrite(user), uuid(params.id), body.body); return { ok: true }; });
+route('POST', '/api/opportunities/:id/files', async ({ req, user, params }) => es.uploadFile(estWrite(user), uuid(params.id), await readRaw(req), fname(req), q1(req, 'kind') || 'Proposal'), { raw: true });
+route('DELETE', '/api/opportunities/:id/files/:fid', async ({ user, params }) => { await es.deleteFile(estWrite(user), uuid(params.id), uuid(params.fid)); return { ok: true }; });
+route('GET', '/api/opportunity-files/:fid', async ({ res, user, params }) => {
+  estRead(user); const d = await es.fileForDownload(uuid(params.fid)); if (!fs.existsSync(d.file)) throw new HttpError(404, 'File is missing from storage.');
+  const inline = /^(application\/pdf|image\/)/.test(d.mime);
+  res.writeHead(200, { ...SEC, 'content-type': d.mime, 'content-disposition': `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(d.name)}`, 'cache-control': 'private, no-store', 'content-security-policy': "default-src 'none'; sandbox" });
+  fs.createReadStream(d.file).pipe(res); return 'sent';
+});
 route('PUT', '/api/opportunities/:id/trade-prices', async ({ user, params, body }) => { await es.setTradePrices(estWrite(user), uuid(params.id), body.prices); return { ok: true }; });
 route('POST', '/api/opportunities/:id/submissions', async ({ user, params, body }) => es.addSubmission(estWrite(user), uuid(params.id), body));
-route('DELETE', '/api/opportunities/:id/submissions/:sid', async ({ user, params }) => { await es.deleteSubmission(estWrite(user), uuid(params.id), uuid(params.sid)); return { ok: true }; });
-route('POST', '/api/opportunities/:id/communications', async ({ user, params, body }) => { await es.addComm(estWrite(user), uuid(params.id), body); return { ok: true }; });
-route('DELETE', '/api/opportunities/:id/communications/:cid', async ({ user, params }) => { estWrite(user); await es.deleteComm(uuid(params.id), uuid(params.cid)); return { ok: true }; });
-route('POST', '/api/opportunities/:id/result', async ({ user, params, body }) => es.setResult(estWrite(user), uuid(params.id), body));
+route('PUT', '/api/opportunities/:id/submissions/:sid', async ({ user, params, body }) => { await es.editSubmission(estWrite(user), uuid(params.id), uuid(params.sid), body); return { ok: true }; });
+route('POST', '/api/opportunities/:id/submissions/:sid/void', async ({ user, params, body }) => { await es.voidSubmission(estWrite(user), uuid(params.id), uuid(params.sid), body.reason); return { ok: true }; });
+route('GET', '/api/followups', async ({ req, user }) => { estRead(user); return fu.list({ filter: q1(req, 'filter') }); });
+route('GET', '/api/opportunities/:id/followup', async ({ user, params }) => { estRead(user); return fu.get(user, uuid(params.id)); });
+route('POST', '/api/opportunities/:id/followup/log', async ({ user, params, body }) => fu.logActivity(estWrite(user), uuid(params.id), body));
+route('POST', '/api/opportunities/:id/followup/classify', async ({ user, params, body }) => fu.classify(estWrite(user), uuid(params.id), body));
+route('POST', '/api/opportunities/:id/followup/pause', async ({ user, params, body }) => { await fu.pause(estWrite(user), uuid(params.id), body); return { ok: true }; });
+route('POST', '/api/opportunities/:id/followup/resume', async ({ user, params, body }) => { await fu.resume(estWrite(user), uuid(params.id), body); return { ok: true }; });
+route('GET', '/api/projects/:id/origin', async ({ user, params }) => { await auth.requireProject(user, uuid(params.id)); return es.projectOrigin(params.id); });
 route('POST', '/api/opportunities/:id/takeoff', async ({ req, user, params }) => tk.runTakeoff(estWrite(user), uuid(params.id), await readRaw(req), fname(req)), { raw: true });
 route('GET', '/api/opportunities/:id/takeoff', async ({ user, params }) => { estRead(user); return tk.getTakeoff(uuid(params.id)); });
 route('POST', '/api/takeoff/:id/items', async ({ user, params, body }) => tk.addItem(uuid(params.id), (estWrite(user), body)));
@@ -184,7 +200,7 @@ route('GET', '/api/regions', async ({ user }) => { estRead(user); return bd.list
 route('PUT', '/api/regions', async ({ user, body }) => { auth.requireRole(user, auth.APPROVERS); await bd.saveRegion(body); return { ok: true }; });
 route('DELETE', '/api/regions/:city', async ({ user, params }) => { auth.requireRole(user, auth.APPROVERS); await bd.deleteRegion(decodeURIComponent(params.city)); return { ok: true }; });
 route('GET', '/api/estimating/insights', async ({ user }) => { estRead(user); return es.insights(); });
-route('PUT', '/api/settings/estimating', async ({ user, body }) => { auth.requireRole(user, auth.APPROVERS); await es.saveTarget(body.targetMargin); return { ok: true }; });
+route('PUT', '/api/settings/estimating', async ({ user, body }) => { auth.requireRole(user, auth.APPROVERS); await es.saveSettings(body); return { ok: true }; });
 route('GET', '/api/estimating/connection', async ({ user }) => { estRead(user); return { buildingConnected: { connected: !!(process.env.APS_CLIENT_ID && process.env.APS_CLIENT_SECRET), note: 'Live BuildingConnected sync needs an Autodesk Platform Services app (client ID and secret) and your approval. Until then, export your bid invitations as CSV and import them here.' } }; });
 
 // Messaging and to-dos (office staff only; field clock users never reach these)
@@ -267,7 +283,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const port = Number(process.env.PORT) || 3000;
   if (!process.env.DATABASE_URL) { console.error('DATABASE_URL is not set.'); process.exit(1); }
   bootstrapOwner().then((r) => console.log(r.created ? `Created the owner login for ${r.email}. Remove ADMIN_PASSWORD from the host settings now.` : r.reason.startsWith('Set ') ? r.reason : 'Owner login already set up.')).catch((e) => console.error('bootstrap failed', e.message));
-  server.listen(port, () => { console.log(`byOther Project Desk on port ${port}`); bd.startScheduler(); });
+  server.listen(port, () => { console.log(`byOther Project Desk on port ${port}`); bd.startScheduler(); setInterval(() => fu.closeDueCases().catch((e) => console.error('follow-up sweep', e.message)), 3600000); });
   const watch = () => cp.scan().then(() => cp.scanNtos()).then(() => cp.sendQueued()).catch((e) => console.error('compliance scan failed', e.message));
   setTimeout(watch, 15_000); setInterval(watch, 6 * 3600_000);
 }

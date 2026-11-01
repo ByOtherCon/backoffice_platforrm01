@@ -63,3 +63,9 @@ input[type=checkbox],input[type=radio]{width:auto!important;padding:0;accent-col
 .info-tip{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:50%;border:1px solid #b4bac6;color:var(--muted);font:600 12px Calibri,Carlito,sans-serif;cursor:help;position:relative;user-select:none}
 .info-tip:hover,.info-tip:focus{background:var(--navy);color:#fff;border-color:var(--navy);outline:none}
 .info-tip:hover::after,.info-tip:focus::after{content:attr(data-tip);position:absolute;left:28px;top:-6px;width:min(420px,80vw);background:#1f2433;color:#fff;padding:.7rem .85rem;border-radius:10px;font:300 13.5px/1.45 Calibri,Carlito,sans-serif;z-index:30;box-shadow:0 10px 30px rgba(0,0,0,.25);white-space:normal;text-align:left}
+
+.sortbtn{background:#fff;border:1px solid #d6dae3;border-radius:8px;padding:.25rem .6rem;font:600 12px Calibri,Carlito,sans-serif;color:var(--ink);text-transform:none;letter-spacing:0;cursor:pointer}
+.sortbtn:hover{border-color:var(--navy)}.sortbtn .on{color:var(--navy)}
+table.biglist th{background:#f1f4f9;vertical-align:middle}table.biglist td{vertical-align:top;padding:.8rem .7rem}table.biglist select{min-width:118px}
+.stack{display:flex;flex-direction:column;gap:.35rem;min-width:96px}.stack .small{width:100%;text-align:center}
+button.accept{background:#e3f1ea;border-color:#b9d9c8;color:#17632f}button.accept:hover{background:#d3eadd;border-color:#8cc3a4}

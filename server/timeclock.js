@@ -79,7 +79,7 @@ export async function clockHome(employeeId) {
     employee: { id: emp.id, name: emp.name }, open: open ? { id: open.id, project: open.project, trade: open.trade, projectId: open.project_id, since: open.clock_in, primaryTradeId: open.primary_trade_id } : null,
     projects: projects.map((p) => ({ id: p.id, name: p.name, address: p.address, trades: trades.filter((t) => t.project_id === p.id).map((t) => ({ id: t.id, name: t.name })) })),
     week: week.map((w) => ({ id: w.id, date: w.work_date, hours: Number(w.total_hours), status: w.status, project: w.project })),
-    weekTotals: { hours: r2(wp.total), regular: r2(wp.reg), overtime: r2(wp.ot), estPay: emp.hourly_rate ? wp.pay : null },
+    weekTotals: { hours: r2(wp.total), regular: r2(wp.reg), overtime: r2(wp.ot) },
     settings: { lunchMinutes: s.lunchMinutes, lunchAfterHours: s.lunchAfterHours },
   };
 }

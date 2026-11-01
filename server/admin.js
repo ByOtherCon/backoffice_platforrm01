@@ -9,7 +9,7 @@ export const KINDS = {
   trades: { table: 'trades', order: 'sort, name', cols: { name: (v) => text(v, 'Name', { max: 100 }), sort: (v) => { const n = Number(v); if (!Number.isInteger(n)) throw bad('Sort must be a whole number.'); return n; }, archived: (v) => bool(v, 'Archived') }, required: ['name'] },
   gcs: { table: 'gcs', order: 'name', cols: { name: (v) => text(v, 'Name', { max: 200 }), archived: (v) => bool(v, 'Archived') }, required: ['name'] },
   subcontractors: { table: 'subcontractors', order: 'name', cols: { name: (v) => text(v, 'Name', { max: 200 }), email: optText(200), phone: optText(50), address: optText(300), archived: (v) => bool(v, 'Archived') }, required: ['name'] },
-  suppliers: { table: 'suppliers', order: 'name', cols: { name: (v) => text(v, 'Name', { max: 200 }), provider_type: oneOf(['Supplier', 'Equipment Provider', 'Vendor']), credit_limit: (v) => money(v, 'Credit limit'), email: optText(200), phone: optText(50), address: optText(300), archived: (v) => bool(v, 'Archived') }, required: ['name'] },
+  suppliers: { table: 'suppliers', order: 'name', cols: { name: (v) => text(v, 'Name', { max: 200 }), provider_type: oneOf(['Materials', 'Hotel / Lodging', 'Equipment', 'Other purchase']), credit_limit: (v) => money(v, 'Credit limit'), email: optText(200), phone: optText(50), address: optText(300), archived: (v) => bool(v, 'Archived') }, required: ['name'] },
   employees: { table: 'employees', order: 'name', cols: { name: (v) => text(v, 'Name', { max: 200 }), position: (v) => (v ? oneOf(['Skilled Labor', 'Carpenter', 'Carpenter Helper', 'Foreman', 'Supervisor'])(v, 'position') : null), hourly_rate: (v) => money(v, 'Rate'), pay_type: oneOf(['hourly', 'daily']), phone: optText(50), email: optText(200), active: (v) => bool(v, 'Active') }, required: ['name'] },
 };
 function parse(kind, body, creating) {
@@ -25,7 +25,10 @@ const dbError = (e) => {
   return e;
 };
 const strip = (r) => { if ('pin_hash' in r) { r.has_pin = !!r.pin_hash; delete r.pin_hash; delete r.pin_failed; delete r.pin_locked_until; } return r; };
-export const list = async (kind) => (await q(`SELECT * FROM ${KINDS[kind].table} ORDER BY ${KINDS[kind].order}`)).map(strip);
+// Pay rates are for the Super Admin only. Everyone else gets employee records without them.
+const PAY_FIELDS = ['hourly_rate', 'pay_type'];
+export const list = async (kind, { rates = false } = {}) => (await q(`SELECT * FROM ${KINDS[kind].table} ORDER BY ${KINDS[kind].order}`)).map(strip).map((r) => { if (kind === 'employees' && !rates) for (const f of PAY_FIELDS) delete r[f]; return r; });
+export const touchesPay = (kind, body) => kind === 'employees' && PAY_FIELDS.some((f) => body && body[f] !== undefined);
 export async function create(kind, body) {
   const v = parse(kind, body, true), keys = Object.keys(v);
   try { return strip((await q(`INSERT INTO ${KINDS[kind].table} (${keys.join(',')}) VALUES (${keys.map((_, i) => '$' + (i + 1)).join(',')}) RETURNING *`, keys.map((k) => v[k])))[0]); } catch (e) { throw dbError(e); }

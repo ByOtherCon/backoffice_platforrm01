@@ -43,9 +43,9 @@ route('GET', '/api/me', async ({ user }) => { if (!user) throw new HttpError(401
 
 // Admin: master records
 for (const kind of Object.keys(admin.KINDS)) {
-  route('GET', `/api/admin/${kind}`, async ({ user }) => { auth.requireRole(user, [...auth.MANAGE, 'Project Manager']); return admin.list(kind); });
-  route('POST', `/api/admin/${kind}`, async ({ user, body }) => { manage(user); return admin.create(kind, body); });
-  route('PUT', `/api/admin/${kind}/:id`, async ({ user, body, params }) => { manage(user); return admin.update(kind, uuid(params.id), body); });
+  route('GET', `/api/admin/${kind}`, async ({ user }) => { auth.requireRole(user, [...auth.MANAGE, 'Project Manager']); return admin.list(kind, { rates: auth.SUPER.includes(user.role) }); });
+  route('POST', `/api/admin/${kind}`, async ({ user, body }) => { manage(user); if (admin.touchesPay(kind, body)) auth.requireRole(user, auth.SUPER); return admin.create(kind, body); });
+  route('PUT', `/api/admin/${kind}/:id`, async ({ user, body, params }) => { manage(user); if (admin.touchesPay(kind, body)) auth.requireRole(user, auth.SUPER); return admin.update(kind, uuid(params.id), body); });
   route('DELETE', `/api/admin/${kind}/:id`, async ({ user, params }) => { manage(user); await admin.remove(kind, uuid(params.id)); return { ok: true }; });
 }
 route('GET', '/api/admin/users', async ({ user }) => { adminOnly(user); return admin.listUsers(); });
@@ -77,7 +77,7 @@ route('PUT', '/api/projects/:id/invoices/:iid', async ({ user, params, body }) =
 route('DELETE', '/api/projects/:id/invoices/:iid', async ({ user, params }) => { await bl.deleteInvoice(write(user, params), uuid(params.iid)); return { ok: true }; });
 route('POST', '/api/projects/:id/invoices/:iid/payments', async ({ user, params, body }) => { await bl.addClientPayment(write(user, params), uuid(params.iid), body); return { ok: true }; });
 route('DELETE', '/api/projects/:id/invoices/:iid/payments/:pid', async ({ user, params }) => { await bl.deleteClientPayment(write(user, params), uuid(params.iid), uuid(params.pid)); return { ok: true }; });
-route('GET', '/api/projects/:id/costs', async ({ user, params }) => bl.getCosts(await view(user, params)));
+route('GET', '/api/projects/:id/costs', async ({ user, params }) => bl.getCosts(await view(user, params), { rates: auth.SUPER.includes(user.role) }));
 route('POST', '/api/projects/:id/commitments', async ({ user, params, body }) => bl.addCommitment(write(user, params), body));
 route('PUT', '/api/projects/:id/commitments/:cid', async ({ user, params, body }) => { await bl.updateCommitment(write(user, params), uuid(params.cid), body); return { ok: true }; });
 route('DELETE', '/api/projects/:id/commitments/:cid', async ({ user, params }) => { await bl.deleteCommitment(write(user, params), uuid(params.cid)); return { ok: true }; });

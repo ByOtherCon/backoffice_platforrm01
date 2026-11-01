@@ -90,9 +90,9 @@ test('a PM sees only assigned projects; estimators see estimating, including los
 
 test('CSV export: opens cleanly in Excel, quotes commas and quotes, and defuses spreadsheet formulas', async () => {
   const r = await fetch(`${base}/api/reports/export`, { method: 'POST', headers: { 'content-type': 'application/json', cookie: owner }, body: JSON.stringify({ source: 'supplier_lines', columns: ['supplier', 'description', 'amount'] }) });
-  assert.equal(r.status, 200); assert.match(r.headers.get('content-disposition'), /attachment; filename="supplier-invoices-and-receipts-every-line-\d{4}-\d{2}-\d{2}\.csv"/);
+  assert.equal(r.status, 200); assert.match(r.headers.get('content-disposition'), /attachment; filename="vendor-invoices-and-receipts-every-line-\d{4}-\d{2}-\d{2}\.csv"/);
   const raw = Buffer.from(await r.arrayBuffer()); assert.deepEqual([...raw.subarray(0, 3)], [0xef, 0xbb, 0xbf]);   // byte-order mark so Excel reads it as UTF-8
-  const csv = raw.toString('utf8').slice(1); assert.ok(csv.startsWith('Supplier,Item,Amount\r\n'));
+  const csv = raw.toString('utf8').slice(1); assert.ok(csv.startsWith('Vendor,Item,Amount\r\n'));
   assert.ok(csv.includes(`"'=HYPERLINK(""http://evil.example"",""click"")"`)); assert.ok(csv.trim().endsWith('Totals,,150'));
   const v = await (await fetch(`${base}/api/reports/export`, { method: 'POST', headers: { 'content-type': 'application/json', cookie: owner }, body: JSON.stringify({ source: 'vendor_bills', columns: ['vendor', 'amount'] }) })).text(); assert.ok(v.includes('"Atlas, ""The Best"" Interiors",6000'));
   assert.equal((await fetch(`${base}/api/reports/export`, { method: 'POST', headers: { 'content-type': 'application/json', cookie: est }, body: JSON.stringify({ source: 'projects' }) })).status, 403);

@@ -6,11 +6,11 @@ const { pool, q } = await import('../server/db.js');
 const { server } = await import('../server/index.js');
 const { hashPassword } = await import('../server/auth.js');
 
-let base, office, pm, pid, demo, dry, e1, e2, e1c, far;
+let base, owner, office, pm, pid, demo, dry, e1, e2, e1c, far;
 before(async () => {
   await pool.query('DROP SCHEMA public CASCADE; CREATE SCHEMA public;'); await applyAll(pool);
   const h = await hashPassword('correct horse battery');
-  for (const [e, r] of [['office@x.net', 'Exec Assistant'], ['pm@x.net', 'Project Manager']]) await q('INSERT INTO app_users(email,name,role,password_hash) VALUES ($1,$1,$2,$3)', [e, r, h]);
+  for (const [e, r] of [['owner@x.net', 'Super Admin'], ['office@x.net', 'Exec Assistant'], ['pm@x.net', 'Project Manager']]) await q('INSERT INTO app_users(email,name,role,password_hash) VALUES ($1,$1,$2,$3)', [e, r, h]);
   await new Promise((r) => server.listen(0, r)); base = `http://localhost:${server.address().port}`;
 });
 after(async () => { server.close(); await pool.end(); });
@@ -22,13 +22,13 @@ const login = async (email) => (await call('POST', '/api/login', { email, passwo
 const clockLogin = async (id, pin) => call('POST', '/api/clock/login', { employeeId: id, pin });
 
 test('setup: project with trades, two employees with PINs', async () => {
-  office = await login('office@x.net'); pm = await login('pm@x.net');
+  office = await login('office@x.net'); pm = await login('pm@x.net'); owner = await login('owner@x.net');
   const t1 = (await call('POST', '/api/admin/trades', { name: 'Demolition' }, office)).body.id, t2 = (await call('POST', '/api/admin/trades', { name: 'Drywall' }, office)).body.id;
   const gc = (await call('POST', '/api/admin/gcs', { name: 'GC' }, office)).body.id;
   pid = (await call('POST', '/api/projects', { name: 'Site A', gcId: gc, client: 'C', address: 'A', trades: [{ tradeId: t1, amount: 50000 }, { tradeId: t2, amount: 50000 }] }, office)).body.id;
   const p = (await call('GET', `/api/projects/${pid}`, null, office)).body; demo = p.trades.find((t) => t.name === 'Demolition').id; dry = p.trades.find((t) => t.name === 'Drywall').id;
-  e1 = (await call('POST', '/api/admin/employees', { name: 'Alex', hourly_rate: 20 }, office)).body;
-  e2 = (await call('POST', '/api/admin/employees', { name: 'Blake', hourly_rate: 25 }, office)).body;
+  e1 = (await call('POST', '/api/admin/employees', { name: 'Alex', hourly_rate: 20 }, owner)).body;
+  e2 = (await call('POST', '/api/admin/employees', { name: 'Blake', hourly_rate: 25 }, owner)).body;
   assert.equal(e1.has_pin, false); assert.equal(e1.pin_hash, undefined);
   assert.equal((await call('PUT', `/api/admin/employees/${e1.id}/pin`, { pin: '12' }, office)).status, 400);
   assert.equal((await call('PUT', `/api/admin/employees/${e1.id}/pin`, { pin: '4821' }, pm)).status, 403);
@@ -79,7 +79,7 @@ test('clock out: trade hours must add up; labor posts to the project trades auto
   const out = await call('POST', '/api/clock/out', { lines: [{ projectTradeId: demo, hours: 5.5 }, { projectTradeId: dry, hours: 3 }], notes: 'done' }, e1c);
   assert.equal(out.status, 200); assert.equal(out.body.totalHours, 8.5);
   assert.equal((await call('POST', '/api/clock/out', {}, e1c)).status, 409);
-  const costs = (await call('GET', `/api/projects/${pid}/costs`, null, office)).body.labor;
+  const costs = (await call('GET', `/api/projects/${pid}/costs`, null, owner)).body.labor;
   assert.deepEqual(costs.map((l) => [l.trade, l.employee, l.hours, l.pay]), [['Demolition', 'Alex', 5.5, 110], ['Drywall', 'Alex', 3, 60]]);
   const p = (await call('GET', `/api/projects/${pid}`, null, office)).body;
   assert.equal(p.trades.find((t) => t.name === 'Demolition').laborCost, 110); assert.equal(p.totals.laborCost, 170);
@@ -92,7 +92,7 @@ test('weekly overtime: hours past 40 cost 1.5x, shared across the week, and foll
   for (const d of ['2026-09-07', '2026-09-08', '2026-09-09', '2026-09-10', '2026-09-11']) {
     const r = await call('POST', '/api/clock/manual', { date: d, projectId: pid, projectTradeId: demo, hours: 9 }, e1c); assert.equal(r.status, 200);
   }
-  const wk = (await call('GET', `/api/projects/${pid}/costs`, null, office)).body.labor.find((l) => l.trade === 'Demolition');
+  const wk = (await call('GET', `/api/projects/${pid}/costs`, null, owner)).body.labor.find((l) => l.trade === 'Demolition');
   // this week's 5.5h*20=110 plus 45h in the past week: 40*20 + 5*30 = 950
   assert.equal(wk.pay, 110 + 950); assert.equal(wk.hours, 5.5 + 45);
   // office shortens one day: 36h -> no overtime at all
@@ -101,10 +101,10 @@ test('weekly overtime: hours past 40 cost 1.5x, shared across the week, and foll
   const one = entries[0];
   assert.equal((await call('PUT', `/api/time/entries/${one.id}`, { totalHours: 4, lines: [{ projectTradeId: demo, hours: 3 }] }, office)).status, 400); // lines must match
   assert.equal((await call('PUT', `/api/time/entries/${one.id}`, { totalHours: 4, lines: [{ projectTradeId: demo, hours: 4 }] }, office)).status, 200);
-  const after = (await call('GET', `/api/projects/${pid}/costs`, null, office)).body.labor.find((l) => l.trade === 'Demolition');
+  const after = (await call('GET', `/api/projects/${pid}/costs`, null, owner)).body.labor.find((l) => l.trade === 'Demolition');
   assert.equal(after.hours, 5.5 + 40); assert.equal(after.pay, 110 + 40 * 20);
   assert.equal((await call('DELETE', `/api/time/entries/${one.id}`, null, office)).status, 200);
-  const gone = (await call('GET', `/api/projects/${pid}/costs`, null, office)).body.labor.find((l) => l.trade === 'Demolition');
+  const gone = (await call('GET', `/api/projects/${pid}/costs`, null, owner)).body.labor.find((l) => l.trade === 'Demolition');
   assert.equal(gone.hours, 5.5 + 36); assert.equal(gone.pay, 110 + 36 * 20);
   assert.equal((await call('PUT', `/api/time/entries/${one.id}`, { notes: 'x' }, office)).status, 404);
 });
@@ -126,6 +126,26 @@ test('settings: office can read, only approvers change; overtime rule change app
   // lower the overtime threshold: the 36h past week now has 6h of overtime (30h regular at $20 + 6h at $30)
   assert.equal((await call('PUT', '/api/settings/timeclock', { otAfter: 30 }, sub)).status, 200);
   assert.equal((await call('POST', '/api/time/recalculate', {}, sub)).status, 200);
-  const l = (await call('GET', `/api/projects/${pid}/costs`, null, office)).body.labor.find((x) => x.trade === 'Demolition');
+  const l = (await call('GET', `/api/projects/${pid}/costs`, null, owner)).body.labor.find((x) => x.trade === 'Demolition');
   assert.equal(l.pay, 5.5 * 20 + 30 * 20 + 6 * 30);
+});
+
+test('pay rates: only the Super Admin sees or sets them, anywhere', async () => {
+  // office staff may add and edit employees, but cannot set, change or see a rate
+  assert.equal((await call('POST', '/api/admin/employees', { name: 'Casey', hourly_rate: 30 }, office)).status, 403);
+  const c = await call('POST', '/api/admin/employees', { name: 'Casey' }, office); assert.equal(c.status, 200);
+  assert.equal((await call('PUT', `/api/admin/employees/${e1.id}`, { hourly_rate: 99 }, office)).status, 403); assert.equal((await call('PUT', `/api/admin/employees/${e1.id}`, { pay_type: 'daily' }, office)).status, 403);
+  assert.equal((await call('PUT', `/api/admin/employees/${e1.id}`, { phone: '407-555-0101' }, office)).status, 200);
+  const seen = (await call('GET', '/api/admin/employees', null, office)).body; assert.ok(seen.every((r) => !('hourly_rate' in r) && !('pay_type' in r)));
+  assert.deepEqual((await call('GET', '/api/admin/employees', null, owner)).body.find((r) => r.id === e1.id).hourly_rate, 20); assert.equal((await call('PUT', `/api/admin/employees/${e1.id}`, { hourly_rate: 21 }, owner)).status, 200);
+  await call('PUT', `/api/admin/employees/${e1.id}`, { hourly_rate: 20 }, owner);
+  // project costs: hours and cost by trade for everyone, per-employee pay only for the owner
+  const o = (await call('GET', `/api/projects/${pid}/costs`, null, owner)).body, a = (await call('GET', `/api/projects/${pid}/costs`, null, office)).body;
+  assert.ok(o.labor.length > 0 && o.labor.every((l) => typeof l.pay === 'number')); assert.ok(a.labor.every((l) => l.pay === null && l.hours > 0)); assert.deepEqual(a.laborByTrade, o.laborByTrade); assert.ok(!JSON.stringify(a).includes('"rate"'));
+  // reports
+  const run = (cookie, source) => call('POST', '/api/reports/run', { source }, cookie);
+  const lab = (await run(office, 'labor')).body.rows; assert.ok(lab.length && lab.every((r) => r.rate === null && r.pay === null)); assert.ok((await run(owner, 'labor')).body.rows.every((r) => typeof r.rate === 'number'));
+  assert.equal((await run(office, 'employees')).status, 403); assert.equal((await run(owner, 'employees')).status, 200);
+  // the crew member's own screen shows hours, never pay
+  const cl = await clockLogin(e1.id, '4821'); const home = (await call('GET', '/api/clock/home', null, cl.cookie)).body; assert.ok(!('estPay' in home.weekTotals)); assert.ok(!JSON.stringify(home).includes('hourly'));
 });

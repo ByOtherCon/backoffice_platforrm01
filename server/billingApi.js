@@ -87,7 +87,7 @@ export const deleteClientPayment = (projectId, invoiceId, payId) => run(async (t
 });
 
 // ------------------------------------------------------------------ vendors = subcontractors
-export async function getCosts(projectId) {
+export async function getCosts(projectId, { rates = false } = {}) {
   const subs = await q(`SELECT sc.*, s.name AS vendor, t.name AS trade FROM sub_commitments sc JOIN subcontractors s ON s.id=sc.subcontractor_id
                         LEFT JOIN project_trades pt ON pt.id=sc.project_trade_id LEFT JOIN trades t ON t.id=pt.trade_id WHERE sc.project_id=$1 ORDER BY t.name NULLS LAST, s.name`, [projectId]);
   const bills = subs.length ? await q('SELECT * FROM sub_invoices WHERE commitment_id = ANY($1::uuid[]) ORDER BY invoice_date, number', [subs.map((s) => s.id)]) : [];
@@ -114,7 +114,9 @@ export async function getCosts(projectId) {
   });
   const lab = await q(`SELECT t.name AS trade, e.name AS employee, SUM(l.hours) hours, SUM(COALESCE(l.pay, ROUND(l.hours*l.rate,2))) pay FROM labor_entries l JOIN employees e ON e.id=l.employee_id
                        LEFT JOIN project_trades pt ON pt.id=l.project_trade_id LEFT JOIN trades t ON t.id=pt.trade_id WHERE l.project_id=$1 GROUP BY t.name, e.name ORDER BY t.name NULLS LAST, e.name`, [projectId]);
-  return { vendors, suppliers, labor: lab.map((l) => ({ trade: l.trade, employee: l.employee, hours: Number(l.hours), pay: Number(l.pay) })) };
+  // Per-employee pay would give away a pay rate, so only the Super Admin gets it. Everyone else sees hours and the cost by trade.
+  const byTrade = [...lab.reduce((m, l) => m.set(l.trade, (m.get(l.trade) ?? 0) + Number(l.pay)), new Map())].map(([trade, pay]) => ({ trade, pay: r2(pay) }));
+  return { vendors, suppliers, labor: lab.map((l) => ({ trade: l.trade, employee: l.employee, hours: Number(l.hours), pay: rates ? Number(l.pay) : null })), laborByTrade: byTrade };
 }
 export async function addCommitment(projectId, b) {
   const contract = money(b.contractAmount, 'Subcontract amount'), hold = b.holdAmount === undefined || b.holdAmount === '' ? 0 : money(b.holdAmount, 'Final-payment hold');

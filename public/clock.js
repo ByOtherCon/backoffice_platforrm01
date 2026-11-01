@@ -56,7 +56,7 @@ async function homeView() {
   const home = await api('GET', '/clock/home'); if (!home) return loginView();
   const w = home.weekTotals;
   return frame(h('h1', {}, `Hi, ${home.employee.name.split(' ')[0]}`), home.open ? clockedInCard(home) : clockInCard(home),
-    h('div', { class: 'card' }, h('h2', {}, 'This week'), h('div', { class: 'grid kpis' }, h('div', { class: 'kpi' }, h('div', { class: 'l' }, 'Hours'), h('div', { class: 'v' }, hrs(w.hours))), h('div', { class: 'kpi' }, h('div', { class: 'l' }, 'Overtime'), h('div', { class: 'v' }, hrs(w.overtime))), w.estPay != null ? h('div', { class: 'kpi' }, h('div', { class: 'l' }, 'Est. pay'), h('div', { class: 'v' }, usd(w.estPay))) : ''),
+    h('div', { class: 'card' }, h('h2', {}, 'This week'), h('div', { class: 'grid kpis' }, h('div', { class: 'kpi' }, h('div', { class: 'l' }, 'Hours'), h('div', { class: 'v' }, hrs(w.hours))), h('div', { class: 'kpi' }, h('div', { class: 'l' }, 'Overtime'), h('div', { class: 'v' }, hrs(w.overtime)))),
       home.week.length ? h('table', { style: 'margin-top:.8rem' }, h('tbody', {}, home.week.map((e) => h('tr', {}, h('td', {}, e.date), h('td', {}, e.project), h('td', { class: 'n' }, e.status === 'open' ? 'open' : hrs(e.hours))))) ) : h('p', { class: 'muted' }, 'No time yet this week.')),
     home.open ? '' : manualCard(home));
 }

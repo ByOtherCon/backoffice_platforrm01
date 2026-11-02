@@ -518,6 +518,28 @@ async function aiCard() {
     h('div', { class: 'row', style: 'margin-top:.8rem' }, h('label', { style: 'margin:0' }, 'Monthly cap (tokens)'), cap, isSuper() && h('button', { onclick: guard(err, async () => { await api('PUT', '/settings/ai', { monthlyTokenCap: cap.value }); notice(err, 'Saved.', 'ok'); }) }, 'Save cap')));
 }
 
+// Super Admin only: where the AI usage goes, by person, task and day.
+async function aiReportCard() {
+  const days = state.aiDays || 30, r = await api('GET', `/ai/report?days=${days}`), err = h('div'); const th = (t, n) => h('th', { class: n ? 'n' : '' }, t); const fmt = (n) => Number(n).toLocaleString(); const money = (v) => (v == null ? '—' : '$' + v.toFixed(2));
+  const kpi = (l, v, sub2) => h('div', { class: 'kpi' }, h('div', { class: 'l' }, l), h('div', { class: 'v' }, v), sub2 ? h('div', { class: 'muted', style: 'font-size:12px' }, sub2) : '');
+  const maxDay = Math.max(1, ...r.byDay.map((d) => d.tokens)), maxUser = Math.max(1, ...r.byUser.map((d) => d.tokens)), maxTask = Math.max(1, ...r.byTask.map((d) => d.tokens));
+  const bar = (v, max, tone = 'var(--navy)') => h('div', { style: `background:#eef0f4;border-radius:6px;height:10px;min-width:120px` }, h('div', { style: `width:${Math.max(2, Math.round((v / max) * 100))}%;background:${tone};height:10px;border-radius:6px` }));
+  const days2 = h('div', { class: 'seg' }, [7, 30, 90, 365].map((d) => h('button', { type: 'button', class: d === days ? 'on' : '', onclick: () => { state.aiDays = d; render(); } }, d === 365 ? '1 year' : d + ' days')));
+  const inP = num(r.rates.inputPerM ?? '', { step: '0.01', placeholder: 'e.g. 3.00' }), outP = num(r.rates.outputPerM ?? '', { step: '0.01', placeholder: 'e.g. 15.00' });
+  const table = (head, rows) => rows.length ? h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, head.map(([t, n]) => th(t, n)))), h('tbody', {}, rows))) : h('p', { class: 'muted' }, 'No AI use in this period.');
+  return h('div', { class: 'card' }, h('div', { class: 'row spread' }, h('h2', {}, 'AI usage and spending'), days2), err,
+    h('div', { class: 'grid kpis' }, kpi('AI calls', fmt(r.total.calls), `avg ${fmt(r.total.avgTokensPerCall)} tokens each`), kpi('Tokens in', fmt(r.total.input)), kpi('Tokens out', fmt(r.total.output)), kpi('Estimated cost', r.priced ? money(r.total.cost) : 'Set prices', r.priced ? 'from your prices below' : 'enter prices to see dollars'),
+      kpi('This month vs cap', r.month.pctOfCap == null ? '—' : r.month.pctOfCap + '%', `${fmt(r.month.tokens)} of ${fmt(r.month.cap)} tokens`)),
+    h('h3', { style: 'margin:1rem 0 .3rem' }, 'By person'), table([['Person'], ['Calls', 1], ['Tokens', 1], ['Est. cost', 1], ['']], r.byUser.map((u) => h('tr', {}, h('td', {}, u.who), h('td', { class: 'n' }, fmt(u.calls)), h('td', { class: 'n' }, fmt(u.tokens)), h('td', { class: 'n' }, money(u.cost)), h('td', {}, bar(u.tokens, maxUser))))),
+    h('h3', { style: 'margin:1rem 0 .3rem' }, 'By task'), table([['Task'], ['Calls', 1], ['Tokens', 1], ['Avg per call', 1], ['Est. cost', 1], ['']], r.byTask.map((t) => h('tr', {}, h('td', {}, t.task), h('td', { class: 'n' }, fmt(t.calls)), h('td', { class: 'n' }, fmt(t.tokens)), h('td', { class: 'n' }, fmt(Math.round(t.tokens / Math.max(1, t.calls)))), h('td', { class: 'n' }, money(t.cost)), h('td', {}, bar(t.tokens, maxTask, '#5b6cc9'))))),
+    h('h3', { style: 'margin:1rem 0 .3rem' }, 'Who does what'), table([['Person'], ['Task'], ['Calls', 1], ['Tokens', 1], ['Est. cost', 1]], r.byUserTask.map((x) => h('tr', {}, h('td', {}, x.who), h('td', {}, x.task), h('td', { class: 'n' }, fmt(x.calls)), h('td', { class: 'n' }, fmt(x.tokens)), h('td', { class: 'n' }, money(x.cost))))),
+    h('h3', { style: 'margin:1rem 0 .3rem' }, 'By day'), r.byDay.length ? h('div', {}, r.byDay.map((d) => h('div', { class: 'row', style: 'gap:.6rem;margin:.15rem 0' }, h('span', { class: 'muted', style: 'width:84px;font-size:13px' }, d.day), h('div', { style: 'flex:1' }, bar(d.tokens, maxDay)), h('span', { style: 'width:150px;text-align:right;font-size:13px' }, `${fmt(d.tokens)} · ${d.calls} call${d.calls === 1 ? '' : 's'}`)))) : h('p', { class: 'muted' }, 'No AI use in this period.'),
+    r.byMonth.length > 1 ? h('div', {}, h('h3', { style: 'margin:1rem 0 .3rem' }, 'By month'), table([['Month'], ['Calls', 1], ['Tokens', 1], ['Est. cost', 1]], r.byMonth.map((m) => h('tr', {}, h('td', {}, m.month), h('td', { class: 'n' }, fmt(m.calls)), h('td', { class: 'n' }, fmt(m.tokens)), h('td', { class: 'n' }, money(m.cost)))))) : '',
+    h('h3', { style: 'margin:1rem 0 .3rem' }, 'Latest calls'), table([['When'], ['Person'], ['Task'], ['What it read'], ['In', 1], ['Out', 1], ['Est. cost', 1]], r.recent.map((c) => h('tr', {}, h('td', {}, new Date(c.at).toLocaleString('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })), h('td', {}, c.who), h('td', {}, c.task), h('td', { class: 'muted' }, c.label || ''), h('td', { class: 'n' }, fmt(c.input)), h('td', { class: 'n' }, fmt(c.output)), h('td', { class: 'n' }, money(c.cost))))),
+    h('div', { style: 'margin-top:1rem;border-top:1px solid var(--line);padding-top:.8rem' }, h('label', {}, 'Prices for the dollar estimate (US$ per million tokens)'), h('div', { class: 'row' }, h('label', { style: 'margin:0' }, 'Input'), inP, h('label', { style: 'margin:0' }, 'Output'), outP, h('button', { onclick: guard(err, async () => { await api('PUT', '/settings/ai', { inputPerM: inP.value, outputPerM: outP.value }); render(); }) }, 'Save prices')),
+      h('p', { class: 'muted', style: 'font-size:13px' }, 'Take the two prices from Anthropic\'s pricing page for the model in use. These are estimates; your Anthropic Console bill is the real number. Failed calls are not counted. The full list can be exported from Reports → AI usage.')));
+}
+
 
 // ------------------------------------------------------------------ messages and to-dos
 const LINK_KINDS = [['project', 'Project'], ['document', 'Document'], ['vendor', 'Subcontractor'], ['supplier', 'Vendor'], ['receipt', 'Receipt'], ['opportunity', 'Opportunity']];
@@ -652,7 +674,7 @@ async function adminView() {
   if (['Super Admin', 'Sub Admin'].includes(state.user.role)) parts.push(await bidFeedCard());
   parts.push(await clockSettingsCard());
   if (['Super Admin', 'Sub Admin'].includes(state.user.role)) parts.push(await overheadCard());
-  parts.push(await aiCard());
+  parts.push(await aiCard()); if (isSuper()) parts.push(await aiReportCard());
   if (isSuper()) parts.push(await usersSection());
   return shell('admin', [h('h1', {}, 'Admin'), h('p', { class: 'sub' }, 'Create vendors, suppliers, employees, trades and GCs here. Projects pick from these lists. Archive instead of delete once a record has history.'), ...parts]);
 }

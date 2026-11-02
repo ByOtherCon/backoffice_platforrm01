@@ -13,7 +13,7 @@ export async function usageThisMonth() {
   return { ...r, cap: s?.value?.monthlyTokenCap ?? 2000000 };
 }
 // One structured call: the model must answer through `tool`, so results always match the schema.
-export async function callClaude({ userId, kind, system, bytes, mime, prompt, tool, maxTokens = 4000 }) {
+export async function callClaude({ userId, kind, label = null, system, bytes, mime, prompt, tool, maxTokens = 4000 }) {
   if (!aiConnected()) throw new HttpError(503, 'AI is not connected yet. The file is saved; enter the details by hand, or connect the Anthropic API key on the server.');
   const u = await usageThisMonth(); if (u.tokens >= u.cap) throw new HttpError(429, 'The monthly AI usage cap has been reached. A Super Admin can raise it in Settings.');
   const content = [];
@@ -32,7 +32,7 @@ export async function callClaude({ userId, kind, system, bytes, mime, prompt, to
     throw new HttpError(502, `The AI service could not read this (${res.status}${why ? ': ' + why : ''}). Check the API key, credit balance and model name, or enter the details by hand.`);
   }
   const out = await res.json();
-  await q('INSERT INTO ai_usage(user_id,kind,input_tokens,output_tokens) VALUES ($1,$2,$3,$4)', [userId, kind, out.usage?.input_tokens ?? null, out.usage?.output_tokens ?? null]);
+  await q('INSERT INTO ai_usage(user_id,kind,label,model,input_tokens,output_tokens) VALUES ($1,$2,$3,$4,$5,$6)', [userId, kind, label ? String(label).slice(0, 200) : null, MODEL(), out.usage?.input_tokens ?? null, out.usage?.output_tokens ?? null]);
   const call = (out.content || []).find((c) => c.type === 'tool_use' && c.name === tool.name);
   if (!call) throw new HttpError(502, 'The AI returned no readable result. Try again or enter the details by hand.');
   return call.input;

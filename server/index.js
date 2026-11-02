@@ -18,6 +18,7 @@ import * as oh from './overheadApi.js';
 import * as ms from './messaging.js';
 import * as es from './estimating.js';
 import * as fu from './followups.js';
+import * as aiu from './aiUsage.js';
 import { verifyAddress } from './address.js';
 import * as db from './dashboard.js';
 import * as rp from './reports.js';
@@ -237,7 +238,8 @@ route('POST', '/api/receipts/parse', async ({ req, user }) => { manage(user); re
 route('POST', '/api/receipts', async ({ user, body }) => { manage(user); return rc.createReceipt(user, body); });
 route('GET', '/api/receipts', async ({ user }) => { manage(user); return rc.listReceipts(); });
 route('GET', '/api/ai/usage', async ({ user }) => { manage(user); return { connected: ai.aiConnected(), ...(await ai.usageThisMonth()) }; });
-route('PUT', '/api/settings/ai', async ({ user, body }) => { auth.requireRole(user, auth.SUPER); await oh.saveAiCap(body.monthlyTokenCap); return { ok: true }; });
+route('PUT', '/api/settings/ai', async ({ user, body }) => { auth.requireRole(user, auth.SUPER); await aiu.saveSettings(body); return { ok: true }; });
+route('GET', '/api/ai/report', async ({ req, user }) => { auth.requireRole(user, auth.SUPER); return aiu.report(q1(req, 'days')); });
 route('GET', '/api/overhead', async ({ user }) => { auth.requireRole(user, auth.APPROVERS); return oh.overview(user); });
 route('POST', '/api/overhead', async ({ user, body }) => { auth.requireRole(user, auth.SUPER); return oh.create(body); });
 route('PUT', '/api/overhead/:id', async ({ user, params, body }) => { auth.requireRole(user, auth.SUPER); return oh.update(uuid(params.id), body); });

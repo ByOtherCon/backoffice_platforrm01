@@ -51,7 +51,7 @@ test('guards: PDF only, estimators only, honest when AI is not connected', async
 test('reading plans: items grouped by section, trades guessed, carpentry only included when the matrix says contractor', async () => {
   process.env.ANTHROPIC_API_KEY = 'test-key'; const seen = []; ai.setFetch(mock(PLAN, seen));
   const r = await up(`/api/opportunities/${oid}/takeoff`, PDF, 'aldi-plans.pdf', est); assert.equal(r.status, 200); assert.equal(r.body.count, 10); run = r.body.runId;
-  const body = seen[0]; assert.equal(body.tool_choice.name, 'record_takeoff'); assert.equal(body.messages[0].content[0].type, 'document'); assert.match(body.messages[0].content[1].text, /responsibility matrix/);
+  const body = seen[0]; assert.deepEqual(body.tool_choice, { type: 'auto' }); assert.equal(body.messages[0].content[0].type, 'document'); assert.match(body.messages[0].content[1].text, /responsibility matrix/);
   const t = (await call('GET', `/api/opportunities/${oid}/takeoff`, null, est)).body[0]; assert.deepEqual([t.status, t.matrixFound, t.items.length], ['Needs review', true, 10]);
   const by = (s) => t.items.filter((i) => i.section === s); assert.deepEqual([by('Demolition keynote').length, by('Wall type').length, by('Paint').length, by('Carpentry').length], [2, 2, 3, 3]);
   assert.deepEqual(by('Paint').map((i) => [i.code, i.trade]), [['P-1', 'Paint'], ['P-2', 'Paint'], ['P-3', 'Paint']]); assert.equal(by('Wall type')[0].trade, 'Framing & Drywall'); assert.equal(by('Demolition keynote')[1].quantity, 120);

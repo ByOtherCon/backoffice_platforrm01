@@ -23,17 +23,25 @@ export async function callClaude({ userId, kind, label = null, system, bytes, mi
     content.push({ type: isPdf ? 'document' : 'image', source: { type: 'base64', media_type: mime, data: bytes.toString('base64') } });
   }
   content.push({ type: 'text', text: prompt });
-  const res = await fetchImpl('https://api.anthropic.com/v1/messages', { method: 'POST', signal: AbortSignal.timeout(90000),
+  // Newer models do not accept a forced tool choice, so the model is told to answer through the tool and, if it ever answers in plain
+  // text instead, it is asked once more. The result is still only accepted when it arrives as the tool's structured input.
+  const sys = `${system ? system + '\n\n' : ''}Answer only by calling the ${tool.name} tool with the result. Do not reply in plain text.`;
+  const post = (messages) => fetchImpl('https://api.anthropic.com/v1/messages', { method: 'POST', signal: AbortSignal.timeout(90000),
     headers: { 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json', ...(process.env.ANTHROPIC_WORKSPACE_ID ? { 'anthropic-workspace-id': process.env.ANTHROPIC_WORKSPACE_ID } : {}) },
-    body: JSON.stringify({ model: MODEL(), max_tokens: maxTokens, system, tools: [tool], tool_choice: { type: 'tool', name: tool.name }, messages: [{ role: 'user', content }] }) });
-  if (!res.ok) {
-    // Say what Anthropic said (it never contains the key), so a wrong key, no credit or a wrong model name is obvious instead of a guess.
-    const why = await res.json().then((j) => String(j?.error?.message || j?.error?.type || '').replace(/\s+/g, ' ').slice(0, 220)).catch(() => '');
-    throw new HttpError(502, `The AI service could not read this (${res.status}${why ? ': ' + why : ''}). Check the API key, credit balance and model name, or enter the details by hand.`);
+    body: JSON.stringify({ model: MODEL(), max_tokens: maxTokens, system: sys, tools: [tool], tool_choice: { type: 'auto' }, messages }) });
+  let messages = [{ role: 'user', content }], call = null, inTok = 0, outTok = 0;
+  for (let attempt = 0; attempt < 2 && !call; attempt++) {
+    const res = await post(messages);
+    if (!res.ok) {
+      // Say what Anthropic said (it never contains the key), so a wrong key, no credit or a wrong model name is obvious instead of a guess.
+      const why = await res.json().then((j) => String(j?.error?.message || j?.error?.type || '').replace(/\s+/g, ' ').slice(0, 220)).catch(() => '');
+      throw new HttpError(502, `The AI service could not read this (${res.status}${why ? ': ' + why : ''}). Check the API key, credit balance and model name, or enter the details by hand.`);
+    }
+    const out = await res.json(); inTok += out.usage?.input_tokens ?? 0; outTok += out.usage?.output_tokens ?? 0;
+    call = (out.content || []).find((c) => c.type === 'tool_use' && c.name === tool.name) ?? null;
+    if (!call) messages = [...messages, { role: 'assistant', content: (out.content || []).filter((c) => c.type === 'text').map((c) => ({ type: 'text', text: c.text })).concat(out.content?.some((c) => c.type === 'text') ? [] : [{ type: 'text', text: '(no result)' }]) }, { role: 'user', content: [{ type: 'text', text: `Call the ${tool.name} tool now with the result. Do not write anything else.` }] }];
   }
-  const out = await res.json();
-  await q('INSERT INTO ai_usage(user_id,kind,label,model,input_tokens,output_tokens) VALUES ($1,$2,$3,$4,$5,$6)', [userId, kind, label ? String(label).slice(0, 200) : null, MODEL(), out.usage?.input_tokens ?? null, out.usage?.output_tokens ?? null]);
-  const call = (out.content || []).find((c) => c.type === 'tool_use' && c.name === tool.name);
+  await q('INSERT INTO ai_usage(user_id,kind,label,model,input_tokens,output_tokens) VALUES ($1,$2,$3,$4,$5,$6)', [userId, kind, label ? String(label).slice(0, 200) : null, MODEL(), inTok || null, outTok || null]);
   if (!call) throw new HttpError(502, 'The AI returned no readable result. Try again or enter the details by hand.');
   return call.input;
 }

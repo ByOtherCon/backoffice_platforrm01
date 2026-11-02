@@ -85,7 +85,7 @@ test('receipt parsing with AI: structured lines, project guess, supplier match, 
   assert.equal(r.body.parsed.merchant, 'The Home Depot'); assert.equal(r.body.parsed.lines.length, 2); assert.deepEqual(r.body.parsed.lines.map((l) => l.kind), ['Materials', 'Tools']);
   assert.equal(r.body.suggestedProjectId, pid); assert.ok(r.body.supplierId); assert.deepEqual(r.body.parsed.warnings, []);
   const sent = JSON.parse(seen[0].init.body);
-  assert.equal(sent.tool_choice.name, 'record_receipt'); assert.equal(sent.messages[0].content[0].type, 'document'); assert.equal(seen[0].init.headers['x-api-key'], 'test-key-not-real');
+  assert.deepEqual(sent.tool_choice, { type: 'auto' }); assert.match(sent.system, /Answer only by calling the record_receipt tool/); assert.equal(sent.messages[0].content[0].type, 'document'); assert.equal(seen[0].init.headers['x-api-key'], 'test-key-not-real');
   assert.ok(!JSON.stringify(r.body).includes('test-key-not-real'));
   const u = (await call('GET', '/api/ai/usage', null, asst)).body; assert.deepEqual([u.connected, u.tokens, u.calls], [true, 1800, 1]);
   // totals that do not add up are flagged, never silently fixed

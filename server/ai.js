@@ -26,7 +26,11 @@ export async function callClaude({ userId, kind, system, bytes, mime, prompt, to
   const res = await fetchImpl('https://api.anthropic.com/v1/messages', { method: 'POST', signal: AbortSignal.timeout(90000),
     headers: { 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
     body: JSON.stringify({ model: MODEL(), max_tokens: maxTokens, system, tools: [tool], tool_choice: { type: 'tool', name: tool.name }, messages: [{ role: 'user', content }] }) });
-  if (!res.ok) throw new HttpError(502, 'The AI service could not read this. Check the API key and usage limits, or enter the details by hand.');
+  if (!res.ok) {
+    // Say what Anthropic said (it never contains the key), so a wrong key, no credit or a wrong model name is obvious instead of a guess.
+    const why = await res.json().then((j) => String(j?.error?.message || j?.error?.type || '').replace(/\s+/g, ' ').slice(0, 220)).catch(() => '');
+    throw new HttpError(502, `The AI service could not read this (${res.status}${why ? ': ' + why : ''}). Check the API key, credit balance and model name, or enter the details by hand.`);
+  }
   const out = await res.json();
   await q('INSERT INTO ai_usage(user_id,kind,input_tokens,output_tokens) VALUES ($1,$2,$3,$4)', [userId, kind, out.usage?.input_tokens ?? null, out.usage?.output_tokens ?? null]);
   const call = (out.content || []).find((c) => c.type === 'tool_use' && c.name === tool.name);

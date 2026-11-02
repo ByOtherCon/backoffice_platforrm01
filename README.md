@@ -17,7 +17,7 @@ One system for By Other Construction: **Estimating** (bid invitations to awarded
 | `DATABASE_URL` | Postgres connection (required) |
 | `NODE_ENV=production` | Marks session cookies Secure (serve over HTTPS) |
 | `UPLOAD_DIR` | Where uploaded documents are stored (default `./uploads`). Back this folder up. |
-| `ANTHROPIC_API_KEY` | Turns on AI reading of receipts, invoices and plans. Optional `ANTHROPIC_MODEL`. Without it everything works by hand. |
+| `ANTHROPIC_API_KEY` | Turns on AI reading of receipts, invoices and plans. Optional `ANTHROPIC_MODEL`. If Anthropic says the key is "not scoped to a workspace", either create the key inside a workspace or set `ANTHROPIC_WORKSPACE_ID`. Without it everything works by hand. |
 | `SECRET_KEY` | Encrypts the stored Google login. Render creates it for you. |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | The Google app that lets the platform read the BuildingConnected emails (read-only). See "Bid inbox from Gmail". |
 | `PUBLIC_URL` | The site's own address. Render supplies it automatically; set it only on another host. |

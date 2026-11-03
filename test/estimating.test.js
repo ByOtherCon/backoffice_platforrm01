@@ -134,7 +134,7 @@ test('status moves: Reviewing and Accepted go to the Proposal Tracker; Accept ne
   assert.deepEqual((await call('GET', '/api/opportunities?tab=bids', null, est)).body.groups.flatMap((g) => g.rows.map((o) => o.name)).includes('Joy Child Academy'), false);
   assert.ok((await call('GET', '/api/opportunities?tab=proposals', null, est)).body.rows.some((o) => o.id === joy && o.statusLabel === 'Reviewing'));
   const prefix = 'P' + today.slice(5, 7) + today.slice(8, 10);
-  const a = await status(wing, 'Accepted'); assert.equal(a.status, 200); assert.equal(a.body.proposalId, prefix + '1'); assert.equal(a.body.folderPlan.folders.length, 6); assert.match(a.body.folderPlan.root, new RegExp(`^ByOther/${today.slice(0, 4)}/CW Hayes Construction/${prefix}1_Wingstop`));
+  const a = await status(wing, 'Accepted'); assert.equal(a.status, 200); assert.equal(a.body.proposalId, prefix + '1'); assert.equal(a.body.folderPlan.folders.length, 5); assert.match(a.body.folderPlan.root, new RegExp(`^ByOther/${today.slice(0, 4)}/CW Hayes Construction/${prefix}1_Wingstop`));
   assert.equal((await status(wing, 'Accepted')).status, 400); assert.equal((await status(wing, 'New')).status, 409); assert.equal((await status(wing, 'Reviewing')).status, 409);   // accepted work cannot go back
   assert.equal((await status(aldi, 'Accepted', { estimatorId: '00000000-0000-0000-0000-000000000000' })).status, 400);
   assert.equal((await status(aldi, 'Accepted', {}, owner)).body.proposalId, prefix + '2');

@@ -31,7 +31,7 @@ export function nextProposalId(existing: (string | null)[], date = todayEastern(
   const used = existing.filter((v): v is string => !!v && v.startsWith(prefix)).map((v) => Number(v.slice(prefix.length))).filter(Number.isInteger);
   return prefix + (Math.max(0, ...used) + 1);
 }
-export const FOLDERS = ['01. DL', '02. Proposal', '03. Change Orders', '04. Documents', '05. Material & Equipment Specs', '06. Billing'];
+export const FOLDERS = ['01. DL', '02. Proposal', '03. Change Orders', '04. Documents', '05. Material & Equipment Specs'];
 export const cleanName = (v: string) => { const s = String(v || '').normalize('NFKC').replace(/[\x00-\x1f<>:"/\\|?*]/g, ' ').replace(/\s+/g, ' ').trim().replace(/[. ]+$/g, '').slice(0, 90); return /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(s) ? '_' + s : s; };
 export function folderPlan(o: { proposalId?: string | null; name: string; city?: string | null; gc: string; year: number }) {
   const project = [o.proposalId, o.name, o.city].filter(Boolean).map((x) => cleanName(x as string)).join('_');

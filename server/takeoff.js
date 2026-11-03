@@ -1,6 +1,7 @@
 import { q, tx } from './db.js';
 import { bad, money, text, HttpError } from './http.js';
 import { callClaude } from './ai.js';
+import * as folders from './folders.js';
 import { saveFile } from './documents.js';
 import { setTradePrices } from './estimating.js';
 import { toCents, toDollars } from '../src/lib/costing.ts';
@@ -23,6 +24,7 @@ export async function runTakeoff(user, opportunityId, bytes, filename) {
   if (!o.accepted_date) throw bad('Accept the lead before running a takeoff.');
   if (!/\.pdf$/i.test(filename)) throw bad('Upload the plans as a PDF.');
   const f = await saveFile(bytes, filename);
+  folders.pushOpportunityFile(opportunityId, { kind: 'Plans', filename, bytes, mime: f.mime });   // plans also go to the 01. DL folder (a SharePoint problem only adds a note)
   const [d] = await q(`INSERT INTO documents(category,name,storage_key,mime,size,created_by) VALUES ('Plans',$1,$2,$3,$4,$5) RETURNING id`, [filename, f.key, f.mime, f.size, user.id]);
   let r; try {
     r = await callClaude({ userId: user.id, kind: 'takeoff', label: filename, bytes, mime: f.mime, tool: TOOL, maxTokens: 8000,

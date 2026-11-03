@@ -29,7 +29,7 @@ export async function getProject(id) {
   const approved = cos.filter((c) => c.status === 'Approved').reduce((n, c) => n + Math.round(c.amount * 100), 0) / 100;
   const pending = cos.filter((c) => c.status === 'Pending').reduce((n, c) => n + Math.round(c.amount * 100), 0) / 100;
   return {
-    project: { id: p.id, name: p.name, gc: p.gc, gcId: p.gc_id, client: p.client, address: p.address, retainagePct: p.retainage_pct, active: p.active, proposalId: p.proposal_id, contractUrl: p.contract_url ?? null, lat: p.lat === null ? null : Number(p.lat), lng: p.lng === null ? null : Number(p.lng), geofenceRequired: p.geofence_required, geofenceMiles: Number(p.geofence_miles) },
+    project: { id: p.id, name: p.name, gc: p.gc, gcId: p.gc_id, client: p.client, address: p.address, retainagePct: p.retainage_pct, active: p.active, proposalId: p.proposal_id, refCode: p.ref_code ?? null, folderUrl: p.folder_url ?? null, spPath: p.sp_path ?? null, contractUrl: p.contract_url ?? null, lat: p.lat === null ? null : Number(p.lat), lng: p.lng === null ? null : Number(p.lng), geofenceRequired: p.geofence_required, geofenceMiles: Number(p.geofence_miles) },
     trades: s.trades, totals: s.project,
     changeOrders: cos.map((c) => ({ id: c.id, number: c.number, description: c.description, projectTradeId: c.project_trade_id, trade: c.trade, status: c.status, approvedDate: c.approved_date, amount: c.amount })),
     coTotals: { approved, pending },

@@ -39,7 +39,7 @@ test('setup: two projects on two GCs with costs, billing, labor, a receipt, and 
   const o = (await q(`INSERT INTO opportunities(name,client_name,gc_name,city,due_date,source_key,source_type,project_type) VALUES ('Lost Job','Epic Construction','Epic Construction','Tampa','2026-11-20','lostjob','PlanHub','Retail') RETURNING id`))[0].id; await call('POST', `/api/opportunities/${o}/status`, { status: 'Accepted' }, est);
   const t = (await call('GET', '/api/admin/trades', null, owner)).body.find((x) => x.name === 'Paint').id;
   const up = await fetch(base + `/api/opportunities/${o}/files?kind=Proposal`, { method: 'POST', headers: { cookie: est, 'x-file-name': 'p.pdf' }, body: Buffer.from('%PDF-1.4\n%%EOF') }); const fileId = (await up.json()).fileId;
-  await call('POST', `/api/opportunities/${o}/submissions`, { fileId, date: new Date().toISOString().slice(0, 10), method: 'Email', prices: [{ tradeId: t, amount: 9000 }] }, est); await call('POST', `/api/opportunities/${o}/status`, { status: 'Not Awarded', reason: 'Price too high' }, est);
+  await call('POST', `/api/opportunities/${o}/submissions`, { fileId, date: new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date()), method: 'Email', prices: [{ tradeId: t, amount: 9000 }] }, est); await call('POST', `/api/opportunities/${o}/status`, { status: 'Not Awarded', reason: 'Price too high' }, est);
 });
 
 test('each role is offered only its own sources', async () => {

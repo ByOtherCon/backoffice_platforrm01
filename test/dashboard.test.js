@@ -7,7 +7,7 @@ const { server } = await import('../server/index.js');
 const { hashPassword } = await import('../server/auth.js');
 
 let base, owner, sub, asst, est, pm, field, pid, pid2, ptA;
-const ago = (days) => new Date(Date.now() - days * 864e5).toISOString().slice(0, 10);
+const ago = (days) => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date(Date.now() - days * 864e5));   // Eastern, like the app
 before(async () => {
   await pool.query('DROP SCHEMA public CASCADE; CREATE SCHEMA public;'); await applyAll(pool);
   const h = await hashPassword('correct horse battery');

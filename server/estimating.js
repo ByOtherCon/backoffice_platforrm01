@@ -11,6 +11,7 @@ import { sweepDeclines, regionMap } from './bids.js';
 import { requireVerified } from './address.js';
 import { saveFile, UPLOAD_DIR } from './documents.js';
 import { callClaude, aiConnected } from './ai.js';
+import * as folders from './folders.js';
 import path from 'node:path';
 
 registerLinkable('opportunity', { sql: 'SELECT name AS label FROM opportunities WHERE id=$1', route: (id) => `#/estimating/${id}` });
@@ -29,7 +30,7 @@ export async function rules() {
 }
 export async function options() {
   return { statuses: W.STATUSES, sources: W.SOURCES, projectTypes: W.PROJECT_TYPES, methods: W.METHODS, declineReasons: W.DECLINE_REASONS, dntsReasons: W.DNTS_REASONS, notAwardedReasons: W.NOT_AWARDED_REASONS,
-    proposalFilters: W.PROPOSAL_FILTERS, rules: await rules(), aiConnected: aiConnected(),
+    proposalFilters: W.PROPOSAL_FILTERS, rules: await rules(), aiConnected: aiConnected(), sharepoint: folders.enabled(),
     trades: await q('SELECT id, name FROM trades WHERE NOT archived ORDER BY sort, name'), estimators: await q('SELECT id, name, email FROM app_users WHERE active AND role = ANY($1::text[]) ORDER BY name, email', [EST_ROLES]) };
 }
 
@@ -59,7 +60,7 @@ export async function loadAll(where = '', params = []) {
     return { id: r.id, name: r.name, client: r.client_name, gc: r.gc_name, gcId: r.gc_id, additionalGcs: r.additional_gcs, gcAddr, city: r.city, address: r.address, zip: r.zip, addrVerified: r.address_verified, state: r.state, tier: r.tier, mall: r.mall, type: r.project_type, due: r.due_date, dueTime: r.due_time,
       contact: r.contact_name, email: r.contact_email, phone: r.contact_phone, link: r.invitation_link, sourceType: r.source_type, origin: r.source, addedBy: r.added_by, plannedStart: r.planned_start,
       status: r.status, statusLabel: W.statusName(r.status), next: W.nextStatuses(r.status), lastSeenAt: r.last_seen_at, emailLink: r.email_link, invitations: r.invitations ?? [], autoDeclined: r.auto_declined, progress: r.progress, result: r.result,
-      estimatorId: r.estimator_id, estimator: r.estimator, proposalId: r.proposal_id, acceptedDate: r.accepted_date, startDate: r.start_date, declinedReason: r.declined_reason, lostReason: r.lost_reason, folderUrl: r.folder_url, proposalUrl: r.proposal_url, projectId: r.project_id,
+      spPath: r.sp_path, spError: r.sp_error, estimatorId: r.estimator_id, estimator: r.estimator, proposalId: r.proposal_id, acceptedDate: r.accepted_date, startDate: r.start_date, declinedReason: r.declined_reason, lostReason: r.lost_reason, folderUrl: r.folder_url, proposalUrl: r.proposal_url, projectId: r.project_id,
       consideredTrades: considered.filter((c) => c.opportunity_id === r.id).map((c) => ({ tradeId: c.trade_id, name: c.name })),
       files: files.filter((f) => f.opportunity_id === r.id).map((f) => ({ id: f.id, kind: f.kind, name: f.name, mime: f.mime, size: f.size, at: f.created_at })),
       tradePrices: tp, total: r2(tp.reduce((n, p) => n + Math.round(p.amount * 100), 0) / 100), submissions: ss, communications: cs, lastSubmission: last,
@@ -242,7 +243,7 @@ export async function transition(user, id, b = {}) {
   if (reason && !W.reasonsFor(to).includes(reason)) throw bad('Choose a reason from the list.');
   const extra = text(b.note, 'Note', { max: 2000, required: false });
   const rl = await rules();
-  return tx(async (t) => {
+  const done = await tx(async (t) => {
     const [o] = await t('SELECT * FROM opportunities WHERE id=$1 FOR UPDATE', [id]); if (!o) throw new HttpError(404, 'Opportunity not found.');
     const from = o.status, today = E.todayEastern(); let result = {};
     if (from === to) throw bad(`This is already ${W.statusName(to)}.`);
@@ -281,7 +282,7 @@ export async function transition(user, id, b = {}) {
         let [gc] = await t('SELECT id FROM gcs WHERE lower(name)=lower($1)', [o.gc_name]); if (!gc) [gc] = await t('INSERT INTO gcs(name) VALUES ($1) RETURNING id', [o.gc_name]);
         const addr = W.addrLine({ street: o.address, city: o.city, state: 'FL', zip: o.zip });
         const p = await createProject({ name: o.name, gcId: gc.id, client: o.client_name || o.gc_name, address: addr || o.name, proposalId: o.proposal_id, startDate: o.planned_start, trades: tp.map((x) => ({ tradeId: x.trade_id, amount: x.amount })) }, t);
-        await t('UPDATE projects SET opportunity_id=$2 WHERE id=$1', [p.id, id]); set.project_id = p.id; result = { projectId: p.id };
+        await t(`UPDATE projects SET opportunity_id=$2, ref_code=$3 WHERE id=$1`, [p.id, id, o.proposal_id ? 'C' + o.proposal_id.slice(1) : null]); set.project_id = p.id; result = { projectId: p.id, refCode: o.proposal_id ? 'C' + o.proposal_id.slice(1) : null };
         await closeCases(t, id, 'Closed / Awarded', 'Awarded: project created in Job Costing');
         detail = ' Project created in Job Costing with the lead, proposal and submittal details attached.';
       }
@@ -290,8 +291,12 @@ export async function transition(user, id, b = {}) {
     const keys = Object.keys(set); await t(`UPDATE opportunities SET ${keys.map((k, i) => `${k}=$${i + 2}`).join(',')}, last_seen_at=now() WHERE id=$1`, [id, ...keys.map((k) => set[k])]);
     await sys(t, id, user, `Status changed ${W.statusName(from)} → ${W.statusName(to)} by ${who(user)}.${reason ? ` Reason: ${reason}.` : ''}${detail}`);
     if (extra) await addNote(t, id, user, 'User', extra);
-    return result;
+    return { result, to };
   });
+  // The shared folder follows the status: made when work is taken on, renamed P -> C when it becomes a contract.
+  if (['Reviewing', 'Accepted'].includes(done.to)) { const f = await folders.tryEnsureOpportunityFolder(id); if (f?.webUrl) done.result.folderUrl = f.webUrl; }
+  if (done.to === 'Awarded' && done.result.projectId) { const f = await folders.onAwarded(id, done.result.projectId); if (f?.webUrl) done.result.folderUrl = f.webUrl; }
+  return done.result;
 }
 
 // ------------------------------------------------------------------ proposal PDFs, parsing, and submitting
@@ -310,6 +315,7 @@ export async function uploadFile(user, id, bytes, filename, kind = 'Proposal') {
   const [o] = await q('SELECT id FROM opportunities WHERE id=$1', [id]); if (!o) throw new HttpError(404, 'Opportunity not found.');
   if (kind === 'Proposal' && path.extname(filename).toLowerCase() !== '.pdf') throw bad('The proposal must be a PDF.');
   const f = await saveFile(bytes, filename); let parsed = null, aiError = null;
+  const copy = folders.pushOpportunityFile(id, { kind, filename, bytes, mime: f.mime });   // runs alongside the AI reading; a SharePoint problem only adds a note
   const [row] = await q('INSERT INTO opportunity_files(opportunity_id,kind,name,storage_key,mime,size,created_by) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id', [id, kind, filename.slice(0, 200), f.key, f.mime, f.size, user.id]);
   await q('INSERT INTO opportunity_notes(opportunity_id,user_id,kind,body) VALUES ($1,$2,$3,$4)', [id, user.id, 'System', `${kind === 'Proposal' ? 'Proposal PDF' : 'File'} "${filename.slice(0, 120)}" uploaded by ${who(user)}.`]);
   if (kind === 'Proposal') {
@@ -325,7 +331,8 @@ export async function uploadFile(user, id, bytes, filename, kind = 'Proposal') {
       await q('UPDATE opportunity_files SET parsed=$2 WHERE id=$1', [row.id, JSON.stringify(parsed)]);
     } catch (e) { if (!(e instanceof HttpError)) throw e; aiError = e.message; }
   }
-  return { fileId: row.id, name: filename, parsed, aiError };
+  const up = await copy; if (up?.webUrl) await q('UPDATE opportunity_files SET sp_url=$2 WHERE id=$1', [row.id, up.webUrl]);
+  return { fileId: row.id, name: filename, parsed, aiError, sharepoint: !!up };
 }
 export async function fileForDownload(id) {
   const [f] = await q('SELECT storage_key, mime, name FROM opportunity_files WHERE id=$1', [id]); if (!f) throw new HttpError(404, 'File not found.');

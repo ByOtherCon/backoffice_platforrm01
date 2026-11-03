@@ -25,7 +25,7 @@ test('proposal ids count up per day', () => {
 });
 test('folder plan and file-safe names', () => {
   const f = E.folderPlan({ proposalId: 'P10281', name: 'Wingstop - St Cloud, FL', city: null, gc: 'CW Hayes: Construction', year: 2026 });
-  assert.equal(f.root, 'ByOther/2026/CW Hayes Construction/P10281_Wingstop - St Cloud, FL'); assert.equal(f.folders.length, 6);
+  assert.equal(f.root, 'ByOther/2026/CW Hayes Construction/P10281_Wingstop - St Cloud, FL'); assert.equal(f.folders.length, 5);
   assert.equal(E.cleanName('con'), '_con'); assert.equal(E.cleanName('a/b\\c?'), 'a b c');
 });
 test('CSV import: quotes, commas, mixed headers and dates', () => {

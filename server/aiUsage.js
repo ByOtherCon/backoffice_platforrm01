@@ -3,7 +3,7 @@
 import { q } from './db.js';
 import { bad } from './http.js';
 
-export const TASKS = { receipt: 'Receipts and invoices', bids: 'Gmail bid emails', proposal: 'Proposal PDFs', takeoff: 'Plan takeoff' };
+export const TASKS = { receipt: 'Receipts and invoices', bids: 'Gmail bid emails', proposal: 'Proposal PDFs', takeoff: 'Plan takeoff', bidpage: 'Pasted invitation pages' };
 const r2 = (n) => Math.round(n * 100) / 100;
 const settings = async () => { const v = (await q(`SELECT value FROM app_settings WHERE key='ai'`))[0]?.value ?? {}; return { monthlyTokenCap: Number(v.monthlyTokenCap ?? 2000000), inputPerM: v.inputPerM ?? null, outputPerM: v.outputPerM ?? null }; };
 export async function saveSettings(b) {

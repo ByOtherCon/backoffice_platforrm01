@@ -291,3 +291,24 @@ test('delete a lead; BuildingConnected status is honest about needing credential
   assert.equal((await call('DELETE', `/api/opportunities/${id}`, null, est)).status, 200); assert.equal((await call('GET', `/api/opportunities/${id}`, null, est)).status, 404);
   const c = (await call('GET', '/api/estimating/connection', null, est)).body.buildingConnected; assert.equal(c.connected, false); assert.match(c.note, /CSV/);
 });
+
+test('Fill from BuildingConnected: the pasted page is read, only what the page says is kept, and the addresses come back checked', async () => {
+  const page = 'Barnes & Noble 3597 - Palm Coast, FL\nDue date Nov 18, 2026 5:00 PM EST\nClient\nWeekes Construction - Greenville\nAmber Duhon | +1 864-233-0061 ext. 348 | anewland@weekesconstruction.com\nWeekes Construction, 100 Main Street, Greenville, SC 29601\nProject Details\nLocation: 4 Town Center Pkwy, Palm Coast, FL 32164\nDate Due: Nov 18, 2026 at 5:00 PM EST\nProject Start: 01/11/2027';
+  const reply = { project: 'Barnes & Noble 3597 - Palm Coast, FL', gcCompany: 'Weekes Construction - Greenville', contactName: 'Amber Duhon', contactEmail: 'anewland@weekesconstruction.com', contactPhone: '+1 864-233-0061', gcStreet: '100 Main Street', gcCity: 'Greenville', gcState: 'SC', gcZip: '29601', gcAddressEvidence: '100 Main Street, Greenville, SC 29601',
+    projectStreet: '4 Town Center Pkwy', projectCity: 'Palm Coast', projectState: 'FL', projectZip: '32164', projectAddressEvidence: '4 Town Center Pkwy, Palm Coast, FL 32164', dueDate: '2026-11-18', dueEvidence: 'Date Due: Nov 18, 2026 at 5:00 PM EST', dueTime: '17:00', startDate: '2027-01-11', startEvidence: 'Project Start: 01/11/2027', projectType: 'Retail', ownerName: '', scope: 'Plumbing' };
+  const say = (r) => ai.setFetch(async () => ({ ok: true, json: async () => ({ content: [{ type: 'tool_use', name: 'record_invitation', input: r }], usage: { input_tokens: 800, output_tokens: 150 } }) }));
+  say(reply); const read = (text, who = est) => call('POST', '/api/opportunity-page', { text }, who);
+  assert.equal((await read(page, asst)).status, 403); assert.equal((await read('too short')).status, 400); assert.equal((await call('POST', '/api/opportunity-page', { text: page })).status, 401);
+  const r = (await read(page)).body, x = r.fields;
+  assert.deepEqual([x.name, x.gc, x.contact, x.email, x.phone, x.due, x.dueTime, x.start, x.type], ['Barnes & Noble 3597 - Palm Coast, FL', 'Weekes Construction - Greenville', 'Amber Duhon', 'anewland@weekesconstruction.com', '+1 864-233-0061', '2026-11-18', '17:00', '2027-01-11', 'Retail']);
+  assert.deepEqual([x.gcAddr.street, x.gcAddr.state, x.gcAddr.verified, !!x.gcAddr.token, x.addr.street, x.addr.verified, !!x.addr.token], ['100 Main Street', 'SC', true, true, '4 Town Center Pkwy', true, true]);   // a GC may be out of state; the job must be in Florida
+  assert.deepEqual(r.missing, []);
+  // the returned, checked project address can be saved straight away (no second Verify), and trades are left for the estimator
+  const saved = await call('POST', '/api/opportunities', { name: x.name, client: 'Barnes & Noble', gc: x.gc, addr: x.addr, gcAddr: x.gcAddr, contact: x.contact, email: x.email, phone: x.phone, sourceType: 'Building Connected', link: 'https://app.buildingconnected.com/opportunities/6ae8ee0dd1055737edec008c/info', estimatorId: estId, due: x.due, dueTime: x.dueTime, plannedStart: x.start, type: x.type }, est);
+  assert.equal(saved.status, 200, JSON.stringify(saved.body)); const o = (await call('GET', `/api/opportunities/${saved.body.id}`, null, est)).body; assert.deepEqual([o.plannedStart, o.gcAddr.verified, o.consideredTrades.length], ['2027-01-11', true, 0]);
+  // anything the page does not support is thrown away: an email, dates and addresses that are not in the text
+  say({ ...reply, contactEmail: 'made.up@gc.example', contactPhone: '+1 555-000-1111', dueEvidence: 'Due 12/25/2026', startEvidence: 'Start 2/2/2027', gcAddressEvidence: '1 Fake Road, Nowhere', gcStreet: '1 Fake Road', projectAddressEvidence: 'invented', projectState: 'GA' });
+  const bad = (await read(page)).body; assert.deepEqual([bad.fields.email, bad.fields.phone, bad.fields.due, bad.fields.start, bad.fields.gcAddr.street, bad.fields.addr.street], ['', '', null, null, '', '']); assert.ok(bad.missing.includes('GC email') && bad.missing.includes('bid due date') && bad.missing.includes('job start date')); assert.match(bad.warnings.join(' '), /outside|in GA|Florida/i);
+  ai.setFetch(claude);
+  assert.equal((await q(`SELECT count(*)::int n FROM ai_usage WHERE kind='bidpage'`))[0].n, 2);
+});

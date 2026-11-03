@@ -1,6 +1,7 @@
 // SharePoint / OneDrive for Business through Microsoft Graph (app-only sign-in). It keeps the shared project folders:
 //   <root>/<year>/<GC name>/<P#_Project_City>/{01. DL, 02. Proposal, 03. Change Orders, 04. Documents, 05. Material & Equipment Specs, 06. Billing}
 // This is the layout the team already uses. Everything here is best-effort for the caller: a SharePoint problem is reported, never allowed to lose a local save.
+import fs from 'node:fs';
 import { HttpError } from './http.js';
 import { cleanName, FOLDERS } from '../src/lib/estimating.ts';
 
@@ -85,6 +86,20 @@ export async function uploadFile(folderId, filename, bytes, mime = 'application/
     const r = await gfetch(sess.uploadUrl, { method: 'PUT', headers: { 'content-length': String(part.length), 'content-range': `bytes ${at}-${at + part.length - 1}/${bytes.length}` }, body: part });
     if (!r.ok && r.status !== 202) throw new HttpError(502, `SharePoint stopped the upload (${r.status}).`); if (r.status !== 202) last = await r.json().catch(() => null);
   }
+  return { id: last?.id, name: last?.name ?? name, webUrl: last?.webUrl };
+}
+// Same as uploadFile, but reads the file from disk in pieces, so a large plan set never has to sit in memory.
+export async function uploadFromPath(folderId, filename, filePath, size, mime = 'application/octet-stream') {
+  const d = await driveId(), name = cleanName(filename) || 'file', base = `/drives/${d}/items/${folderId}:/${encodeURIComponent(name)}:`;
+  if (size <= 4 * 1024 * 1024) return uploadFile(folderId, filename, await fs.promises.readFile(filePath), mime);
+  const sess = await graph('POST', base + '/createUploadSession', { body: { item: { '@microsoft.graph.conflictBehavior': 'rename' } } }), chunk = 10 * 327680, fh = await fs.promises.open(filePath, 'r'); let last = null;
+  try {
+    for (let at = 0; at < size; at += chunk) {
+      const len = Math.min(chunk, size - at), buf = Buffer.alloc(len); await fh.read(buf, 0, len, at);
+      const r = await gfetch(sess.uploadUrl, { method: 'PUT', headers: { 'content-length': String(len), 'content-range': `bytes ${at}-${at + len - 1}/${size}` }, body: buf });
+      if (!r.ok && r.status !== 202) throw new HttpError(502, `SharePoint stopped the upload (${r.status}).`); if (r.status !== 202) last = await r.json().catch(() => null);
+    }
+  } finally { await fh.close(); }
   return { id: last?.id, name: last?.name ?? name, webUrl: last?.webUrl };
 }
 // Names of the sub-folders at a path below the library root (empty if the path does not exist yet).

@@ -67,3 +67,8 @@ Super Admin (owner only) · Sub Admin (can approve vendor payments, change pay r
 - Files uploaded in the app are also copied into the right numbered folder. A SharePoint problem never loses an upload: it is saved in the app and a note says it was not copied.
 - Reference code: P + month + day + a running number (P11021 is the first accepted on Nov 2). On award the P becomes C (C11021) and project documents carry it.
 - To work from File Explorer, press Sync on the library in SharePoint once on each PC; then "Open in File Explorer" downloads a shortcut that opens the synced folder.
+
+## Bringing a BuildingConnected invitation in
+- **Fill from BuildingConnected** (button at the top of the opportunity form): on the invitation page press Ctrl+A, Ctrl+C, paste it in the box, press Read it. Claude fills only empty fields from what the page states (project, GC, contact, due date and time, addresses, job start date); GC and project addresses are checked and show their green check. Trades are never filled.
+- **Upload plans** (in the opportunity's file list): the zip (or PDF) from the invitation's Files tab. It streams to disk (up to 600 MB), is filed with the opportunity, copied in the background to `01. DL` in SharePoint, and the app's own copy is then removed. If SharePoint is down the app keeps its copy and a note says so.
+- The BuildingConnected API needs a paid Bid Board Pro subscription to read invitations (Autodesk answers `BB_PRO_SUBSCRIPTION_REQUIRED` without it), so the Gmail feed plus these two buttons are used instead.

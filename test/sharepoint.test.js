@@ -152,3 +152,20 @@ test('the GC list fills itself from the GC folders already in the year folder: n
   assert.deepEqual(await folders.syncGcs(), { added: 0, found: r.found });                                                                              // run again: nothing new
   const known = (await call('GET', '/api/gcs/known', null, est)).body.map((g) => g.name); assert.ok(known.includes('Sachse Construction'));             // and the opportunity form's GC list offers them
 });
+
+test('Upload plans: a zip is streamed to disk, filed with the opportunity, copied to 01. DL in the background, and the local copy is then removed', async () => {
+  const id = await mk({ name: 'Plans job', gc: 'Plans GC', addr: await addrOk('11 Plan St', 'Orlando', '32801') }); await call('POST', `/api/opportunities/${id}/status`, { status: 'Accepted' }, est);
+  const zip = (mb) => Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(mb * 1024 * 1024, 7)]); const up = (b, name, who = est) => call('POST', `/api/opportunities/${id}/plans`, b, who, name);
+  assert.equal((await up(Buffer.from('MZ not a zip'), 'plans.zip')).status, 400); assert.equal((await up(zip(0), 'plans.exe')).status, 400); assert.equal((await up(zip(0), 'plans.zip', pm)).status, 403); assert.equal((await up(Buffer.alloc(0), 'plans.zip')).status, 400);
+  const big = zip(9); const r = await up(big, 'Plans Set.zip'); assert.deepEqual([r.status, r.body.size, r.body.sharepoint], [200, big.length, true]);
+  const o0 = await opp(id); assert.equal(o0.files[0].kind, 'Plans');
+  for (let i = 0; i < 100 && (await q('SELECT storage_key FROM opportunity_files WHERE opportunity_id=$1', [id]))[0].storage_key; i++) await new Promise((ok) => setTimeout(ok, 50));        // the copy runs after the answer
+  const row = (await q('SELECT storage_key, sp_url FROM opportunity_files WHERE opportunity_id=$1', [id]))[0]; assert.equal(row.storage_key, null); assert.match(row.sp_url, /byother\.sharepoint\.com/);
+  const o = await opp(id); const code = o.proposalId; const f = find('ByOther', YEAR, 'Plans GC', `${code}_Plans job_Orlando`, '01. DL', 'Plans Set.zip'); assert.ok(f); assert.equal(f.size, big.length);   // came up in pieces
+  assert.deepEqual([o.files[0].local, !!o.files[0].spUrl], [false, true]); const nb = o.notes.map((n) => n.body); assert.ok(nb.some((b) => /Plans "Plans Set\.zip" \(9\.0 MB\) uploaded by est\. Copying/.test(b))); assert.ok(nb.some((b) => /Plans "Plans Set\.zip" copied to the 01\. DL folder/.test(b)));
+  const dl = await fetch(`${base}/api/opportunity-files/${o.files[0].id}`, { headers: { cookie: est } }); assert.equal(dl.status, 404);                                       // the open link for such a file is its SharePoint link
+  // when SharePoint is down the app keeps its own copy, and says so
+  graphDown = true; const r2 = await up(zip(1), 'More plans.zip'); assert.equal(r2.status, 200); await new Promise((ok) => setTimeout(ok, 400)); graphDown = false;
+  const kept = (await q(`SELECT storage_key FROM opportunity_files WHERE name='More plans.zip'`))[0]; assert.ok(kept.storage_key); assert.ok((await opp(id)).notes.some((n) => /Saved in the app, but not copied to SharePoint/.test(n.body)));
+  const dl2 = await fetch(`${base}/api/opportunity-files/${(await opp(id)).files.find((x) => x.name === 'More plans.zip').id}`, { headers: { cookie: est } }); assert.equal(dl2.status, 200); assert.equal(dl2.headers.get('content-type'), 'application/zip');
+});

@@ -31,7 +31,7 @@ function addressBlock({ kind, init, optional }) {
   const read = () => ({ street: f.street.value.trim(), city: f.city.value.trim(), state: (kind === 'gc' ? f.state.value : 'FL').trim().toUpperCase(), zip: f.zip.value.trim() });
   const line = () => { const v = read(); return [v.street, v.city, [v.state, v.zip].filter(Boolean).join(' ')].filter(Boolean).join(', '); };
   const empty = () => { const v = read(); return !v.street && !v.city && !v.zip; };
-  function set(a) { f.street.value = a?.street || ''; f.city.value = a?.city || ''; f.state.value = kind === 'gc' ? a?.state || '' : 'FL'; f.zip.value = a?.zip || ''; verified = !!(a?.verified && a?.street); token = null; draw(); }
+  function set(a, tok = null) { f.street.value = a?.street || ''; f.city.value = a?.city || ''; f.state.value = kind === 'gc' ? a?.state || '' : 'FL'; f.zip.value = a?.zip || ''; verified = !!(a?.verified && a?.street); token = verified ? tok : null; draw(); }
   async function verify() {
     notice(msg, ''); const r = await api('POST', '/address/verify', { ...read(), kind });
     if (r.verified) { Object.entries(r.address).forEach(([k, v]) => (f[k].value = v)); token = r.token; verified = true; draw(); }
@@ -60,8 +60,9 @@ function notesPanel(o, canWrite) {
 }
 function filesPanel(o, canWrite, err) {
   const file = h('input', { type: 'file', style: 'display:none', onchange: guard(err, async () => { const f = file.files[0]; if (!f) return; await uploadFile(`/opportunities/${o.id}/files?kind=Submittal`, f); file.value = ''; render(); }) });
-  return h('div', {}, h('div', { class: 'row spread' }, h('label', {}, 'Submittal folder (all PDFs and files)'), canWrite ? h('span', {}, file, h('button', { type: 'button', class: 'small', onclick: () => file.click() }, '+ Add file')) : ''),
-    o.files.length ? h('table', {}, h('tbody', {}, o.files.map((f) => h('tr', {}, h('td', {}, h('a', { href: '/api/opportunity-files/' + f.id, target: '_blank', rel: 'noopener' }, f.name)), h('td', {}, h('span', { class: 'pill' }, f.kind)), h('td', { class: 'muted' }, when(f.at)), h('td', {}, canWrite && !o.submissions.some((s) => s.fileId === f.id) ? h('button', { class: 'small danger', onclick: guard(err, async () => { if (confirm(`Remove ${f.name}?`)) { await api('DELETE', `/opportunities/${o.id}/files/${f.id}`); render(); } }) }, 'Remove') : ''))))) : h('p', { class: 'muted' }, 'No files yet. The proposal PDF is added when the bid is submitted.'),
+  const plans = h('input', { type: 'file', accept: '.zip,.pdf', style: 'display:none', onchange: guard(err, async () => { const f = plans.files[0]; if (!f) return; notice(err, `Uploading ${f.name} (${(f.size / 1048576).toFixed(1)} MB). Keep this page open until it finishes…`, 'ok'); const r = await uploadFile(`/opportunities/${o.id}/plans`, f); plans.value = ''; notice(err, r.sharepoint ? 'Plans uploaded. Copying them to the 01. DL folder in SharePoint now; a note appears here when it is done.' : 'Plans uploaded.', 'ok'); setTimeout(render, 1800); }) });
+  return h('div', {}, h('div', { class: 'row spread' }, h('label', {}, 'Submittal folder (all PDFs and files)'), canWrite ? h('span', { class: 'row', style: 'gap:.4rem' }, file, plans, h('button', { type: 'button', class: 'small primary', onclick: () => plans.click(), title: 'The zip from the BuildingConnected Files tab (Download All)' }, 'Upload plans'), h('button', { type: 'button', class: 'small', onclick: () => file.click() }, '+ Add file')) : ''),
+    o.files.length ? h('table', {}, h('tbody', {}, o.files.map((f) => h('tr', {}, h('td', {}, h('a', { href: f.local === false ? f.spUrl || '#' : '/api/opportunity-files/' + f.id, target: '_blank', rel: 'noopener' }, f.name), f.local === false ? h('span', { class: 'muted', style: 'font-size:12px' }, '  (in SharePoint)') : ''), h('td', {}, h('span', { class: 'pill' }, f.kind)), h('td', { class: 'muted' }, when(f.at)), h('td', {}, canWrite && !o.submissions.some((s) => s.fileId === f.id) ? h('button', { class: 'small danger', onclick: guard(err, async () => { if (confirm(`Remove ${f.name}?`)) { await api('DELETE', `/opportunities/${o.id}/files/${f.id}`); render(); } }) }, 'Remove') : ''))))) : h('p', { class: 'muted' }, 'No files yet. The proposal PDF is added when the bid is submitted.'),
     h('div', { style: 'margin-top:.5rem' }, h('label', {}, 'Shared folder'), folderButtons(o, canWrite, 'opportunity', OPTS?.sharepoint !== false)));
 }
 
@@ -114,7 +115,23 @@ async function opportunityForm(o) {
   const hint = h('div', { class: 'muted wide', style: 'font-size:13px' });
   f.gc.onchange = () => { const g = known.find((x) => x.name.toLowerCase() === f.gc.value.trim().toLowerCase()); if (!g) { hint.textContent = f.gc.value.trim() ? 'A new GC. It joins the list when you save.' : ''; return; } hint.textContent = 'A GC we already work with. Its details were filled in.';
     f.gc.value = g.name; if (gcb.empty() && g.addr) gcb.set(g.addr); if (!f.contact.value) f.contact.value = g.contact; if (!f.email.value) f.email.value = g.email; if (!f.phone.value) f.phone.value = g.phone; };
-  const fields = [summaryOrBlank(full), h('datalist', { id: 'gc-list' }, known.map((g) => h('option', { value: g.name }))),
+  const fillBtn = h('div', { class: 'wide' }, h('button', { type: 'button', class: 'small primary', onclick: () => fillFromPage() }, 'Fill from BuildingConnected'), h('span', { class: 'muted', style: 'font-size:13px;margin-left:.5rem' }, 'On the invitation page press Ctrl+A then Ctrl+C, then paste it here. Only empty fields are filled.'));
+  function fillFromPage() {
+    const text = h('textarea', { rows: 9, placeholder: 'Paste the whole invitation page here (Ctrl+V)' }), linkIn = h('input', { type: 'url', placeholder: 'https://app.buildingconnected.com/opportunities/… (optional: the address from the browser bar)' }), msg = h('div');
+    const blank = (el) => !String(el.value || '').trim(), done = [];
+    const put = (el, v, label) => { if (v && blank(el)) { el.value = v; done.push(label); } };
+    const bg = modal('Fill from BuildingConnected', h('div', {}, h('p', { class: 'muted' }, 'Claude reads the page text and fills what it states. Anything it cannot find stays empty. You check the form before saving.'), h('div', { class: 'form' }, field('Invitation page text', text, 'wide'), field('Invitation link (the address in your browser)', linkIn, 'wide')), msg,
+      h('div', { class: 'row', style: 'justify-content:flex-end;margin-top:.8rem' }, h('button', { type: 'button', class: 'primary', onclick: guard(msg, async () => {
+        notice(msg, 'Reading the page…', 'ok'); const r = await api('POST', '/opportunity-page', { text: text.value }), x = r.fields;
+        put(f.name, x.name, 'project name'); put(f.client, x.client, 'client'); put(f.gc, x.gc, 'GC'); if (x.gc) f.gc.onchange(); put(f.contact, x.contact, 'GC contact'); put(f.email, x.email, 'GC email'); put(f.phone, x.phone, 'GC phone');
+        put(f.due, x.due, 'bid due date'); put(f.time, x.dueTime, 'due time'); put(f.start, x.start, 'job start date'); put(f.link, linkIn.value.trim(), 'invitation link');
+        if (!f.source.value) { f.source.value = 'Building Connected'; sync(); done.push('source'); } if (!type && x.type) { type = x.type; drawType(); done.push('project type'); }
+        if (gcb.empty() && x.gcAddr.street) { gcb.set(x.gcAddr, x.gcAddr.token); done.push('GC address' + (x.gcAddr.verified ? ' (verified)' : ' (press Verify)')); }
+        if (proj.empty() && x.addr.street) { proj.set(x.addr, x.addr.token); done.push('project address' + (x.addr.verified ? ' (verified)' : ' (press Verify)')); }
+        bg.remove(); const note2 = h('div', { class: 'ok wide' }, `Filled: ${done.join(', ') || 'nothing new (the fields already had values)'}.${r.missing.length ? ' Not on the page: ' + r.missing.join(', ') + '.' : ''}${r.warnings.length ? ' ' + r.warnings.join(' ') : ''}`); hint.replaceChildren(note2);
+      }) }, 'Read it'))));
+  }
+  const fields = [summaryOrBlank(full), fillBtn, h('datalist', { id: 'gc-list' }, known.map((g) => h('option', { value: g.name }))),
     field(lbl('Project name', true), f.name), field(lbl('Client name', true), f.client), field(lbl('GC name', true), f.gc), hint,
     h('div', { class: 'wide' }, h('label', {}, 'GC address (optional)'), gcb.el),
     h('div', { class: 'wide' }, h('label', {}, 'GC estimating contact')), field('Name', f.contact), field('Email', f.email), field('Phone', f.phone),

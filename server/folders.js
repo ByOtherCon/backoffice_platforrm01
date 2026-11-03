@@ -54,6 +54,12 @@ export async function pushOpportunityFile(oppId, { kind, filename, bytes, mime }
     const up = await SP.uploadFile(sub.id, filename, bytes, mime); return up;
   } catch (e) { await note(oppId, `Saved in the app, but not copied to SharePoint: ${oneLine(e)}`).catch(() => {}); return null; }
 }
+// Same, for a big file already on disk (plans). Returns the SharePoint item or null.
+export async function pushOpportunityFilePath(oppId, { kind, filename, filePath, size, mime }) {
+  if (!enabled()) return null;
+  try { const dir = await ensureOpportunityFolder(oppId); const sub = await SP.ensureFolder(dir.id, SUBFOLDER[kind] || SUBFOLDER.Other); return await SP.uploadFromPath(sub.id, filename, filePath, size, mime); }
+  catch (e) { await note(oppId, `Saved in the app, but not copied to SharePoint: ${oneLine(e)}`).catch(() => {}); return null; }
+}
 // At award: the folder and the project take the C code.
 export async function onAwarded(oppId, projectId) {
   if (!enabled()) return null;

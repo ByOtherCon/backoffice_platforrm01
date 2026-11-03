@@ -29,6 +29,16 @@ export async function saveFile(bytes, filename) {
   await fs.promises.writeFile(path.join(UPLOAD_DIR, key), bytes, { mode: 0o600 });
   return { key, mime: t[0], size: bytes.length };
 }
+// A large upload that was streamed to a temp file: check the name and the first bytes, then move it into storage.
+export async function adoptFile(tmpPath, filename, allow = ['.pdf', '.zip']) {
+  const ext = path.extname(String(filename || '')).toLowerCase();
+  const check = { '.pdf': ['application/pdf', (b) => b.subarray(0, 5).toString() === '%PDF-'], '.zip': ['application/zip', (b) => b.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04])) || b.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x05, 0x06]))] }[ext];
+  if (!check || !allow.includes(ext)) throw bad('That file type is not allowed here. Use a ZIP or PDF.');
+  const fh = await fs.promises.open(tmpPath, 'r'); const head = Buffer.alloc(8); const { bytesRead } = await fh.read(head, 0, 8, 0); await fh.close();
+  const size = (await fs.promises.stat(tmpPath)).size; if (!size) throw bad('The file is empty.'); if (!check[1](head.subarray(0, bytesRead))) throw bad('The file contents do not match its type.');
+  const key = crypto.randomBytes(16).toString('hex') + ext; await fs.promises.rename(tmpPath, path.join(UPLOAD_DIR, key)); await fs.promises.chmod(path.join(UPLOAD_DIR, key), 0o600).catch(() => {});
+  return { key, mime: check[0], size };
+}
 export async function uploadDocument(user, { category, name, filename, bytes, projectId, subcontractorId, expiresOn }) {
   if (!CATEGORIES.includes(category)) throw bad('Choose a document category.');
   const exp = dateStr(expiresOn, 'Expiration date', category === 'COI');

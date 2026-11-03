@@ -135,7 +135,7 @@ async function projectView(id, tab = 'trades') {
   else content = h('div', { class: 'card soon' }, h('h2', {}, TABS.find((t) => t[0] === tab)[1]), h('p', {}, 'Coming in the next build step.'));
   return shell('projects', [
     h('p', {}, h('a', { href: '#/projects' }, '← All projects')),
-    h('h1', {}, p.project.name), h('p', { class: 'muted' }, `${p.project.gc} · ${p.project.client} · ${p.project.address}`, p.project.contractUrl ? [' · ', h('a', { href: p.project.contractUrl, target: '_blank', rel: 'noopener' }, 'Contract')] : ''),
+    h('h1', {}, p.project.name, p.project.refCode ? h('span', { class: 'pill Approved', style: 'margin-left:.7rem;font-size:14px', title: 'Contract reference code: use it on every document' }, p.project.refCode) : ''), p.project.folderUrl || canEdit ? h('div', { style: 'margin:.2rem 0 .5rem' }, estimating.folderButtons({ id: p.project.id, name: p.project.name, folderUrl: p.project.folderUrl, spPath: p.project.spPath }, canEdit, 'project', true)) : '', h('p', { class: 'muted' }, `${p.project.gc} · ${p.project.client} · ${p.project.address}`, p.project.contractUrl ? [' · ', h('a', { href: p.project.contractUrl, target: '_blank', rel: 'noopener' }, 'Contract')] : ''),
     h('div', { class: 'grid kpis', style: 'margin-bottom:1rem' },
       h('div', { class: 'kpi' }, h('div', { class: 'l' }, 'Original contract + COs'), h('div', { class: 'v' }, usd(p.totals.contract))),
       h('div', { class: 'kpi' }, h('div', { class: 'l' }, 'Billed'), h('div', { class: 'v' }, usd(p.totals.billed))),
@@ -518,6 +518,16 @@ async function aiCard() {
     h('div', { class: 'row', style: 'margin-top:.8rem' }, h('label', { style: 'margin:0' }, 'Monthly cap (tokens)'), cap, isSuper() && h('button', { onclick: guard(err, async () => { await api('PUT', '/settings/ai', { monthlyTokenCap: cap.value }); notice(err, 'Saved.', 'ok'); }) }, 'Save cap')));
 }
 
+// Super Admin: is the shared SharePoint folder connection working?
+async function sharepointCard() {
+  const s = await api('GET', '/sharepoint/status?test=1'), err = h('div');
+  return h('div', { class: 'card' }, h('div', { class: 'row spread' }, h('h2', {}, 'SharePoint (shared project folders)'), s.configured ? h('button', { class: 'small', onclick: () => render() }, 'Test connection') : ''), err,
+    !s.configured ? h('div', {}, h('p', { class: 'err' }, 'Not connected yet.'), h('p', { class: 'muted' }, 'Add these settings on the server (Render → Environment): ' + (s.needs || []).join(', ') + '. Everything else keeps working; folders are created once it is connected.')) :
+    s.connected ? h('div', {}, h('p', { class: 'ok' }, `Connected to ${s.siteUrl} · library "${s.library}"${s.root ? ' · folders under "' + s.root + '"' : ''}.`), s.webUrl ? h('p', {}, h('a', { href: s.webUrl, target: '_blank', rel: 'noopener' }, 'Open the library in SharePoint')) : '',
+      h('p', { class: 'muted' }, 'Accepting an opportunity creates ByOther / year / GC / P-code folders with 01. DL, 02. Proposal, 03. Change Orders, 04. Documents and 05. Material & Equipment Specs. Awarding renames P to C. To work from File Explorer, press Sync on the library in SharePoint once on each PC.')) :
+    h('div', {}, h('p', { class: 'err' }, 'Could not connect: ' + (s.error || 'unknown problem')), h('p', { class: 'muted' }, 'Check the four Microsoft settings on the server, that admin consent was granted for Sites.ReadWrite.All, and that the secret has not expired.')));
+}
+
 // Super Admin only: where the AI usage goes, by person, task and day.
 async function aiReportCard() {
   const days = state.aiDays || 30, r = await api('GET', `/ai/report?days=${days}`), err = h('div'); const th = (t, n) => h('th', { class: n ? 'n' : '' }, t); const fmt = (n) => Number(n).toLocaleString(); const money = (v) => (v == null ? '—' : '$' + v.toFixed(2));
@@ -674,7 +684,7 @@ async function adminView() {
   if (['Super Admin', 'Sub Admin'].includes(state.user.role)) parts.push(await bidFeedCard());
   parts.push(await clockSettingsCard());
   if (['Super Admin', 'Sub Admin'].includes(state.user.role)) parts.push(await overheadCard());
-  parts.push(await aiCard()); if (isSuper()) parts.push(await aiReportCard());
+  parts.push(await aiCard()); if (isSuper()) { parts.push(await sharepointCard()); parts.push(await aiReportCard()); }
   if (isSuper()) parts.push(await usersSection());
   return shell('admin', [h('h1', {}, 'Admin'), h('p', { class: 'sub' }, 'Create vendors, suppliers, employees, trades and GCs here. Projects pick from these lists. Archive instead of delete once a record has history.'), ...parts]);
 }

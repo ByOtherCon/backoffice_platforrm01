@@ -22,6 +22,7 @@ One system for By Other Construction: **Estimating** (bid invitations to awarded
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | The Google app that lets the platform read the BuildingConnected emails (read-only). See "Bid inbox from Gmail". |
 | `PUBLIC_URL` | The site's own address. Render supplies it automatically; set it only on another host. |
 | `SMTP_URL`, `EMAIL_FROM` | Sends vendor insurance-request emails. Without it they wait in the outbox on the Compliance page. |
+| `MS_TENANT_ID`, `MS_CLIENT_ID`, `MS_CLIENT_SECRET`, `MS_SITE_URL` | Shared project folders in SharePoint (Microsoft Graph, app-only; the app needs the Sites.ReadWrite.All application permission with admin consent). Optional `MS_LIBRARY` (default Documents) and `MS_ROOT_FOLDER` (default ByOther; set empty to start at the library root). |
 | `APS_CLIENT_ID`, `APS_CLIENT_SECRET` | Reserved for a future live BuildingConnected link (not built). Use CSV import today. |
 
 ## Putting it online (Render)
@@ -59,3 +60,10 @@ Super Admin (owner only) · Sub Admin (can approve vendor payments, change pay r
 - **Follow Ups**: one case per submitted version, cadence 7 / 3 / 2 / 4 / 2 business days (shortened only as far as a known start date requires). Sending is manual; you log emails and calls.
 - Every status change, edit, decline, upload and note is written to the opportunity's **Notes**.
 - Addresses are checked against the U.S. Census geocoder (free). If that service is unreachable you can use the address as entered; it is then marked as a format check only.
+
+## Shared folders (SharePoint)
+- Layout: `ByOther / <year> / <GC> / <P11021_Project_City> / 01. DL, 02. Proposal, 03. Change Orders, 04. Documents, 05. Material & Equipment Specs`.
+- Reviewing or Accepting an opportunity creates its folder (an existing GC or project folder is reused, never duplicated). Accepting renames a no-number folder to its P code. Awarding renames P to C and gives the project its contract code.
+- Files uploaded in the app are also copied into the right numbered folder. A SharePoint problem never loses an upload: it is saved in the app and a note says it was not copied.
+- Reference code: P + month + day + a running number (P11021 is the first accepted on Nov 2). On award the P becomes C (C11021) and project documents carry it.
+- To work from File Explorer, press Sync on the library in SharePoint once on each PC; then "Open in File Explorer" downloads a shortcut that opens the synced folder.

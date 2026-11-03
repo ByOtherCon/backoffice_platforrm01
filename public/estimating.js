@@ -62,7 +62,36 @@ function filesPanel(o, canWrite, err) {
   const file = h('input', { type: 'file', style: 'display:none', onchange: guard(err, async () => { const f = file.files[0]; if (!f) return; await uploadFile(`/opportunities/${o.id}/files?kind=Submittal`, f); file.value = ''; render(); }) });
   return h('div', {}, h('div', { class: 'row spread' }, h('label', {}, 'Submittal folder (all PDFs and files)'), canWrite ? h('span', {}, file, h('button', { type: 'button', class: 'small', onclick: () => file.click() }, '+ Add file')) : ''),
     o.files.length ? h('table', {}, h('tbody', {}, o.files.map((f) => h('tr', {}, h('td', {}, h('a', { href: '/api/opportunity-files/' + f.id, target: '_blank', rel: 'noopener' }, f.name)), h('td', {}, h('span', { class: 'pill' }, f.kind)), h('td', { class: 'muted' }, when(f.at)), h('td', {}, canWrite && !o.submissions.some((s) => s.fileId === f.id) ? h('button', { class: 'small danger', onclick: guard(err, async () => { if (confirm(`Remove ${f.name}?`)) { await api('DELETE', `/opportunities/${o.id}/files/${f.id}`); render(); } }) }, 'Remove') : ''))))) : h('p', { class: 'muted' }, 'No files yet. The proposal PDF is added when the bid is submitted.'),
-    o.folderUrl ? h('p', {}, h('a', { href: o.folderUrl, target: '_blank', rel: 'noopener' }, 'Open the OneDrive folder')) : '');
+    h('div', { style: 'margin-top:.5rem' }, h('label', {}, 'Shared folder'), folderButtons(o, canWrite, 'opportunity', OPTS?.sharepoint !== false)));
+}
+
+// ---------------------------------------------------------------- the shared folder: open it in SharePoint or in File Explorer
+// A web page cannot open File Explorer by itself. So "Open in File Explorer" gives a small shortcut file that Windows opens in Explorer,
+// pointing at the folder where the SharePoint library is synced on this PC (set once, remembered in this browser).
+const SYNC_KEY = 'byother.syncRoot';
+const syncRoot = () => { try { return localStorage.getItem(SYNC_KEY) || ''; } catch { return ''; } };
+const setSyncRoot = (v) => { try { localStorage.setItem(SYNC_KEY, v); } catch { /* private window: asked again next time */ } };
+function askSyncRoot() {
+  const cur = syncRoot(), v = prompt('Where is the shared library on this PC?\n\nIn File Explorer, find the folder OneDrive made when you pressed Sync in SharePoint (for example C:\\Users\\Benny\\ByOther Projects - Documents) and paste its full path.', cur || '');
+  if (v === null) return null; const t = v.trim().replace(/[\\/]+$/, ''); if (!t) return null; setSyncRoot(t); return t;
+}
+const localPath = (root, spPath) => root + '\\' + String(spPath).split('/').join('\\');
+function openInExplorer(name, spPath) {
+  const root = syncRoot() || askSyncRoot(); if (!root) return; const path = localPath(root, spPath);
+  const url = 'file:///' + path.replace(/\\/g, '/').split('/').map((seg, i) => (i === 0 && /^[A-Za-z]:$/.test(seg) ? seg : encodeURIComponent(seg))).join('/');
+  const blob = new Blob([`[InternetShortcut]\r\nURL=${url}\r\n`], { type: 'application/octet-stream' }), a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = String(name).replace(/[\\/:*?"<>|]/g, ' ').slice(0, 80) + '.url'; document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+// kind: 'opportunity' or 'project'. Shows what the record has: a SharePoint folder (open it), or a way to make one.
+export function folderButtons(o, w, kind = 'opportunity', sharepointOn = true) {
+  const err = h('div'), path = o.spPath;
+  if (o.folderUrl) return h('div', {}, h('div', { class: 'row', style: 'flex-wrap:wrap;gap:.4rem' },
+    h('a', { class: 'small', href: o.folderUrl, target: '_blank', rel: 'noopener' }, 'Open in SharePoint'),
+    path ? h('button', { type: 'button', class: 'small', onclick: () => openInExplorer(o.name, path), title: 'Opens the folder in File Explorer (needs the library synced to this PC)' }, 'Open in File Explorer') : '',
+    path ? h('button', { type: 'button', class: 'small', onclick: (e) => { const root = syncRoot() || askSyncRoot(); if (root) copy(localPath(root, path), e.target); } }, 'Copy path') : '',
+    path ? h('button', { type: 'button', class: 'small', onclick: () => askSyncRoot(), title: syncRoot() ? 'Now: ' + syncRoot() : '' }, 'PC folder…') : ''), err);
+  if (w && sharepointOn) return h('div', {}, h('button', { type: 'button', class: 'small', onclick: guard(err, async () => { await api('POST', `/${kind === 'project' ? 'projects' : 'opportunities'}/${o.id}/folder`, {}); render(); }) }, 'Create folder in SharePoint'), err);
+  return h('span', { class: 'muted' }, sharepointOn ? 'No folder yet' : 'SharePoint is not connected yet');
 }
 
 // ---------------------------------------------------------------- the one opportunity form (New and Edit, from any tracker)
@@ -145,7 +174,8 @@ async function submitModal(o) {
   file.onchange = guard(info, async () => {
     const pdf = file.files[0]; if (!pdf) return; fileId = null; notice(info, 'Uploading and reading the proposal…', 'ok');
     const r = await uploadFile(`/opportunities/${o.id}/files?kind=Proposal`, pdf); fileId = r.fileId;
-    if (r.parsed) { rows = r.parsed.trades.map((t) => ({ tradeId: t.tradeId || '', amount: t.amount, hint: t.trade })); notice(info, `Read ${rows.length} trade${rows.length === 1 ? '' : 's'} from the PDF. Check every amount before saving.`, 'ok'); r.parsed.warnings.forEach((w) => info.append(h('div', { class: 'err' }, w))); }
+    const copied = r.sharepoint ? ' It was also copied to the 02. Proposal folder in SharePoint.' : '';
+    if (r.parsed) { rows = r.parsed.trades.map((t) => ({ tradeId: t.tradeId || '', amount: t.amount, hint: t.trade })); notice(info, `Read ${rows.length} trade${rows.length === 1 ? '' : 's'} from the PDF. Check every amount before saving.${copied}`, 'ok'); r.parsed.warnings.forEach((w) => info.append(h('div', { class: 'err' }, w))); }
     else { notice(info, r.aiError ? r.aiError : 'The PDF is saved. Enter the trades and amounts below.', r.aiError ? 'err' : 'ok'); }
     redraw();
   });
@@ -242,7 +272,7 @@ const tradeList = (o) => (o.tradePrices.length ? h('div', {}, o.tradePrices.map(
 function filterChips(list, current, counts, onPick) { return h('div', { class: 'filters' }, list.map((k) => h('button', { type: 'button', class: 'chip' + (k === current ? ' on' : ''), onclick: () => onPick(k) }, `${k === 'Decided Not To Submit' ? 'Decided Not To Submit' : k}${counts?.[k] != null ? ' ' + counts[k] : ''}`))); }
 function folderModal(o) {
   const msg = h('div'); const fp = o.folderPlan;
-  modal('Folder for this proposal', h('div', {}, h('p', {}, 'The standard folder tree for the proposal:'), h('pre', { class: 'draft' }, fp.root + '\n' + fp.folders.map((x) => '  ' + x).join('\n')), C.hasFolderAccess() ? h('button', { type: 'button', onclick: guard(msg, async () => { const where = await C.createProposalFolders(fp); notice(msg, `Created in ${where}`, 'ok'); }) }, 'Create these folders on my computer…') : '', C.folderNote(), msg));
+  modal('Folder for this proposal', h('div', {}, o.folderUrl || OPTS?.sharepoint ? h('div', { style: 'margin-bottom:.8rem' }, folderButtons(o, canEstimate(), 'opportunity', OPTS?.sharepoint !== false)) : '', h('p', {}, 'The standard folder tree for the proposal:'), h('pre', { class: 'draft' }, fp.root + '\n' + fp.folders.map((x) => '  ' + x).join('\n')), C.hasFolderAccess() ? h('button', { type: 'button', onclick: guard(msg, async () => { const where = await C.createProposalFolders(fp); notice(msg, `Created in ${where}`, 'ok'); }) }, 'Create these folders on my computer…') : '', C.folderNote(), msg));
 }
 function proposalsPanel(data, err, w) {
   const open = (o) => (location.hash = '#/estimating/' + o.id);
@@ -253,7 +283,7 @@ function proposalsPanel(data, err, w) {
         h('td', { style: 'white-space:normal;min-width:220px' }, o.proposalId ? h('strong', {}, o.proposalId) : pill('Reviewing'), h('div', { class: 'edit', onclick: () => open(o) }, o.name), sub(addrLine(o))),
         h('td', { style: 'white-space:normal;min-width:180px' }, contactBlock(o)), h('td', { style: 'white-space:normal' }, o.estimator || '—', o.consideredTrades.length ? sub(o.consideredTrades.map((t) => t.name).join(', ')) : ''),
         h('td', {}, fmtDay(o.due), sub(o.countdown)), h('td', {}, statusSelect(o, w)), h('td', {}, tradeList(o)),
-        inviteCell(o), h('td', {}, o.files.length ? h('a', { href: '#/estimating/' + o.id }, `${o.files.length} file${o.files.length === 1 ? '' : 's'}`) : '—', o.folderUrl ? h('div', {}, h('a', { href: o.folderUrl, target: '_blank', rel: 'noopener' }, 'OneDrive')) : ''),
+        inviteCell(o), h('td', {}, o.files.length ? h('a', { href: '#/estimating/' + o.id }, `${o.files.length} file${o.files.length === 1 ? '' : 's'}`) : '—', o.folderUrl ? h('div', {}, h('a', { href: o.folderUrl, target: '_blank', rel: 'noopener' }, 'SharePoint')) : ''),
         h('td', {}, h('div', { class: 'stack' }, w && ['Accepted', 'Started'].includes(o.status) ? h('button', { class: 'small primary', onclick: () => submitModal(o) }, 'Submit') : '', w ? h('button', { class: 'small', onclick: () => opportunityForm(o).catch((e) => alert(e.message)) }, 'Edit') : '', o.acceptedDate ? h('button', { class: 'small', onclick: async () => folderModal(await api('GET', '/opportunities/' + o.id)) }, 'Folder') : ''))))))) : h('p', { class: 'muted', style: 'padding:1rem 0' }, 'Nothing here yet. Mark a New opportunity Reviewing or Accepted from Bid Opportunities.'));
 }
 

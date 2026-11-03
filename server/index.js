@@ -26,6 +26,7 @@ import * as db from './dashboard.js';
 import * as rp from './reports.js';
 import * as tk from './takeoff.js';
 import * as bd from './bids.js';
+import * as pw from './passwords.js';
 import { bootstrapOwner } from './bootstrap.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
@@ -43,6 +44,11 @@ route('POST', '/api/login', async ({ body, res }) => {
 });
 route('POST', '/api/logout', async ({ user, res }) => { if (user) await auth.logout(user.token); send(res, 200, { ok: true }, { 'set-cookie': auth.clearCookie(SECURE) }); return 'sent'; });
 route('GET', '/api/me', async ({ user }) => { if (!user) throw new HttpError(401, 'Sign in required.'); return { user: { id: user.id, email: user.email, name: user.name, role: user.role } }; });
+
+route('POST', '/api/me/password', async ({ user, body }) => { if (!user) throw new HttpError(401, 'Sign in required.'); return pw.changeOwn(user, body.current, body.next); });
+route('POST', '/api/password/forgot', async ({ body }) => pw.requestReset(body.email));
+route('GET', '/api/password/reset/:token', async ({ params }) => pw.checkReset(params.token));
+route('POST', '/api/password/reset', async ({ body }) => pw.finishReset(body.token, body.password));
 
 // Admin: master records
 for (const kind of Object.keys(admin.KINDS)) {

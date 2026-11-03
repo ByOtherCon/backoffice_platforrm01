@@ -25,7 +25,7 @@ export const redirectUri = () => `${baseUrl()}/api/gmail/callback`;
 export function connectUrl(user) {
   if (!googleConfigured()) throw new HttpError(503, 'Google is not set up yet. Add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET on the server first.');
   const payload = Buffer.from(JSON.stringify({ uid: user.id, exp: Date.now() + 10 * 60000, n: crypto.randomBytes(6).toString('hex') })).toString('base64url');
-  const p = new URLSearchParams({ client_id: process.env.GOOGLE_CLIENT_ID, redirect_uri: redirectUri(), response_type: 'code', scope: 'https://www.googleapis.com/auth/gmail.readonly', access_type: 'offline', prompt: 'consent', state: `${payload}.${sign(payload)}` });
+  const p = new URLSearchParams({ client_id: process.env.GOOGLE_CLIENT_ID, redirect_uri: redirectUri(), response_type: 'code', scope: 'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send', access_type: 'offline', prompt: 'consent', state: `${payload}.${sign(payload)}` });
   return 'https://accounts.google.com/o/oauth2/v2/auth?' + p;
 }
 export async function finishConnect(code, state) {
@@ -37,7 +37,7 @@ export async function finishConnect(code, state) {
   if (!tok.refresh_token) throw bad('Google did not give lasting access. Remove "ByOther" at myaccount.google.com/permissions, then connect again.');
   const pr = await gfetch('https://gmail.googleapis.com/gmail/v1/users/me/profile', { headers: { authorization: 'Bearer ' + tok.access_token } }); const prof = await pr.json();
   if (!pr.ok || !prof.emailAddress) throw bad('Connected, but the mailbox could not be read. Make sure Gmail access was allowed.');
-  await q(`INSERT INTO integrations(name,data) VALUES ('gmail',$1) ON CONFLICT (name) DO UPDATE SET data=$1, updated_at=now()`, [{ email: prof.emailAddress, refresh: seal(tok.refresh_token), connectedAt: new Date().toISOString(), connectedBy: st.uid }]);
+  await q(`INSERT INTO integrations(name,data) VALUES ('gmail',$1) ON CONFLICT (name) DO UPDATE SET data=$1, updated_at=now()`, [{ email: prof.emailAddress, refresh: seal(tok.refresh_token), connectedAt: new Date().toISOString(), connectedBy: st.uid, canSend: String(tok.scope || '').includes('gmail.send') }]);
   return { email: prof.emailAddress };
 }
 export const disconnect = () => q(`DELETE FROM integrations WHERE name='gmail'`);
@@ -63,8 +63,17 @@ async function gmailClient() {
     }
     throw last;
   };
-  return { email: d.email, request };
+  // Sends a plain-text email from the connected mailbox (needs the send permission granted when Gmail was connected).
+  const send = async ({ to, subject, text }) => {
+    if (!d.canSend) throw new HttpError(409, 'Gmail was connected without permission to send. Disconnect and connect Gmail again in Admin.');
+    const clean = (s) => String(s).replace(/[\r\n]+/g, ' ');
+    const raw = Buffer.from([`To: ${clean(to)}`, `Subject: =?UTF-8?B?${Buffer.from(clean(subject)).toString('base64')}?=`, 'MIME-Version: 1.0', 'Content-Type: text/plain; charset=UTF-8', '', text].join('\r\n')).toString('base64url');
+    const r = await gfetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', { method: 'POST', headers: { authorization: 'Bearer ' + (await token()), 'content-type': 'application/json' }, body: JSON.stringify({ raw }) });
+    if (!r.ok) throw new HttpError(502, `Gmail would not send the email (${r.status}).`);
+  };
+  return { email: d.email, request, send };
 }
+export async function sendMail(msg) { return (await gmailClient()).send(msg); }
 
 // ------------------------------------------------------------------ reading email
 const b64 = (s) => Buffer.from(s.replaceAll('-', '+').replaceAll('_', '/'), 'base64').toString('utf8');
@@ -222,7 +231,7 @@ export async function runRefresh({ trigger = 'Manual', userId = null } = {}) {
 export async function refreshStatus() {
   const d = await stored(); const runs = await q(`SELECT id, trigger, status, started_at, finished_at, threads, added, updated, skipped, declined, error FROM bid_refresh_runs ORDER BY started_at DESC LIMIT 8`);
   const settings = await bidSettings();
-  return { googleSetUp: googleConfigured(), connected: !!d, email: d?.email ?? null, connectedAt: d?.connectedAt ?? null, label: settings.label, running: isRunning(), last: runs[0] ?? null, lastGood: runs.find((r) => r.status === 'Done') ?? null, runs };
+  return { googleSetUp: googleConfigured(), connected: !!d, canSend: !!d?.canSend, email: d?.email ?? null, connectedAt: d?.connectedAt ?? null, label: settings.label, running: isRunning(), last: runs[0] ?? null, lastGood: runs.find((r) => r.status === 'Done') ?? null, runs };
 }
 
 // ------------------------------------------------------------------ the 8:00 and 1:00 schedule

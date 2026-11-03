@@ -66,7 +66,7 @@ test('setup; refreshing before Gmail is connected explains what to do', async ()
 test('connecting Gmail: only the owner, read-only access, a signed state, and the lasting key is stored encrypted', async () => {
   assert.equal((await call('GET', '/api/gmail/connect', null, sub)).status, 403);
   const u = new URL((await call('GET', '/api/gmail/connect', null, owner)).body.url);
-  assert.equal(u.origin + u.pathname, 'https://accounts.google.com/o/oauth2/v2/auth'); assert.equal(u.searchParams.get('scope'), 'https://www.googleapis.com/auth/gmail.readonly'); assert.equal(u.searchParams.get('access_type'), 'offline'); assert.equal(u.searchParams.get('redirect_uri'), 'https://desk.example/api/gmail/callback');
+  assert.equal(u.origin + u.pathname, 'https://accounts.google.com/o/oauth2/v2/auth'); assert.equal(u.searchParams.get('scope'), 'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send'); assert.equal(u.searchParams.get('access_type'), 'offline'); assert.equal(u.searchParams.get('redirect_uri'), 'https://desk.example/api/gmail/callback');
   const state = u.searchParams.get('state');
   assert.equal((await call('GET', `/api/gmail/callback?code=abc&state=${state}x`, null, owner)).status, 400);         // tampered
   assert.equal((await call('GET', `/api/gmail/callback?code=abc&state=${state}`, null, sub)).status, 403);

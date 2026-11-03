@@ -26,16 +26,40 @@ function shell(active, content) {
       h('nav', {}, nav.map(([id, label]) => h('a', { href: '#/' + id, class: active === id ? 'on' : '' }, label))),
       h('button', { class: 'small', id: 'bell', onclick: openNotifications, title: 'Notifications' }, 'Alerts'),
       h('span', { class: 'who' }, `${state.user.name || state.user.email} · ${state.user.role}`),
+      h('button', { class: 'small', onclick: changePasswordForm, title: 'Change your password' }, 'Password'),
       h('button', { class: 'small', onclick: async () => { await api('POST', '/logout', {}); state.user = null; render(); } }, 'Sign out')),
     h('main', {}, content));
 }
 
+function changePasswordForm() {
+  const cur = h('input', { type: 'password', autocomplete: 'current-password' }), n1 = h('input', { type: 'password', autocomplete: 'new-password', placeholder: 'At least 10 characters' }), n2 = h('input', { type: 'password', autocomplete: 'new-password' });
+  formModal('Change your password', [field('Current password', cur), field('New password', n1), field('Type the new password again', n2)], async () => {
+    if (n1.value !== n2.value) throw new Error('The two new passwords do not match.');
+    await api('POST', '/me/password', { current: cur.value, next: n1.value }); alert('Your password was changed. Any other devices signed in as you were signed out.');
+  }, 'Change password');
+}
+function forgotForm(prefill) {
+  const email = h('input', { type: 'email', value: prefill || '', autocomplete: 'username' });
+  formModal('Forgot your password?', [h('p', { class: 'muted' }, 'Enter your company email. If it belongs to an account, we email a link to choose a new password. The link works once and expires in 60 minutes.'), field('Company email', email)], async () => {
+    const r = await api('POST', '/password/forgot', { email: email.value }); alert(r.message);
+  }, 'Email me a link');
+}
+function resetView(token) {
+  const err = h('div'), n1 = h('input', { type: 'password', autocomplete: 'new-password', required: true, placeholder: 'At least 10 characters' }), n2 = h('input', { type: 'password', autocomplete: 'new-password', required: true }), who = h('p', { class: 'muted' }, 'Checking your link…');
+  api('GET', '/password/reset/' + encodeURIComponent(token)).then((r) => { who.textContent = 'Choose a new password for ' + r.email + '.'; }).catch((e) => { who.replaceChildren(); notice(err, e.message); });
+  const done = () => { history.replaceState(null, '', '/'); render(); };
+  return h('div', { class: 'login' }, h('form', { onsubmit: guard(err, async (e) => { e.preventDefault(); if (n1.value !== n2.value) throw new Error('The two passwords do not match.'); await api('POST', '/password/reset', { token, password: n1.value }); alert('Password changed. Sign in with the new one.'); done(); }) },
+    h('img', { src: '/logo.png', alt: 'ByOther Construction' }), h('div', { class: 'card' }, who, h('div', {}, h('label', {}, 'New password'), n1), h('div', { style: 'margin-top:.8rem' }, h('label', {}, 'Type it again'), n2), err,
+      h('button', { class: 'primary', style: 'width:100%;margin-top:.8rem', type: 'submit' }, 'Save new password'), h('button', { type: 'button', class: 'small', style: 'margin-top:.6rem', onclick: done }, 'Back to sign in'))));
+}
 function loginView() {
+  const resetToken = new URLSearchParams(location.search).get('reset'); if (resetToken) return resetView(resetToken);
   const err = h('div'); const email = h('input', { type: 'email', autocomplete: 'username', required: true }); const pw = h('input', { type: 'password', autocomplete: 'current-password', required: true });
   const form = h('form', { onsubmit: guard(err, async (e) => { e.preventDefault(); const r = await api('POST', '/login', { email: email.value, password: pw.value }); state.user = r.user; location.hash = '#/dashboard'; await boot(); }) },
     h('img', { src: '/logo.png', alt: 'ByOther Construction' }), h('div', { class: 'card' },
       h('div', {}, h('label', {}, 'Company email'), email), h('div', { style: 'margin-top:.8rem' }, h('label', {}, 'Password'), pw), err,
-      h('button', { class: 'primary', style: 'width:100%;margin-top:.8rem', type: 'submit' }, 'Sign in')));
+      h('button', { class: 'primary', style: 'width:100%;margin-top:.8rem', type: 'submit' }, 'Sign in'),
+      h('button', { type: 'button', class: 'small', style: 'margin-top:.6rem', onclick: () => forgotForm(email.value) }, 'Forgot password?')));
   return h('div', { class: 'login' }, form);
 }
 
@@ -352,7 +376,7 @@ async function bidFeedCard() {
   const label = h('input', { value: f.label || '', placeholder: 'Optional, e.g. Building Connected', disabled: !can ? true : null });
   const region = (r) => { const c = h('input', { value: r?.city ?? '', disabled: r ? true : null }), t = h('select', {}, [1, 2, 3, 4].map((n) => h('option', { value: n }, `Tier ${n}`))); if (r) t.value = r.tier; formModal(r ? `Edit ${r.city}` : 'Add a city', [field('City', c), field('Region tier', t)], async () => { await api('PUT', '/regions', { city: c.value, tier: t.value }); render(); }); };
   return h('div', { class: 'card' }, h('h2', {}, 'Bid invitations from Gmail'), err,
-    f.connected ? h('p', { class: 'ok' }, `Connected to ${f.email}. Read-only: it can read mail, never send or change it.`) : h('p', { class: f.googleSetUp ? 'muted' : 'err' }, f.googleSetUp ? 'Not connected yet. Press Connect and sign in with the Gmail account that receives the BuildingConnected invitations.' : 'Google is not set up on the server yet (GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET). See the setup steps.'),
+    f.connected ? h('div', {}, h('p', { class: 'ok' }, `Connected to ${f.email}. It reads BuildingConnected invitations and sends password-reset emails. It never deletes or changes mail.`), f.canSend ? '' : h('p', { class: 'err' }, 'This connection was made before password-reset emails existed, so it cannot send yet. Press Disconnect, then Connect Gmail again and allow sending.')) : h('p', { class: f.googleSetUp ? 'muted' : 'err' }, f.googleSetUp ? 'Not connected yet. Press Connect and sign in with the Gmail account that receives the BuildingConnected invitations.' : 'Google is not set up on the server yet (GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET). See the setup steps.'),
     h('div', { class: 'row' }, isSuper() ? (f.connected ? h('button', { onclick: guard(err, async () => { if (confirm('Disconnect Gmail? Leads already in the list stay.')) { await api('DELETE', '/gmail'); render(); } }) }, 'Disconnect') : h('button', { class: 'primary', disabled: !f.googleSetUp ? true : null, onclick: guard(err, async () => { location.href = (await api('GET', '/gmail/connect')).url; }) }, 'Connect Gmail')) : '', f.connected ? h('button', { onclick: guard(err, async () => { await api('POST', '/bids/refresh', {}); location.hash = '#/estimating/bids'; }) }, 'Refresh now') : ''),
     f.connected ? h('div', { class: 'row', style: 'margin-top:.8rem' }, h('label', { style: 'margin:0' }, 'Gmail label to read'), label, can && h('button', { class: 'small', onclick: guard(err, async () => { await api('PUT', '/bids/settings', { label: label.value }); notice(err, 'Saved. The next refresh uses it.', 'ok'); }) }, 'Save'), h('span', { class: 'muted', style: 'font-size:13px' }, 'Blank reads everything from buildingconnected.com.')) : '',
     f.runs.length ? h('div', { class: 'scroll', style: 'margin-top:.8rem' }, h('table', {}, h('thead', {}, h('tr', {}, ['When', 'How', 'Result', 'Emails read', 'New', 'Updated', 'Skipped (not FL)', 'Auto-declined'].map((t) => h('th', {}, t)))), h('tbody', {}, f.runs.map((r) => h('tr', {}, h('td', {}, new Date(r.started_at).toLocaleString()), h('td', {}, r.trigger), h('td', {}, h('span', { class: 'pill ' + (r.status === 'Done' ? 'Approved' : r.status === 'Error' ? 'Rejected' : 'Pending'), title: r.error || '' }, r.status)), h('td', {}, r.threads), h('td', {}, r.added), h('td', {}, r.updated), h('td', {}, r.skipped), h('td', {}, r.declined)))))) : '',
@@ -666,8 +690,9 @@ async function usersSection() {
   const userForm = (u) => {
     const f = { email: h('input', { type: 'email', value: u?.email ?? '', disabled: !!u }), name: h('input', { value: u?.name ?? '' }), title: h('input', { value: u?.title ?? '', placeholder: 'Estimator, Exec Assistant…' }), phone: h('input', { type: 'tel', value: u?.phone ?? '', placeholder: 'Used in follow-up emails' }), role: h('select', {}, ROLE_LIST.map((r) => h('option', { value: r }, r))), pw: h('input', { type: 'password', autocomplete: 'new-password', placeholder: u ? 'Leave blank to keep' : 'Min 10 characters' }) };
     if (u) f.role.value = u.role;
-    formModal(u ? `Edit ${u.email}` : 'Add user', [field('Company email', f.email), field('Name', f.name), field('Title', f.title), field('Phone', f.phone), field('Access level', f.role), field(u ? 'New password' : 'Password', f.pw)], async () => {
-      if (u) { const body = { name: f.name.value, title: f.title.value, phone: f.phone.value, role: f.role.value }; if (f.pw.value) body.password = f.pw.value; await api('PUT', '/admin/users/' + u.id, body); }
+    const owner = u?.role === 'Super Admin';
+    formModal(u ? `Edit ${u.email}` : 'Add user', [field('Company email', f.email), field('Name', f.name), field('Title', f.title), field('Phone', f.phone), ...(owner ? [h('p', { class: 'muted' }, 'This is the owner account. Its access level stays Super Admin. Change your password with the Password button at the top.')] : [field('Access level', f.role), field(u ? 'New password' : 'Password', f.pw)])], async () => {
+      if (u) { const body = { name: f.name.value, title: f.title.value, phone: f.phone.value }; if (!owner) { body.role = f.role.value; if (f.pw.value) body.password = f.pw.value; } await api('PUT', '/admin/users/' + u.id, body); }
       else await api('POST', '/admin/users', { email: f.email.value, name: f.name.value, title: f.title.value, phone: f.phone.value, role: f.role.value, password: f.pw.value });
       render();
     }, u ? 'Save' : 'Add user');
@@ -676,7 +701,7 @@ async function usersSection() {
     h('p', { class: 'muted' }, 'Super Admin: owner only. Sub Admin and Exec Assistant manage records and money. Estimators work the estimating funnel. Project Managers see assigned projects.'),
     h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, ['Email', 'Name', 'Title', 'Access', 'Active'].map((t) => h('th', {}, t)), h('th'))),
       h('tbody', {}, rows.map((u) => h('tr', { class: u.active ? '' : 'muted' }, h('td', {}, u.email), h('td', {}, u.name), h('td', {}, u.title || ''), h('td', {}, u.role), h('td', {}, u.active ? 'Yes' : 'No'),
-        h('td', {}, u.role === 'Super Admin' ? h('span', { class: 'muted' }, 'Owner') : [h('button', { class: 'small', onclick: () => userForm(u) }, 'Edit'), ' ', h('button', { class: 'small', onclick: guard(err, async () => { await api('PUT', '/admin/users/' + u.id, { active: !u.active }); render(); }) }, u.active ? 'Deactivate' : 'Activate')])))))));
+        h('td', {}, u.role === 'Super Admin' ? [h('button', { class: 'small', onclick: () => userForm(u) }, 'Edit'), ' ', h('span', { class: 'muted' }, 'Owner')] : [h('button', { class: 'small', onclick: () => userForm(u) }, 'Edit'), ' ', h('button', { class: 'small', onclick: guard(err, async () => { await api('PUT', '/admin/users/' + u.id, { active: !u.active }); render(); }) }, u.active ? 'Deactivate' : 'Activate')])))))));
 }
 async function adminView() {
   const parts = [];

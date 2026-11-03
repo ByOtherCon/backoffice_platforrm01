@@ -70,3 +70,9 @@ Super Admin (owner only) · Sub Admin (can approve vendor payments, change pay r
 ## Bringing a BuildingConnected invitation in
 - The Gmail feed reads the invitation emails. The plans are downloaded from the invitation's Files tab (Download All) and added with **Upload plans** on the opportunity: the zip streams to disk (up to 600 MB), is copied in the background to `01. DL` in SharePoint, and the app's own copy is then removed. If SharePoint is down the app keeps its copy and a note says so.
 - The BuildingConnected API needs a paid Bid Board Pro subscription to read invitations, so it is not used.
+
+## Passwords
+
+- Anyone signed in can press **Password** (top bar) to change their own password. It asks for the current one and signs out their other devices.
+- **Forgot password?** on the sign-in page emails a one-time link (valid 60 minutes, three requests an hour). The email is sent from the Gmail account connected in Admin. Gmail must have been connected with permission to send; if Admin shows a "cannot send yet" note, press Disconnect, then Connect Gmail again.
+- The owner can edit their own name, title and phone in Admin → Users; the access level stays Super Admin.

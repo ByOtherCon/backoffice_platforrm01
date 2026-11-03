@@ -23,6 +23,7 @@ async function token() {
   const r = await gfetch(`https://login.microsoftonline.com/${encodeURIComponent(s.tenant)}/oauth2/v2.0/token`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({ client_id: s.clientId, client_secret: s.secret, scope: 'https://graph.microsoft.com/.default', grant_type: 'client_credentials' }) });
   const j = await r.json().catch(() => ({}));
+  if (/AADSTS7000215/.test(j.error_description || '')) throw new HttpError(502, 'Microsoft rejected the client secret. MS_CLIENT_SECRET must be the secret VALUE (the long text Azure shows once, when the secret is created), not the Secret ID. In Azure, open the app registration, then Certificates & secrets, create a new secret, copy its Value right away, and paste it into MS_CLIENT_SECRET on Render.');
   if (!r.ok || !j.access_token) throw new HttpError(502, `Microsoft did not accept the app sign-in${j.error_description ? ': ' + String(j.error_description).split('\r')[0].slice(0, 160) : ''}. Check the tenant, client ID and secret.`);
   tok = { value: j.access_token, exp: Date.now() + (j.expires_in || 3000) * 1000 }; return tok.value;
 }

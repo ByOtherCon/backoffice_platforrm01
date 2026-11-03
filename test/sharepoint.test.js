@@ -9,6 +9,7 @@ const { hashPassword } = await import('../server/auth.js');
 const SP = await import('../server/sharepoint.js');
 const ai = await import('../server/ai.js');
 const addr = await import('../server/address.js');
+const folders = await import('../server/folders.js');
 const { todayEastern, shift } = await import('../src/lib/estimating.ts');
 const today = todayEastern(), YEAR = today.slice(0, 4);
 
@@ -137,4 +138,17 @@ test('a project that did not come from an estimate gets its own folder on reques
   const gc = (await call('POST', '/api/admin/gcs', { name: 'Direct GC' }, owner)).body.id;
   const pid = (await call('POST', '/api/projects', { name: 'Direct job', gcId: gc, client: 'C', address: 'A', trades: [{ tradeId: tDemo, amount: 1000 }] }, owner)).body.id;
   const f = await call('POST', `/api/projects/${pid}/folder`, {}, owner); assert.equal(f.status, 200); assert.ok(find('ByOther', YEAR, 'Direct GC', 'Direct job')); assert.equal((await call('POST', `/api/projects/${pid}/folder`, {}, pm)).status, 403);
+});
+
+test('the GC list fills itself from the GC folders already in the year folder: new ones only, nothing removed, run again and nothing changes', async () => {
+  const year = find('ByOther', YEAR).id;
+  for (const n of ['Sachse Construction', 'axxys construction group', 'S.A Casey Construction, Inc', '_old stuff']) add(year, n);
+  await q(`INSERT INTO gcs(name) VALUES ('Axxys Construction Group')`); await q(`INSERT INTO gcs(name, archived) VALUES ('Archived GC', true)`);
+  const before = (await q('SELECT count(*)::int n FROM gcs'))[0].n; const r = await folders.syncGcs();
+  const names = (await q('SELECT name, archived FROM gcs ORDER BY name')).map((g) => g.name);
+  assert.ok(names.includes('Sachse Construction') && names.includes('S.A Casey Construction, Inc')); assert.ok(!names.includes('axxys construction group'));   // same GC, different capitalisation: not added twice
+  assert.ok(!names.includes('_old stuff')); assert.equal((await q(`SELECT archived FROM gcs WHERE name='Archived GC'`))[0].archived, true);              // nothing re-activated or removed
+  assert.ok(r.added >= 2); const after = (await q('SELECT count(*)::int n FROM gcs'))[0].n; assert.equal(after, before + r.added);
+  assert.deepEqual(await folders.syncGcs(), { added: 0, found: r.found });                                                                              // run again: nothing new
+  const known = (await call('GET', '/api/gcs/known', null, est)).body.map((g) => g.name); assert.ok(known.includes('Sachse Construction'));             // and the opportunity form's GC list offers them
 });

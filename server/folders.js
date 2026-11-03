@@ -37,6 +37,7 @@ export async function ensureOpportunityFolder(id) {
   const year = (o.accepted_date || todayEastern()).slice(0, 4);
   const f = await SP.ensureProjectFolder({ year, gc: o.gc_name, folderName: want, alsoMatch: matcher({ code: o.proposal_id, name: o.name }) });
   await q('UPDATE opportunities SET sp_item_id=$2, sp_path=$3, folder_url=$4, sp_error=NULL WHERE id=$1', [id, f.id, f.path.join('/'), f.webUrl]);
+  syncGcs(year);   // a new GC folder may have just appeared
   await note(id, `${f.existed ? 'Linked the existing' : 'Created the'} SharePoint folder ${f.path.join(' / ')}.`);
   return { id: f.id, path: f.path.join('/'), webUrl: f.webUrl, existed: f.existed };
 }
@@ -83,4 +84,16 @@ export async function pushProjectFile(projectId, { category, filename, bytes, mi
     const sub = await SP.ensureFolder(dir.id, SUBFOLDER[category] || SUBFOLDER.Other); const name = p?.ref_code && !filename.startsWith(p.ref_code) ? `${p.ref_code} - ${filename}` : filename;
     return await SP.uploadFile(sub.id, name, bytes, mime);
   } catch (e) { return null; }
+}
+
+// The GC list fills itself from the folders that already exist: every GC folder under <root>/<year> becomes a GC (once). Nothing is
+// ever removed or re-activated, and a name that matches an existing GC (ignoring case and punctuation) is not added again.
+export async function syncGcs(year = todayEastern().slice(0, 4)) {
+  if (!enabled()) return { added: 0, found: 0 };
+  try {
+    const names = await SP.listFolderNames([...SP.settings().root, String(year)]); if (!names.length) return { added: 0, found: 0 };
+    const have = new Set((await q('SELECT name FROM gcs')).map((g) => key(g.name))); let added = 0;
+    for (const raw of names) { const name = raw.trim(); if (!name || have.has(key(name)) || /^(zz|_|\.)/i.test(name)) continue; await q('INSERT INTO gcs(name) VALUES ($1) ON CONFLICT (name) DO NOTHING', [name]); have.add(key(name)); added++; }
+    return { added, found: names.length };
+  } catch { return { added: 0, found: 0 }; }
 }

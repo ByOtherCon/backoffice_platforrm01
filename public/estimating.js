@@ -85,7 +85,9 @@ function openInExplorer(name, spPath) {
 // kind: 'opportunity' or 'project'. Shows what the record has: a SharePoint folder (open it), or a way to make one.
 export function folderButtons(o, w, kind = 'opportunity', sharepointOn = true) {
   const err = h('div'), path = o.spPath;
-  if (o.folderUrl) return h('div', {}, h('div', { class: 'row', style: 'flex-wrap:wrap;gap:.4rem' },
+  const where = path ? h('div', { style: 'margin:.2rem 0 .5rem' }, h('div', { class: 'muted', style: 'font-size:13px;word-break:break-all' }, 'In SharePoint: ' + path.split('/').join(' / ')),
+    syncRoot() ? h('div', { class: 'muted', style: 'font-size:13px;word-break:break-all;user-select:all' }, 'On this PC: ' + localPath(syncRoot(), path)) : h('div', { class: 'muted', style: 'font-size:13px' }, 'Press "PC folder…" once to show where it is on this PC.')) : '';
+  if (o.folderUrl) return h('div', {}, where, h('div', { class: 'row', style: 'flex-wrap:wrap;gap:.4rem' },
     h('a', { class: 'small', href: o.folderUrl, target: '_blank', rel: 'noopener' }, 'Open in SharePoint'),
     path ? h('button', { type: 'button', class: 'small', onclick: () => openInExplorer(o.name, path), title: 'Opens the folder in File Explorer (needs the library synced to this PC)' }, 'Open in File Explorer') : '',
     path ? h('button', { type: 'button', class: 'small', onclick: (e) => { const root = syncRoot() || askSyncRoot(); if (root) copy(localPath(root, path), e.target); } }, 'Copy path') : '',
@@ -121,6 +123,7 @@ async function opportunityForm(o) {
     field(lbl('Bid due date', true), f.due), field('Bid due time (Eastern)', f.time), field('Planned project start (for follow-up timing)', f.start),
     h('div', { class: 'wide' }, h('label', {}, lbl('Project type', true)), typeBox, h('label', { style: 'text-transform:none;letter-spacing:0;font-size:15px;font-weight:400;margin-top:.5rem;display:block' }, f.mall, ' In a shopping center / mall')),
     h('div', { class: 'wide' }, h('label', {}, 'Trades being considered'), picker.el),
+    isNew ? '' : h('div', { class: 'wide' }, h('label', {}, 'Shared folder'), folderButtons(full, canEstimate(), 'opportunity', op.sharepoint)),
     isNew ? h('div', { class: 'wide' }, h('label', {}, 'Note'), f.note, h('div', { class: 'muted', style: 'font-size:13px' }, 'A note with your name and the date and time is added automatically.')) : h('div', { class: 'wide' }, notesPanel(full, canEstimate()))];
   formModal(isNew ? 'New opportunity' : `Edit · ${full.name}`, fields.filter(Boolean), async () => {
     if (!type) throw new Error('Choose the project type.');

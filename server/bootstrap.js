@@ -8,6 +8,6 @@ export async function bootstrapOwner(env = process.env) {
   const email = String(env.ADMIN_EMAIL || '').trim().toLowerCase(), pw = String(env.ADMIN_PASSWORD || '');
   if (!email || pw.length < MIN_PASSWORD) return { created: false, reason: `Set ADMIN_EMAIL and ADMIN_PASSWORD (at least ${MIN_PASSWORD} characters) to create the owner login.` };
   for (const [i, name] of STARTER_TRADES.entries()) await q('INSERT INTO trades(name,sort) VALUES ($1,$2) ON CONFLICT (name) DO NOTHING', [name, i]);
-  await q(`INSERT INTO app_users(email,name,role,password_hash) VALUES ($1,'Owner','Super Admin',$2)`, [email, await hashPassword(pw)]);
+  await q(`INSERT INTO app_users(email,name,role,password_hash) VALUES ($1,$3,'Super Admin',$2)`, [email, await hashPassword(pw), env.ADMIN_NAME || 'Owner']);
   return { created: true, email };
 }

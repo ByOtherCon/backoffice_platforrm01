@@ -87,6 +87,12 @@ export async function uploadFile(folderId, filename, bytes, mime = 'application/
   }
   return { id: last?.id, name: last?.name ?? name, webUrl: last?.webUrl };
 }
+// Names of the sub-folders at a path below the library root (empty if the path does not exist yet).
+export async function listFolderNames(segments) {
+  let parent = 'root';
+  for (const seg of segments) { const hit = (await children(parent)).find((c) => c.folder && key(c.name) === key(seg)); if (!hit) return []; parent = hit.id; }
+  return (await children(parent)).filter((c) => c.folder).map((c) => c.name);
+}
 export async function listFolder(itemId) { return (await children(itemId)).map((c) => ({ id: c.id, name: c.name, folder: !!c.folder, webUrl: c.webUrl })); }
 export async function status() {
   const s = settings(); if (!configured()) return { configured: false, connected: false, needs: ['MS_TENANT_ID', 'MS_CLIENT_ID', 'MS_CLIENT_SECRET', 'MS_SITE_URL'].filter((k) => !process.env[k]) };

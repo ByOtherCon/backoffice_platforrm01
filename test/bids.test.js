@@ -188,3 +188,23 @@ test('NDA-locked invitations are said so, and new leads carry their audit note',
   const locked = (await q(`SELECT id FROM opportunities WHERE name='Locked Job'`))[0].id; const ln = (await call('GET', `/api/opportunities/${locked}`, null, est)).body;
   assert.match(ln.notes.map((n) => n.body).join(' '), /locked behind an NDA/); assert.match(ln.notes.map((n) => n.body).join(' '), /No bid due date was provided/); assert.equal(ln.invitations[0].nda, true);
 });
+
+test('the GC address and the job start date come from the invitation email, only when the email really says so; trades to quote are never filled in', async () => {
+  const ad = await import('../server/address.js'); ad.setAddressFetch(async (url) => { const u = new URL(url), c = (k) => u.searchParams.get(k); return { ok: true, json: async () => ({ result: { addressMatches: [{ addressComponents: { city: c('city').toUpperCase(), state: c('state'), zip: c('zip') } }] } }) }; });
+  const text = 'Dunham GC invited you to bid.\nProject: Zara - Orlando\nBid Due: 11/20/2026\nStart Date: 01/12/2027\nClient Details: Dunham GC, 500 Corporate Drive, Suite 100, Tampa, FL 33602\nView this RFP (https://app.buildingconnected.com/goto/zara)';
+  const rec = { threadId: 't9', name: 'Zara - Orlando', gc: 'Dunham GC', contactName: 'Pat', email: '', phone: '', city: 'Orlando', state: 'FL', address: '9 Mall Way', gcStreet: '500 Corporate Drive, Suite 100', gcCity: 'Tampa', gcState: 'FL', gcZip: '33602', gcAddressEvidence: '500 Corporate Drive, Suite 100, Tampa, FL 33602', startDate: '2027-01-12', startEvidence: 'Start Date: 01/12/2027', due: '2026-11-20', dueEvidence: 'Bid Due: 11/20/2026', dueTime: '', link: 'https://app.buildingconnected.com/goto/zara', type: 'Retail', mall: true, nda: false, scope: 'Demolition, Painting' };
+  const invented = { ...rec, threadId: 't10', name: 'Invented - Orlando', gcStreet: '1 Made Up Road', gcAddressEvidence: '1 Made Up Road, Nowhere, FL', startDate: '2027-02-01', startEvidence: 'Start Date: 02/01/2027', address: '3 Mall Way' };
+  const late = { ...rec, threadId: 't11', name: 'Early Start - Orlando', address: '4 Mall Way', startDate: '2026-11-01', startEvidence: 'Start Date: 01/12/2027' };
+  ai.setFetch(async () => ({ ok: true, json: async () => ({ content: [{ type: 'tool_use', name: 'record_bids', input: { opportunities: [rec, invented, late] } }], usage: { input_tokens: 10, output_tokens: 5 } }) }));
+  const out = await bd.extract(null, [{ id: 't9', text }, { id: 't10', text }, { id: 't11', text }]); ai.setFetch(claudeStandIn);
+  const byName = (n) => out.records.find((r) => r.name === n);
+  assert.deepEqual([byName('Zara - Orlando').gcAddr.street, byName('Zara - Orlando').startDate], ['500 Corporate Drive, Suite 100', '2027-01-12']);
+  assert.deepEqual([byName('Invented - Orlando').gcAddr.street, byName('Invented - Orlando').startDate], ['', null]);                       // text that is not in the email is thrown away
+  assert.equal(byName('Early Start - Orlando').startDate, null);                                                                               // the quoted start text does not support that date
+  await bd.mergeRecords([byName('Zara - Orlando'), { ...byName('Invented - Orlando'), threadId: 't10' }], 'benny@byother.net');
+  const z = await lead('Zara'), n = await lead('Invented');
+  assert.deepEqual([z.gc_street, z.gc_city, z.gc_state, z.gc_zip, z.gc_address_verified, z.planned_start], ['500 Corporate Drive, Suite 100', 'Tampa', 'FL', '33602', true, '2027-01-12']);
+  assert.equal((await q('SELECT count(*)::int n FROM opportunity_considered_trades WHERE opportunity_id=$1', [z.id]))[0].n, 0);               // the estimator chooses the trades, never the email
+  const zn = (await call('GET', `/api/opportunities/${z.id}`, null, est)).body.notes.map((x) => x.body).join(' | '); assert.match(zn, /GC address carried over from the email: 500 Corporate Drive/); assert.match(zn, /Job start date 2027-01-12 carried over/); assert.match(zn, /Scope in the invitation: Demolition, Painting/);
+  assert.equal(n.gc_street, null); assert.match((await call('GET', `/api/opportunities/${n.id}`, null, est)).body.notes.map((x) => x.body).join(' | '), /The GC address was not in the email/);
+});

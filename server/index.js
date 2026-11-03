@@ -27,6 +27,7 @@ import * as rp from './reports.js';
 import * as tk from './takeoff.js';
 import * as bd from './bids.js';
 import * as pw from './passwords.js';
+import * as ct from './contracts.js';
 import { bootstrapOwner } from './bootstrap.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
@@ -185,6 +186,17 @@ route('POST', '/api/opportunities/:id/followup/log', async ({ user, params, body
 route('POST', '/api/opportunities/:id/followup/classify', async ({ user, params, body }) => fu.classify(estWrite(user), uuid(params.id), body));
 route('POST', '/api/opportunities/:id/followup/pause', async ({ user, params, body }) => { await fu.pause(estWrite(user), uuid(params.id), body); return { ok: true }; });
 route('POST', '/api/opportunities/:id/followup/resume', async ({ user, params, body }) => { await fu.resume(estWrite(user), uuid(params.id), body); return { ok: true }; });
+route('POST', '/api/projects/:id/contract', async ({ req, user, params }) => { manage(user); return ct.readContract(user, uuid(params.id), await readRaw(req), fname(req), q1(req, 'kind') || 'Contract'); }, { raw: true });
+route('GET', '/api/projects/:id/contract', async ({ user, params }) => { await auth.requireProject(user, uuid(params.id)); return ct.getContract(params.id); });
+route('PUT', '/api/contract-runs/:id', async ({ user, params, body }) => { manage(user); await ct.updateRun(uuid(params.id), body); return { ok: true }; });
+route('POST', '/api/contract-runs/:id/lines', async ({ user, params, body }) => { manage(user); return ct.addLine(uuid(params.id), body); });
+route('POST', '/api/contract-runs/:id/apply', async ({ user, params }) => { manage(user); return ct.applyRun(user, uuid(params.id)); });
+route('DELETE', '/api/contract-runs/:id', async ({ user, params }) => { manage(user); await ct.discardRun(uuid(params.id)); return { ok: true }; });
+route('PUT', '/api/contract-lines/:id', async ({ user, params, body }) => { manage(user); await ct.updateLine(uuid(params.id), body); return { ok: true }; });
+route('DELETE', '/api/contract-lines/:id', async ({ user, params }) => { manage(user); await ct.deleteLine(uuid(params.id)); return { ok: true }; });
+route('POST', '/api/projects/:id/invoice-schedule', async ({ user, params, body }) => { manage(user); return ct.addSchedule(uuid(params.id), body); });
+route('PUT', '/api/invoice-schedule/:id', async ({ user, params, body }) => { manage(user); await ct.updateSchedule(uuid(params.id), body); return { ok: true }; });
+route('DELETE', '/api/invoice-schedule/:id', async ({ user, params }) => { manage(user); await ct.deleteSchedule(uuid(params.id)); return { ok: true }; });
 route('GET', '/api/projects/:id/origin', async ({ user, params }) => { await auth.requireProject(user, uuid(params.id)); return es.projectOrigin(params.id); });
 route('POST', '/api/opportunities/:id/takeoff', async ({ req, user, params }) => tk.runTakeoff(estWrite(user), uuid(params.id), await readRaw(req), fname(req)), { raw: true });
 route('GET', '/api/opportunities/:id/takeoff', async ({ user, params }) => { estRead(user); return tk.getTakeoff(uuid(params.id)); });

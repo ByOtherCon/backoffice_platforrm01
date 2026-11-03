@@ -143,13 +143,14 @@ async function newProjectModal() {
     err, h('div', { class: 'row', style: 'margin-top:1rem;justify-content:flex-end' }, h('button', { class: 'primary', type: 'submit' }, 'Create project'))));
 }
 
-const TABS = [['trades', 'Trade Overview'], ['cos', 'Change Orders'], ['billing', 'Progress Billing'], ['costs', 'Costs & Payables'], ['labor', 'Labor'], ['docs', 'Documents'], ['origin', 'Bid History']];
+const TABS = [['trades', 'Trade Overview'], ['contract', 'Contract'], ['cos', 'Change Orders'], ['billing', 'Progress Billing'], ['costs', 'Costs & Payables'], ['labor', 'Labor'], ['docs', 'Documents'], ['origin', 'Bid History']];
 async function projectView(id, tab = 'trades') {
   const p = await api('GET', '/projects/' + id);
   const canEdit = isManager();
   const reload = () => render();
   let content;
   if (tab === 'trades') content = tradeOverview(p, canEdit, reload);
+  else if (tab === 'contract') content = await contractTab(p, canEdit, reload);
   else if (tab === 'cos') content = changeOrders(p, reload);
   else if (tab === 'billing') content = await billingTab(p, canEdit, reload);
   else if (tab === 'costs') content = await costsTab(p, canEdit, reload);
@@ -167,6 +168,51 @@ async function projectView(id, tab = 'trades') {
       h('div', { class: 'kpi ' + (p.totals.projectedProfit < 0 ? 'bad' : 'good') }, h('div', { class: 'l' }, 'Projected profit'), h('div', { class: 'v' }, usd(p.totals.projectedProfit)))),
     h('div', { class: 'tabs' }, TABS.map(([t, label]) => h('a', { class: t === tab ? 'on' : '', href: `#/projects/${id}/${t}` }, label))),
     content]);
+}
+
+// ------------------------------------------------------------------ contract / work order
+async function contractTab(p, canEdit, reload) {
+  const c = await api('GET', `/projects/${p.project.id}/contract`); const err = h('div'); const pid = p.project.id;
+  const kind = h('select', {}, ['Contract', 'Work order'].map((k) => h('option', { value: k }, k))), file = h('input', { type: 'file', accept: '.pdf,.png,.jpg,.jpeg', style: 'display:none' });
+  file.onchange = guard(err, async () => { const f = file.files[0]; if (!f) return; notice(err, 'Reading the document with AI. This can take a minute…', 'ok'); const r = await uploadFile(`/projects/${pid}/contract?kind=${encodeURIComponent(kind.value)}`, f); if (r.error) throw new Error('Saved, but not read: ' + r.error); reload(); });
+  const dollars = (v) => (v == null ? '—' : usd(v));
+  const upload = canEdit ? h('div', { class: 'row' }, kind, file, h('button', { class: 'primary', onclick: () => file.click() }, c.review ? 'Upload a different one' : 'Upload and read'), h('span', { class: 'muted', style: 'font-size:13px' }, 'PDF or photo. The trades and amounts below do not change until you press Apply.')) : '';
+  const head = h('div', { class: 'card' }, h('div', { class: 'row spread' }, h('h2', {}, 'Signed contract or work order')), err, upload,
+    c.applied ? h('p', { class: 'muted', style: 'margin-top:.6rem' }, `Applied: ${c.applied.kind} ${c.applied.contractNumber || ''} ${c.applied.contractDate ? '· dated ' + c.applied.contractDate : ''} · total ${dollars(c.applied.total)} · retainage ${c.applied.retainagePct ?? '—'}%${c.applied.netDays != null ? ' · net ' + c.applied.netDays + ' days' : ''}`, c.applied.documentId ? [' · ', h('a', { href: `/api/documents/${c.applied.documentId}/file`, target: '_blank', rel: 'noopener' }, 'Open the file')] : '')
+      : h('p', { class: 'muted', style: 'margin-top:.6rem' }, c.review ? 'Not applied yet. Until it is, the trade figures from the proposal stay in use.' : 'No contract uploaded yet. The trade figures from the winning proposal are in use until a signed contract or work order is applied.'),
+    c.applied?.paymentTerms ? h('p', { style: 'margin:.3rem 0 0' }, h('b', {}, 'Payment terms: '), c.applied.paymentTerms) : '');
+  const parts = [head];
+  if (c.review) {
+    const r = c.review, rerr = h('div');
+    const hd = { no: h('input', { value: r.contractNumber ?? '' }), date: h('input', { type: 'date', value: r.contractDate ?? '' }), total: num(r.total ?? ''), ret: num(r.retainagePct ?? ''), net: h('input', { type: 'number', min: '0', max: '365', step: '1', value: r.netDays ?? '' }), terms: h('textarea', { rows: 2 }, r.paymentTerms ?? '') };
+    const doHead = guard(rerr, async () => { await api('PUT', `/contract-runs/${r.id}`, { contractNumber: hd.no.value, contractDate: hd.date.value, total: hd.total.value, retainagePct: hd.ret.value, netDays: hd.net.value, paymentTerms: hd.terms.value }); notice(rerr, 'Saved.', 'ok'); });
+    const tradeSel = (l) => { const s = h('select', { disabled: !canEdit ? true : null, class: l.tradeId ? '' : 'needs' }, h('option', { value: '' }, 'Choose trade…'), c.trades.map((t) => h('option', { value: t.id }, t.name))); s.value = l.tradeId || ''; s.onchange = guard(rerr, async () => { await api('PUT', `/contract-lines/${l.id}`, { tradeId: s.value }); reload(); }); return s; };
+    const lineRow = (l) => { const d = h('input', { value: l.description, style: 'width:100%;min-width:18rem' }), a = h('input', { type: 'number', step: '0.01', min: '0', value: l.amount ?? '', class: l.amount == null ? 'needs' : '', style: 'width:9rem' }), inc = h('input', { type: 'checkbox' }); inc.checked = l.include;
+      d.onchange = guard(rerr, async () => { await api('PUT', `/contract-lines/${l.id}`, { description: d.value }); }); a.onchange = guard(rerr, async () => { await api('PUT', `/contract-lines/${l.id}`, { amount: a.value }); reload(); }); inc.onchange = guard(rerr, async () => { await api('PUT', `/contract-lines/${l.id}`, { include: inc.checked }); reload(); });
+      return h('tr', { class: l.include ? '' : 'muted' }, h('td', {}, inc), h('td', {}, d), h('td', {}, tradeSel(l)), h('td', { class: 'n' }, a), canEdit && h('td', {}, h('button', { class: 'small danger', onclick: guard(rerr, async () => { await api('DELETE', `/contract-lines/${l.id}`); reload(); }) }, 'Remove'))); };
+    const addLine = guard(rerr, async () => { await api('POST', `/contract-runs/${r.id}/lines`, { description: 'New line' }); reload(); });
+    const cmp = r.compare, stateLabel = { new: 'New trade', same: 'Same as proposal', changed: 'Changed' };
+    parts.push(h('div', { class: 'card' }, h('div', { class: 'row spread' }, h('h2', {}, `Review: ${r.kind} read by AI`), h('span', { class: 'muted', style: 'font-size:13px' }, `${r.by || ''} · ${new Date(r.createdAt).toLocaleString()}`)), rerr,
+      (r.warnings || []).length ? h('div', { class: 'err' }, h('ul', { style: 'margin:0;padding-left:1.1rem' }, r.warnings.map((w) => h('li', {}, w)))) : '',
+      h('div', { class: 'form' }, field('Contract / PO number', hd.no), field('Dated', hd.date), field('Total price', hd.total), field('Retainage %', hd.ret), field('Payment due (net days)', hd.net), field('Payment terms', hd.terms, 'wide')),
+      canEdit && h('div', { class: 'row', style: 'margin:.5rem 0' }, h('button', { class: 'small', onclick: doHead }, 'Save these details')),
+      h('h3', { style: 'margin:1rem 0 .3rem' }, 'Scope lines'), h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Use'), h('th', {}, 'Line as written'), h('th', {}, 'Trade'), h('th', { class: 'n' }, 'Price'), h('th'))), h('tbody', {}, r.lines.map(lineRow)))),
+      canEdit && h('div', { class: 'row', style: 'margin-top:.5rem' }, h('button', { class: 'small', onclick: addLine }, '+ Add a line')),
+      h('h3', { style: 'margin:1rem 0 .3rem' }, 'Compared with the proposal figures now on the project'),
+      h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Trade'), h('th', { class: 'n' }, 'On project now'), h('th', { class: 'n' }, 'This contract'), h('th', {}, ''))), h('tbody', {}, cmp.rows.map((x) => h('tr', {}, h('td', {}, x.name), h('td', { class: 'n' }, dollars(x.current)), h('td', { class: 'n' }, usd(x.contract)), h('td', {}, h('span', { class: 'pill ' + (x.state === 'same' ? 'Approved' : x.state === 'new' ? 'Pending' : 'Expiring') }, stateLabel[x.state])))), cmp.notInContract.map((x) => h('tr', { class: 'muted' }, h('td', {}, x.name), h('td', { class: 'n' }, usd(x.original)), h('td', { class: 'n' }, '—'), h('td', {}, 'Not on this contract: kept as is')))),
+        h('tfoot', {}, h('tr', { class: 'total' }, h('td', {}, 'Contract lines included'), h('td'), h('td', { class: 'n' }, usd(cmp.total)), h('td'))))),
+      canEdit && h('div', { class: 'row', style: 'margin-top:1rem' }, h('button', { class: 'primary', onclick: guard(rerr, async () => { if (!confirm('Apply this contract? The project trades and amounts, and the retainage, will be set from it.')) return; const a = await api('POST', `/contract-runs/${r.id}/apply`, {}); alert(`Applied. ${a.created} trade${a.created === 1 ? '' : 's'} added, ${a.changed} changed, contract total ${usd(a.total)}.${a.notInContract.length ? ' Not on the contract and left as they were: ' + a.notInContract.join(', ') + '.' : ''}`); reload(); }) }, 'Apply to project'), h('button', { onclick: guard(rerr, async () => { if (confirm('Discard this reading? The uploaded file stays in Documents.')) { await api('DELETE', `/contract-runs/${r.id}`); reload(); } }) }, 'Discard'))));
+  }
+  // tentative invoice schedule (from the applied contract, or the one under review)
+  const rows = c.review ? c.review.schedule : c.schedule, serr = h('div');
+  if (rows.length || canEdit) parts.push(h('div', { class: 'card' }, h('div', { class: 'row spread' }, h('h2', {}, 'Tentative invoice schedule'), canEdit && h('button', { class: 'small', onclick: () => { const f = { label: h('input'), amount: num(''), date: h('input', { type: 'date' }) }; formModal('Add a billing line', [field('What is being billed', f.label), field('Amount', f.amount), field('Expected date', f.date)], async () => { await api('POST', `/projects/${pid}/invoice-schedule`, { label: f.label.value, amount: f.amount.value, expectedDate: f.date.value }); reload(); }, 'Add'); } }, '+ Add line')), serr,
+    h('p', { class: 'muted', style: 'margin-top:0' }, c.review ? 'Drafted from the contract under review. It becomes the schedule when you apply it.' : 'What the contract says will be billed. Invoices are matched to these lines later; nothing is invoiced from here.'),
+    rows.length ? h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, ['What', 'Basis', '%', 'Amount', 'Expected', 'Status'].map((t, i) => h('th', { class: i === 2 || i === 3 ? 'n' : '' }, t)), h('th'))),
+      h('tbody', {}, rows.map((s) => { const amt = h('input', { type: 'number', step: '0.01', min: '0', value: s.amount ?? '', placeholder: 'by progress', style: 'width:9rem', disabled: s.status === 'Invoiced' || !canEdit ? true : null }), dt = h('input', { type: 'date', value: s.expectedDate ?? '', disabled: s.status === 'Invoiced' || !canEdit ? true : null });
+        amt.onchange = guard(serr, async () => { await api('PUT', `/invoice-schedule/${s.id}`, { amount: amt.value }); reload(); }); dt.onchange = guard(serr, async () => { await api('PUT', `/invoice-schedule/${s.id}`, { expectedDate: dt.value }); reload(); });
+        return h('tr', { class: s.status === 'Skipped' ? 'muted' : '' }, h('td', {}, s.label, s.note ? h('div', { class: 'muted', style: 'font-size:12px' }, s.note) : ''), h('td', {}, s.basis || ''), h('td', { class: 'n' }, s.percent != null ? s.percent + '%' : ''), h('td', { class: 'n' }, amt), h('td', {}, dt), h('td', {}, h('span', { class: 'pill ' + (s.status === 'Invoiced' ? 'Approved' : s.status === 'Skipped' ? '' : 'Pending') }, s.status === 'Invoiced' && s.invoiceNumber ? 'Invoiced #' + s.invoiceNumber : s.status)),
+          canEdit && s.status !== 'Invoiced' && h('td', {}, h('button', { class: 'small', onclick: guard(serr, async () => { await api('PUT', `/invoice-schedule/${s.id}`, { status: s.status === 'Skipped' ? 'Tentative' : 'Skipped' }); reload(); }) }, s.status === 'Skipped' ? 'Restore' : 'Skip'), ' ', h('button', { class: 'small danger', onclick: guard(serr, async () => { await api('DELETE', `/invoice-schedule/${s.id}`); reload(); }) }, 'Remove'))); })))) : h('p', { class: 'muted' }, 'No billing lines yet. Upload and apply a contract to draft them.')));
+  return h('div', {}, ...parts);
 }
 
 function tradeOverview(p, canEdit, reload) {

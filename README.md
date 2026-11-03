@@ -76,3 +76,13 @@ Super Admin (owner only) · Sub Admin (can approve vendor payments, change pay r
 - Anyone signed in can press **Password** (top bar) to change their own password. It asks for the current one and signs out their other devices.
 - **Forgot password?** on the sign-in page emails a one-time link (valid 60 minutes, three requests an hour). The email is sent from the Gmail account connected in Admin. Gmail must have been connected with permission to send; if Admin shows a "cannot send yet" note, press Disconnect, then Connect Gmail again.
 - The owner can edit their own name, title and phone in Admin → Users; the access level stays Super Admin.
+
+## Contracts and work orders
+
+On a project, the **Contract** tab takes the signed subcontract or work order (PDF or photo). The AI reads the contract number, date, total, retainage, payment terms and each scope line, and matches the lines to your trades. Nothing on the project changes until you review the lines (fix a price or trade, untick a line) and press **Apply to project**.
+
+- Applying sets each trade's contract amount (adding trades the proposal did not have), sets the retainage, and attaches the file as the project's contract. Trades the contract does not mention are kept as they were and listed.
+- A lower amount cannot go below what is already billed on that trade; the whole apply is refused.
+- A **tentative invoice schedule** is drafted from what the contract states (deposit, milestones, final payment), "monthly progress billing" when that is how it bills, and a retainage release line. Rows can be edited, skipped or added. Invoiced rows are locked. QuickBooks invoices are matched to these rows later.
+- Uploading a revised contract replaces the first one; invoiced schedule rows are kept.
+- Contract reads show up in Admin's AI usage as "Contracts and work orders".

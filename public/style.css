@@ -92,3 +92,5 @@ details.notes-d{border:1px solid var(--line);border-radius:10px;padding:.5rem .8
 tr.tone-green>td{background:#f1faf4}tr.tone-yellow>td{background:#fffaee}tr.tone-red>td{background:#fdf1ef}
 .swatch{display:inline-block;width:12px;height:12px;border-radius:3px;vertical-align:-1px;margin-left:.5rem}.swatch.green{background:#bfe3cb}.swatch.yellow{background:#f6e2a8}.swatch.red{background:#f2b8b1}
 .addr label,.oform label{text-transform:uppercase}
+
+select.needs,input.needs{border-color:#d98a80;background:#fdf6f5}

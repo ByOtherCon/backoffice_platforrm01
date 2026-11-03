@@ -8,6 +8,7 @@ import { callClaude } from './ai.js';
 import * as R from '../src/lib/bidrules.ts';
 import { todayEastern, normalizeDate, leadKey } from '../src/lib/estimating.ts';
 import { verifyAddress } from './address.js';
+import * as W from '../src/lib/workflow.ts';
 
 let gfetch = (...a) => fetch(...a);
 export const setGoogleFetch = (f) => { gfetch = f; };   // tests stand in for Google
@@ -119,6 +120,7 @@ export async function mergeRecords(records, gmailEmail) {
   const map = await regionMap(); let added = 0, updated = 0, skipped = 0;   // trades to quote are never filled in here: the estimator decides
   const note = (t, id, body) => t(`INSERT INTO opportunity_notes(opportunity_id,kind,body) VALUES ($1,'System',$2)`, [id, body]);
   for (const rec of records) {
+    { const sp = W.splitAddress(rec.address); if (sp) { rec.address = sp.street; rec.city = rec.city || sp.city; rec.zip = sp.zip || null; } }   // a whole address in one line is split into street, city and ZIP
     // The GC's address from the email is checked against the address service (outside the database transaction). If it cannot be confirmed it is kept, unverified.
     const g = rec.gcAddr || {}; rec.gcFound = !!g.street; rec.gcSave = g.street ? { street: g.street, city: g.city || null, state: g.state || null, zip: g.zip || null, verified: false } : null;
     if (g.street) { try { const v = await verifyAddress({ ...g }, { florida: false, label: 'GC address' }); if (v.verified) rec.gcSave = { ...v.address, verified: true }; } catch { /* kept as found */ } }
@@ -138,6 +140,7 @@ export async function mergeRecords(records, gmailEmail) {
       if (ins.length) {
         const id = ins[0].id; added++;
         await note(t, id, `Added from a BuildingConnected email in Gmail (${gmailEmail}).${rec.due ? '' : ' No bid due date was provided.'}${rec.nda && !rec.email ? ' The GC contact is locked behind an NDA in BuildingConnected.' : ''}${rec.nda && !rec.due ? ' The due date is locked behind an NDA.' : ''}`);
+        if (rec.zip) await t('UPDATE opportunities SET zip=$2 WHERE id=$1', [id, rec.zip]);
         if (rec.scope) await note(t, id, `Scope in the invitation: ${rec.scope}`);
         if (rec.gcSave) { const a = rec.gcSave; await t('UPDATE opportunities SET gc_street=$2, gc_city=$3, gc_state=$4, gc_zip=$5, gc_address_verified=$6 WHERE id=$1', [id, a.street, a.city, a.state, a.zip, a.verified]); await note(t, id, `GC address carried over from the email: ${[a.street, a.city, [a.state, a.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ')}${a.verified ? ' (verified).' : ' (not verified yet; press Verify in Edit).'}`); }
         else await note(t, id, 'The GC address was not in the email. Open the invitation to find it, then add it in Edit.');
@@ -161,16 +164,32 @@ export async function mergeRecords(records, gmailEmail) {
   }); }
 }
 const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-// The decline rules (set in Estimating): New and Reviewing leads decline after their bid date plus the configured days. Undated leads never expire.
-// Every decline is written into the lead's Notes.
+// The clean-up rules. Every change is written into the lead's Notes.
+//  - New and Reviewing leads decline after their bid due date plus the configured days (undated leads never expire on that rule).
+//  - A New lead nobody took up is declined 7 working days after it arrived, and a Tier 3 or 4 lead when its week is over.
+//  - Accepted or Started work with no submission gets "expiring" 3 days after the due date and becomes Decided Not To Submit 2 days later.
 export async function sweepDeclines(rl) {
   if (!rl) { const v = (await q(`SELECT value FROM app_settings WHERE key='estimating'`))[0]?.value ?? {}; rl = { declineNewDays: Number(v.declineNewDays ?? 2), declineReviewingDays: Number(v.declineReviewingDays ?? 2) }; }
-  const r = await q(`WITH hit AS (SELECT id, status, due_date FROM opportunities
-      WHERE due_date IS NOT NULL AND ((status='New' AND due_date <= (now() AT TIME ZONE 'America/New_York')::date - $1::int) OR (status='Reviewing' AND due_date <= (now() AT TIME ZONE 'America/New_York')::date - $2::int)) FOR UPDATE),
-    upd AS (UPDATE opportunities o SET status='Declined', result='No Bid', declined_reason='Auto-declined: past its bid date', auto_declined=true, declined_at=now() FROM hit WHERE o.id=hit.id RETURNING o.id, hit.status AS was, hit.due_date),
-    ins AS (INSERT INTO opportunity_notes(opportunity_id,kind,body) SELECT id, 'System', 'Auto-declined by the system: it was ' || was || ' and its bid due date (' || due_date::text || ') has passed.' FROM upd RETURNING 1)
-    SELECT count(*)::int AS n FROM upd`, [rl.declineNewDays, rl.declineReviewingDays]);
-  return r[0].n;
+  const today = todayEastern(); let n = 0;
+  const rows = await q(`SELECT o.id, o.status, o.tier, o.due_date::text AS due, (o.created_at AT TIME ZONE 'America/New_York')::date::text AS created,
+      EXISTS (SELECT 1 FROM submissions s WHERE s.opportunity_id=o.id AND s.voided_at IS NULL) AS submitted
+    FROM opportunities o WHERE o.status IN ('New','Reviewing','Accepted','Started')`);
+  for (const o of rows) {
+    let to = null, why = null, reason = null;
+    if (['New', 'Reviewing'].includes(o.status)) {
+      if (W.autoDeclineDue(o.status, o.due, today, rl)) why = 'its bid due date has passed';
+      else if (o.status === 'New') { const x = W.newLeadExpiry(o.created, o.tier, today); if (x) why = x.replace(/\.$/, '').replace(/^N/, 'n'); }
+      if (why) { to = 'Declined'; reason = 'Auto-declined: ' + (/due date/.test(why) ? 'past its bid date' : why); }
+    } else if (W.workExpiry(o.status, o.due, o.submitted, today) === 'expired') { to = 'Decided Not To Submit'; reason = W.EXPIRED_REASON; why = `no proposal was submitted within 5 days of the bid due date (${o.due})`; }
+    if (!to) continue;
+    const r = await tx(async (t) => {
+      const [cur] = await t('SELECT status FROM opportunities WHERE id=$1 FOR UPDATE', [o.id]); if (!cur || cur.status !== o.status) return 0;
+      await t(`UPDATE opportunities SET status=$2, result='No Bid', declined_reason=$3, auto_declined=true, declined_at=now() WHERE id=$1`, [o.id, to, reason]);
+      await t(`INSERT INTO opportunity_notes(opportunity_id,kind,body) VALUES ($1,'System',$2)`, [o.id, `Status changed ${o.status} → ${to} by the system: ${why}. Reason: ${reason}.`]); return 1;
+    });
+    n += r;
+  }
+  return n;
 }
 
 // ------------------------------------------------------------------ one refresh, start to finish

@@ -64,10 +64,20 @@ test('addresses are checked field by field, matched to a real address, and a gre
   assert.match((await v({ street: '1 A St', city: 'Orlando', zip: '90210', kind: 'project' })).body.errors[0], /not in Florida/);
   assert.match((await v({ street: '9 Nowhere Rd', city: 'Orlando', zip: '32801', kind: 'project' })).body.errors[0], /not found/);
   assert.equal((await v({ street: '1 A St', city: 'Atlanta', state: 'GA', zip: '30301', kind: 'gc' })).body.verified, true);                                  // a GC may be out of state
-  censusDown = true; const down = (await v({ street: '77 Lake Ave', city: 'Orlando', zip: '32801', kind: 'project' })).body; censusDown = false; assert.deepEqual([down.verified, down.serviceDown], [false, true]); assert.match(down.token, /^format\./);
+  censusDown = true; const down = (await v({ street: '77 Lake Ave', city: 'Orlando', zip: '32801', kind: 'project' })).body; assert.deepEqual([down.verified, down.method], [true, 'format']); assert.match(down.token, /^format\./);   // the service cannot be reached: a well-formed address is accepted automatically
+  assert.match((await v({ street: '77 Lake Ave', city: 'Orlando', zip: '', kind: 'project' })).body.errors[0], /enter the 5-digit ZIP/); censusDown = false;                 // ...but a ZIP that cannot be looked up is still asked for
   // forged or reused tokens are refused
   const a = await verified('1200 13th St', 'St Cloud', '34769'); const bad1 = await call('POST', '/api/opportunities', await form({ addr: { ...a, street: '1 Other St' } }), est); assert.equal(bad1.status, 400); assert.match(bad1.body.error, /press Verify/);
   assert.equal((await call('POST', '/api/opportunities', await form({ addr: { street: '1 A St', city: 'Orlando', zip: '32801', token: 'census.AAAA' } }), est)).status, 400);
+});
+
+test('addresses: a whole address in the street box is split up, a missing ZIP is looked up, and suite numbers do not stop the match', async () => {
+  const seen = []; addr.setAddressFetch(async (url) => { const u = new URL(url); seen.push(Object.fromEntries(u.searchParams)); if (/nowhere/i.test(u.searchParams.get('street'))) return { ok: true, json: async () => ({ result: { addressMatches: [] } }) }; return { ok: true, json: async () => ({ result: { addressMatches: [{ addressComponents: { city: u.searchParams.get('city').toUpperCase(), state: u.searchParams.get('state'), zip: u.searchParams.get('zip') || '32809' } }] } }) }; });
+  const r = (await call('POST', '/api/address/verify', { street: '8001 South Orange Blossom Trail, Suite 606, Orlando, FL 32809', city: 'Orlando', zip: '', kind: 'project' }, est)).body;
+  assert.deepEqual([r.verified, r.address.street, r.address.city, r.address.state, r.address.zip], [true, '8001 South Orange Blossom Trail, Suite 606', 'Orlando', 'FL', '32809']); assert.equal(seen[0].street, '8001 South Orange Blossom Trail');   // the suite is kept for the record but not sent to the matcher
+  const z = (await call('POST', '/api/address/verify', { street: '4200 Conroy Road Space #C-196', city: 'Orlando', zip: '', kind: 'project' }, est)).body; assert.deepEqual([z.verified, z.address.zip], [true, '32809']); assert.equal(seen[1].street, '4200 Conroy Road'); assert.equal(seen[1].zip, undefined);
+  const nm = await call('POST', '/api/address/verify', { street: '1 Nowhere Rd', city: 'Orlando', zip: '32801', kind: 'project' }, est); addr.setAddressFetch(census);
+  assert.deepEqual([nm.body.verified, nm.body.noMatch, /^format\./.test(nm.body.token)], [false, true, true]);                // not found: the person may still use it as entered
 });
 
 test('a new opportunity: every required field, the Building Connected link rule, a hard-coded note, duplicates', async () => {
@@ -253,7 +263,7 @@ test('awarding builds the project in Job Costing with everything gathered; it ca
   const o = (await call('GET', `/api/projects/${r.body.projectId}/origin`, null, owner)).body;
   assert.deepEqual([o.client, o.gc, o.contact, o.email, o.sourceType, o.type, o.estimator, o.submissions.length, o.submissions[0].trades.length, o.files.length > 0, o.notes.length > 3], ['Wingstop Restaurants', 'CW Hayes Construction', 'Dana Hayes', 'dana@cwhayes.example', 'PlanHub', 'Restaurant', 'est', 1, 2, true, true]);
   assert.equal((await call('GET', `/api/projects/${r.body.projectId}/origin`, null, pm)).status, 403);                                                      // a PM sees only assigned projects
-  assert.equal((await status(wing, 'Awarded')).status, 400); assert.equal((await call('DELETE', `/api/opportunities/${wing}`, null, est)).status, 409);
+  assert.equal((await status(wing, 'Awarded')).status, 400);  assert.equal((await call('DELETE', `/api/opportunities/${wing}`, null, est)).status, 404);   // no opportunity is ever deleted
   assert.equal((await call('GET', `/api/ntos?year=${today.slice(0, 4)}`, null, owner)).body[0].project, 'Wingstop - St Cloud');
   const w = await get(wing); assert.deepEqual([w.status, w.result, w.followup.status], ['Awarded', 'Awarded', 'Closed / Awarded']); assert.equal(w.projectId, r.body.projectId);
   assert.equal((await status(wing, 'Submitted')).status, 409); assert.equal((await call('PUT', `/api/opportunities/${wing}/trade-prices`, { prices: [{ tradeId: tDemo, amount: 1 }] }, est)).status, 409);
@@ -285,30 +295,9 @@ test('insights: win rates, loss and decline reasons, realized margin vs target, 
   assert.equal((await call('GET', '/api/estimating/insights', null, est)).body.margins.find((x) => x.trade === 'Paint').suggestion, 'On target');
 });
 
-test('delete a lead; BuildingConnected status is honest about needing credentials', async () => {
+test('an opportunity can never be deleted; BuildingConnected status is honest about needing credentials', async () => {
   const id = await mk({ name: 'Temp lead', gc: 'Temp GC' });
   assert.equal((await call('PUT', `/api/opportunities/${id}`, { status: 'Awarded' }, est)).status, 400);
-  assert.equal((await call('DELETE', `/api/opportunities/${id}`, null, est)).status, 200); assert.equal((await call('GET', `/api/opportunities/${id}`, null, est)).status, 404);
+  assert.equal((await call('DELETE', `/api/opportunities/${id}`, null, est)).status, 404); assert.equal((await call('GET', `/api/opportunities/${id}`, null, est)).status, 200);
   const c = (await call('GET', '/api/estimating/connection', null, est)).body.buildingConnected; assert.equal(c.connected, false); assert.match(c.note, /CSV/);
-});
-
-test('Fill from BuildingConnected: the pasted page is read, only what the page says is kept, and the addresses come back checked', async () => {
-  const page = 'Barnes & Noble 3597 - Palm Coast, FL\nDue date Nov 18, 2026 5:00 PM EST\nClient\nWeekes Construction - Greenville\nAmber Duhon | +1 864-233-0061 ext. 348 | anewland@weekesconstruction.com\nWeekes Construction, 100 Main Street, Greenville, SC 29601\nProject Details\nLocation: 4 Town Center Pkwy, Palm Coast, FL 32164\nDate Due: Nov 18, 2026 at 5:00 PM EST\nProject Start: 01/11/2027';
-  const reply = { project: 'Barnes & Noble 3597 - Palm Coast, FL', gcCompany: 'Weekes Construction - Greenville', contactName: 'Amber Duhon', contactEmail: 'anewland@weekesconstruction.com', contactPhone: '+1 864-233-0061', gcStreet: '100 Main Street', gcCity: 'Greenville', gcState: 'SC', gcZip: '29601', gcAddressEvidence: '100 Main Street, Greenville, SC 29601',
-    projectStreet: '4 Town Center Pkwy', projectCity: 'Palm Coast', projectState: 'FL', projectZip: '32164', projectAddressEvidence: '4 Town Center Pkwy, Palm Coast, FL 32164', dueDate: '2026-11-18', dueEvidence: 'Date Due: Nov 18, 2026 at 5:00 PM EST', dueTime: '17:00', startDate: '2027-01-11', startEvidence: 'Project Start: 01/11/2027', projectType: 'Retail', ownerName: '', scope: 'Plumbing' };
-  const say = (r) => ai.setFetch(async () => ({ ok: true, json: async () => ({ content: [{ type: 'tool_use', name: 'record_invitation', input: r }], usage: { input_tokens: 800, output_tokens: 150 } }) }));
-  say(reply); const read = (text, who = est) => call('POST', '/api/opportunity-page', { text }, who);
-  assert.equal((await read(page, asst)).status, 403); assert.equal((await read('too short')).status, 400); assert.equal((await call('POST', '/api/opportunity-page', { text: page })).status, 401);
-  const r = (await read(page)).body, x = r.fields;
-  assert.deepEqual([x.name, x.gc, x.contact, x.email, x.phone, x.due, x.dueTime, x.start, x.type], ['Barnes & Noble 3597 - Palm Coast, FL', 'Weekes Construction - Greenville', 'Amber Duhon', 'anewland@weekesconstruction.com', '+1 864-233-0061', '2026-11-18', '17:00', '2027-01-11', 'Retail']);
-  assert.deepEqual([x.gcAddr.street, x.gcAddr.state, x.gcAddr.verified, !!x.gcAddr.token, x.addr.street, x.addr.verified, !!x.addr.token], ['100 Main Street', 'SC', true, true, '4 Town Center Pkwy', true, true]);   // a GC may be out of state; the job must be in Florida
-  assert.deepEqual(r.missing, []);
-  // the returned, checked project address can be saved straight away (no second Verify), and trades are left for the estimator
-  const saved = await call('POST', '/api/opportunities', { name: x.name, client: 'Barnes & Noble', gc: x.gc, addr: x.addr, gcAddr: x.gcAddr, contact: x.contact, email: x.email, phone: x.phone, sourceType: 'Building Connected', link: 'https://app.buildingconnected.com/opportunities/6ae8ee0dd1055737edec008c/info', estimatorId: estId, due: x.due, dueTime: x.dueTime, plannedStart: x.start, type: x.type }, est);
-  assert.equal(saved.status, 200, JSON.stringify(saved.body)); const o = (await call('GET', `/api/opportunities/${saved.body.id}`, null, est)).body; assert.deepEqual([o.plannedStart, o.gcAddr.verified, o.consideredTrades.length], ['2027-01-11', true, 0]);
-  // anything the page does not support is thrown away: an email, dates and addresses that are not in the text
-  say({ ...reply, contactEmail: 'made.up@gc.example', contactPhone: '+1 555-000-1111', dueEvidence: 'Due 12/25/2026', startEvidence: 'Start 2/2/2027', gcAddressEvidence: '1 Fake Road, Nowhere', gcStreet: '1 Fake Road', projectAddressEvidence: 'invented', projectState: 'GA' });
-  const bad = (await read(page)).body; assert.deepEqual([bad.fields.email, bad.fields.phone, bad.fields.due, bad.fields.start, bad.fields.gcAddr.street, bad.fields.addr.street], ['', '', null, null, '', '']); assert.ok(bad.missing.includes('GC email') && bad.missing.includes('bid due date') && bad.missing.includes('job start date')); assert.match(bad.warnings.join(' '), /outside|in GA|Florida/i);
-  ai.setFetch(claude);
-  assert.equal((await q(`SELECT count(*)::int n FROM ai_usage WHERE kind='bidpage'`))[0].n, 2);
 });

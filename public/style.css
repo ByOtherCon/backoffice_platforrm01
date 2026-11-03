@@ -81,3 +81,14 @@ button.accept{background:#e3f1ea;border-color:#b9d9c8;color:#17632f}button.accep
 pre.draft{white-space:pre-wrap;background:#f7f8fa;border:1px solid var(--line);border-radius:8px;padding:.6rem .8rem;font:inherit;font-size:14px;margin:.3rem 0}
 .filters{display:flex;flex-wrap:wrap;gap:.4rem;margin:.2rem 0 .8rem}
 table.biglist td,table.biglist th{white-space:normal}table.biglist td{padding:.7rem .55rem}table.biglist select{min-width:104px;max-width:170px}table.biglist td.nw,table.biglist th.nw{white-space:nowrap}
+/* one layout for Open and Edit: the same form, read-only until Edit */
+.form{align-items:start}.form label{min-height:1.15em}
+.oform.ro input,.oform.ro select,.oform.ro textarea{border-color:transparent;background:transparent;padding-left:0;appearance:none;-webkit-appearance:none;color:var(--ink);opacity:1;-webkit-text-fill-color:var(--ink);cursor:default}
+.oform.ro input[type=date]::-webkit-calendar-picker-indicator,.oform.ro input[type=time]::-webkit-calendar-picker-indicator{display:none}
+.oform.ro .chip:not(.on),.oform.ro .seg button:not(.on){display:none}.oform.ro .seg{border:0}.oform.ro .seg button.on{border-radius:8px}
+.oform.ro .chip{cursor:default}.oform.ro input[type=checkbox]{opacity:.6}
+details.notes-d{border:1px solid var(--line);border-radius:10px;padding:.5rem .8rem;background:#fff}details.notes-d[open] summary{margin-bottom:.4rem}
+/* row colours in the trackers */
+tr.tone-green>td{background:#f1faf4}tr.tone-yellow>td{background:#fffaee}tr.tone-red>td{background:#fdf1ef}
+.swatch{display:inline-block;width:12px;height:12px;border-radius:3px;vertical-align:-1px;margin-left:.5rem}.swatch.green{background:#bfe3cb}.swatch.yellow{background:#f6e2a8}.swatch.red{background:#f2b8b1}
+.addr label,.oform label{text-transform:uppercase}

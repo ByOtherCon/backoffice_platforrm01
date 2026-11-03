@@ -123,22 +123,22 @@ test('Reviewing moves to the Proposal Tracker (and out of Bid Opportunities)', a
   assert.equal((await q('SELECT proposal_id FROM opportunities WHERE id=$1', [sg.id]))[0].proposal_id, null);              // Reviewing does not assign a proposal number or folders
 });
 
-test('decline rules: New two days past due, Reviewing two days, undated leads and accepted work never; every decline is written into Notes', async () => {
+test('decline rules: New two days past due, Reviewing two days, undated leads never; every decline is written into Notes', async () => {
   const mk = (name, status, due, accepted = false) => q(`INSERT INTO opportunities(name,gc_name,city,due_date,status,accepted_date,source_key) VALUES ($1,'GC','Orlando',$2,$3,$4,$1) RETURNING id`, [name, due, status, accepted ? today : null]);
   await mk('R-new-due-today', 'New', today); await mk('R-new-yesterday', 'New', shift(today, -1)); await mk('R-new-2days', 'New', shift(today, -2)); await mk('R-rev-yesterday', 'Reviewing', shift(today, -1)); await mk('R-rev-2days', 'Reviewing', shift(today, -2)); await mk('R-undated-new', 'New', null); await mk('R-future', 'New', shift(today, 9)); await mk('R-accepted-late', 'Accepted', shift(today, -9), true);
   await call('GET', '/api/opportunities?tab=bids', null, est);
   const st = async (n) => (await lead(n)).status;
-  assert.deepEqual(await Promise.all(['R-new-due-today', 'R-new-yesterday', 'R-new-2days', 'R-rev-yesterday', 'R-rev-2days', 'R-undated-new', 'R-future', 'R-accepted-late'].map(st)), ['New', 'New', 'Declined', 'Reviewing', 'Declined', 'New', 'New', 'Accepted']);
+  assert.deepEqual(await Promise.all(['R-new-due-today', 'R-new-yesterday', 'R-new-2days', 'R-rev-yesterday', 'R-rev-2days', 'R-undated-new', 'R-future', 'R-accepted-late'].map(st)), ['New', 'New', 'Declined', 'Reviewing', 'Declined', 'New', 'New', 'Decided Not To Submit']);   // accepted work 9 days past due with nothing submitted has expired (see the clean-up test for the rest)
   const d = await lead('R-new-2days'); assert.deepEqual([d.auto_declined, d.declined_reason], [true, 'Auto-declined: past its bid date']);
-  const notes = (await call('GET', `/api/opportunities/${d.id}`, null, est)).body.notes; assert.match(notes[0].body, /Auto-declined by the system: it was New and its bid due date/);
+  const notes = (await call('GET', `/api/opportunities/${d.id}`, null, est)).body.notes; assert.match(notes[0].body, /Status changed New → Declined by the system: its bid due date has passed\. Reason: Auto-declined: past its bid date\./);
   assert.equal((await call('POST', `/api/opportunities/${d.id}/status`, { status: 'New' }, est)).status, 400);                // would just decline again; the message says why
   assert.equal((await call('PUT', '/api/settings/estimating', { declineNewDays: 1 }, sub)).status, 200);                      // the stricter one-day rule is a setting
   await call('GET', '/api/opportunities?tab=bids', null, est); assert.equal(await st('R-new-yesterday'), 'Declined');
   assert.equal((await call('PUT', '/api/settings/estimating', { declineNewDays: 2 }, sub)).status, 200); assert.equal((await call('PUT', '/api/settings/estimating', { declineNewDays: 'x' }, sub)).status, 400);
 });
 
-test('search reaches declined leads seen in the last 30 days, and no further back', async () => {
-  const seen = async (name, days) => q(`UPDATE opportunities SET last_seen_at = now() - ($2 || ' days')::interval WHERE name=$1`, [name, String(days)]);
+test('search reaches declined leads for 30 days from the day they were declined, and no further back', async () => {
+  const seen = async (name, days) => q(`UPDATE opportunities SET declined_at = now() - ($2 || ' days')::interval, last_seen_at = now() - interval '90 days' WHERE name=$1`, [name, String(days)]);   // the 30 days run from the decline, not from when the lead was last seen
   await seen('R-new-2days', 10); await seen('R-rev-2days', 45);
   const find = async (qs) => (await call('GET', `/api/opportunities?tab=bids&q=${qs}`, null, est)).body.groups.flatMap((g) => g.rows.map((o) => o.name));
   assert.deepEqual(await find('R-new-2days'), ['R-new-2days']); assert.deepEqual(await find('R-rev-2days'), []);
@@ -207,4 +207,33 @@ test('the GC address and the job start date come from the invitation email, only
   assert.equal((await q('SELECT count(*)::int n FROM opportunity_considered_trades WHERE opportunity_id=$1', [z.id]))[0].n, 0);               // the estimator chooses the trades, never the email
   const zn = (await call('GET', `/api/opportunities/${z.id}`, null, est)).body.notes.map((x) => x.body).join(' | '); assert.match(zn, /GC address carried over from the email: 500 Corporate Drive/); assert.match(zn, /Job start date 2027-01-12 carried over/); assert.match(zn, /Scope in the invitation: Demolition, Painting/);
   assert.equal(n.gc_street, null); assert.match((await call('GET', `/api/opportunities/${n.id}`, null, est)).body.notes.map((x) => x.body).join(' | '), /The GC address was not in the email/);
+});
+
+test('clean-up: a New lead nobody takes up is declined after 7 working days, Tier 3 and 4 leads when their week is over; Accepted work expires; every change is in Notes', async () => {
+  const wd = (n) => { let d = today; while (n > 0) { d = shift(d, -1); const w = new Date(d + 'T12:00:00Z').getUTCDay(); if (w !== 0 && w !== 6) n--; } return d; };
+  const { weekOf } = await import('../src/lib/estimating.ts'); const lastWeek = shift(weekOf(today), -3);   // a Friday of the previous week
+  const mk = (name, tier, created, status = 'New', due = null) => q(`INSERT INTO opportunities(name,gc_name,city,tier,status,due_date,created_at,source_key,accepted_date) VALUES ($1,'GC','Orlando',$2,$3,$4,$5::date + time '12:00',$1,CASE WHEN $3 IN ('Accepted','Started') THEN $6::date END)`, [name, tier, status, due, created, today]);
+  await mk('C-fresh', 2, today); await mk('C-t2-oldweek', 2, lastWeek); await mk('C-t3-oldweek', 3, lastWeek); await mk('C-t4-oldweek', 4, lastWeek); await mk('C-t3-thisweek', 3, today); await mk('C-t2-8wd', 2, wd(8)); await mk('C-t2-6wd', 2, wd(6));
+  await mk('C-acc-4d', 2, wd(9), 'Accepted', shift(today, -4)); await mk('C-acc-6d', 2, wd(9), 'Accepted', shift(today, -6)); await mk('C-started-6d', 2, wd(9), 'Started', shift(today, -6)); await mk('C-acc-future', 2, wd(9), 'Accepted', shift(today, 3));
+  const submitted = (await q(`INSERT INTO opportunities(name,gc_name,city,status,due_date,source_key,accepted_date) VALUES ('C-sub-6d','GC','Orlando','Accepted',$1,'c-sub',current_date) RETURNING id`, [shift(today, -6)]))[0].id;
+  await q(`INSERT INTO submissions(opportunity_id,version,submitted_date,method,price) VALUES ($1,1,$2,'Email',100)`, [submitted, shift(today, -7)]);
+  const rows = (await call('GET', '/api/opportunities?tab=proposals&filter=All', null, est)).body.rows; await call('GET', '/api/opportunities?tab=bids', null, est);
+  const st = async (n) => (await lead(n)).status;
+  assert.deepEqual(await Promise.all(['C-fresh', 'C-t2-oldweek', 'C-t3-oldweek', 'C-t4-oldweek', 'C-t3-thisweek', 'C-t2-8wd', 'C-t2-6wd'].map(st)), ['New', 'New', 'Declined', 'Declined', 'New', 'Declined', 'New']);
+  assert.deepEqual(await Promise.all(['C-acc-4d', 'C-acc-6d', 'C-started-6d', 'C-acc-future', 'C-sub-6d'].map(st)), ['Accepted', 'Decided Not To Submit', 'Decided Not To Submit', 'Accepted', 'Accepted']);   // a submitted bid is never expired
+  const t3 = (await call('GET', `/api/opportunities/${(await lead('C-t3-oldweek')).id}`, null, est)).body; assert.match(t3.notes[0].body, /Status changed New → Declined by the system: Tier 3 lead not taken up by the end of the week it arrived\./); assert.equal(t3.declinedReason, 'Auto-declined: Tier 3 lead not taken up by the end of the week it arrived');
+  const wk = (await call('GET', `/api/opportunities/${(await lead('C-t2-8wd')).id}`, null, est)).body; assert.match(wk.notes[0].body, /no action within 7 working days of the lead arriving/i);
+  const ex = (await call('GET', `/api/opportunities/${(await lead('C-acc-6d')).id}`, null, est)).body; assert.deepEqual([ex.status, ex.declinedReason], ['Decided Not To Submit', 'No action taken (lead expired)']); assert.match(ex.notes[0].body, /Status changed Accepted → Decided Not To Submit by the system: no proposal was submitted within 5 days of the bid due date/);
+  // the flags the list shows: expiring from 3 days after the due date, colours by state
+  const all = (await call('GET', '/api/opportunities?tab=proposals&filter=All', null, est)).body.rows; const by = (n) => all.find((o) => o.name === n);
+  assert.deepEqual([by('C-acc-4d').expiry, by('C-acc-4d').tone, by('C-acc-future').expiry, by('C-acc-future').tone, by('C-sub-6d').tone], ['expiring', 'red', null, '', 'green']); void rows;
+  // declined leads stay searchable for 30 days from the decline
+  const found = (await call('GET', '/api/opportunities?tab=bids&q=C-t3-oldweek', null, est)).body.groups.flatMap((g) => g.rows.map((o) => o.statusLabel)); assert.deepEqual(found, ['Declined']);
+});
+
+test('the working figures are for the signed-in estimator, or the whole company on request', async () => {
+  const me = (await q(`SELECT id FROM app_users WHERE email='est@x.net'`))[0].id, month = today.slice(0, 7);
+  await q(`INSERT INTO opportunities(name,gc_name,city,status,estimator_id,accepted_date,due_date,source_key,proposal_id) VALUES ('M-mine','GC','Orlando','Started',$1,$2,$3,'m1','P99991'),('M-theirs','GC','Orlando','Started',$4,$2,$3,'m2','P99992'),('M-theirs2','GC','Orlando','Accepted',$4,$2,$3,'m3','P99993')`, [me, today, shift(today, 5), (await q(`SELECT id FROM app_users WHERE email='sub@x.net'`))[0].id]);
+  const get = async (scope) => (await call('GET', `/api/opportunities?tab=proposals${scope ? '&scope=' + scope : ''}`, null, est)).body.stats;
+  const all = await get('all'), mine = await get('mine'); assert.deepEqual([all.scope, mine.scope], ['all', 'mine']); const myWork = (await q(`SELECT count(*)::int n FROM opportunities WHERE status IN ('Accepted','Started') AND estimator_id=$1`, [me]))[0].n, allWork = (await q(`SELECT count(*)::int n FROM opportunities WHERE status IN ('Accepted','Started')`))[0].n; assert.deepEqual([mine.working, all.working], [myWork, allWork]); assert.ok(allWork - myWork >= 2);                     // my one, versus everyone's assert.equal(all.openLeads, mine.openLeads); void month;   // New leads are never split by person
 });

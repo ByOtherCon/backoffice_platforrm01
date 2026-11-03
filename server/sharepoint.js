@@ -108,6 +108,11 @@ export async function listFolderNames(segments) {
   for (const seg of segments) { const hit = (await children(parent)).find((c) => c.folder && key(c.name) === key(seg)); if (!hit) return []; parent = hit.id; }
   return (await children(parent)).filter((c) => c.folder).map((c) => c.name);
 }
+// Files (not folders) whose name passes `match`, looking down at most `depth` levels of sub-folders.
+export async function findFiles(folderId, match, depth = 3) {
+  const out = []; const walk = async (id, d) => { for (const c of await children(id)) { if (c.folder) { if (d > 0) await walk(c.id, d - 1); } else if (match(c.name)) out.push({ id: c.id, name: c.name, webUrl: c.webUrl }); } };
+  await walk(folderId, depth); return out;
+}
 export async function listFolder(itemId) { return (await children(itemId)).map((c) => ({ id: c.id, name: c.name, folder: !!c.folder, webUrl: c.webUrl })); }
 export async function status() {
   const s = settings(); if (!configured()) return { configured: false, connected: false, needs: ['MS_TENANT_ID', 'MS_CLIENT_ID', 'MS_CLIENT_SECRET', 'MS_SITE_URL'].filter((k) => !process.env[k]) };

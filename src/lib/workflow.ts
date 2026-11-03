@@ -1,5 +1,5 @@
 // The Estimating workflow as pure rules: statuses, who sees what, auto-decline, address checks, and the follow-up cadence.
-import { shift, todayEastern, isWeekend, addBusinessDays, businessDays } from './estimating.ts';
+import { shift, todayEastern, isWeekend, addBusinessDays, businessDays, weekOf } from './estimating.ts';
 
 export const STATUSES = ['New', 'Reviewing', 'Accepted', 'Started', 'Submitted', 'Declined', 'Decided Not To Submit', 'Awarded', 'Not Awarded', 'No Communication'] as const;
 export type Status = (typeof STATUSES)[number];
@@ -12,7 +12,8 @@ export const METHODS = ['Email', 'via BuildingConnected', 'PlanHub', 'Other'] as
 
 // Pre-selected reasons, so results can be reported on. Notes stay open text.
 export const DECLINE_REASONS = ['Too far / outside our area', 'Wrong trade or scope for us', 'No capacity right now', 'Schedule too tight', 'Project too small', 'Project too large', 'GC not a good fit', 'Duplicate invitation', 'Other (see notes)'];
-export const DNTS_REASONS = ['Scope not a fit', 'Could not meet the bid deadline', 'No capacity', 'GC or owner not a good fit', 'Pricing would not be competitive', 'Plans or information missing', 'Project cancelled or on hold', 'Other (see notes)'];
+export const DNTS_REASONS = ["Didn't get to finish", 'Complicated trades', 'GC / plan issues', 'Scope not a fit', 'No capacity', 'Pricing would not be competitive', 'Plans or information missing', 'Project cancelled or on hold', 'Other (see notes)'];
+export const EXPIRED_REASON = 'No action taken (lead expired)';
 export const NOT_AWARDED_REASONS = ['Price too high', 'GC chose another subcontractor', 'GC did not win the project', 'Scope changed', 'No feedback given', 'Other (see notes)'];
 
 // Where the next move can go. Accepted work never returns to New or Reviewing. Submitting and the three results have their own steps (PDF, project).
@@ -51,7 +52,32 @@ export function autoDeclineDue(status: string, due: string | null, today = today
   return today >= shift(due, d);
 }
 
+// ---- lists that stay clean on their own
+// New opportunities nobody took up: 7 working days after they appeared, or (Tier 3 and 4 only) when the week they arrived in is over.
+export const NEW_LEAD_WORKING_DAYS = 7;
+export function newLeadExpiry(createdDate: string, tier: number, today = todayEastern()): string | null {
+  if (businessDays(createdDate, today) >= NEW_LEAD_WORKING_DAYS) return `No action within ${NEW_LEAD_WORKING_DAYS} working days of the lead arriving.`;
+  if (tier >= 3 && weekOf(createdDate) < weekOf(today)) return `Tier ${tier} lead not taken up by the end of the week it arrived.`;
+  return null;
+}
+// Accepted or Started work with no submission: a red "expiring" note 3 days after the bid due date, and Decided Not To Submit 2 days later.
+export function workExpiry(status: string, due: string | null, submitted: boolean, today = todayEastern()): 'expiring' | 'expired' | null {
+  if (!due || submitted || !['Accepted', 'Started'].includes(status)) return null;
+  return today >= shift(due, 5) ? 'expired' : today >= shift(due, 3) ? 'expiring' : null;
+}
+// Row colour: green when submitted, yellow when started with time left, red on or after the due date without a submission.
+export function rowTone(status: string, due: string | null, submitted: boolean, today = todayEastern()): 'green' | 'yellow' | 'red' | '' {
+  if (submitted || ['Submitted', 'Awarded', 'Not Awarded', 'No Communication'].includes(status)) return 'green';
+  if (['Accepted', 'Started'].includes(status)) { if (due && due <= today) return 'red'; return status === 'Started' ? 'yellow' : ''; }
+  return '';
+}
+
 // ---- addresses (Florida only for the project; the GC may be anywhere)
+// "8001 South Orange Blossom Trail, Suite 606, Orlando, FL 32809" -> street, city, state, zip (the ZIP may be missing).
+export function splitAddress(full: string | null | undefined) {
+  const m = String(full ?? '').trim().match(/^(.+),\s*([^,]+),\s*([A-Za-z]{2})(?:\s+(\d{5})(?:-\d{4})?)?\.?$/); if (!m) return null;
+  return { street: m[1].trim(), city: m[2].trim(), state: m[3].toUpperCase(), zip: m[4] || '' };
+}
 export type Addr = { street?: string | null; city?: string | null; state?: string | null; zip?: string | null };
 export const cleanAddr = (a: Addr) => ({ street: String(a.street ?? '').replace(/\s+/g, ' ').trim(), city: String(a.city ?? '').replace(/\s+/g, ' ').trim(), state: String(a.state ?? '').trim().toUpperCase(), zip: String(a.zip ?? '').trim() });
 export const addrEmpty = (a: Addr) => { const c = cleanAddr(a); return !c.street && !c.city && !c.zip; };

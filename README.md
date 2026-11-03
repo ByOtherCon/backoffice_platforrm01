@@ -23,7 +23,6 @@ One system for By Other Construction: **Estimating** (bid invitations to awarded
 | `PUBLIC_URL` | The site's own address. Render supplies it automatically; set it only on another host. |
 | `SMTP_URL`, `EMAIL_FROM` | Sends vendor insurance-request emails. Without it they wait in the outbox on the Compliance page. |
 | `MS_TENANT_ID`, `MS_CLIENT_ID`, `MS_CLIENT_SECRET`, `MS_SITE_URL` | Shared project folders in SharePoint (Microsoft Graph, app-only; the app needs the Sites.ReadWrite.All application permission with admin consent). Optional `MS_LIBRARY` (default Documents) and `MS_ROOT_FOLDER` (default ByOther; set empty to start at the library root). |
-| `APS_CLIENT_ID`, `APS_CLIENT_SECRET` | BuildingConnected through your Autodesk app (read-only `data:read`). In the Autodesk app add the callback `https://<your site>/api/autodesk/callback`, then Admin → BuildingConnected → Connect. |
 
 ## Putting it online (Render)
 1. Put the project in a **private** GitHub repository (create a free GitHub account, make a private repo, push this folder).
@@ -69,6 +68,5 @@ Super Admin (owner only) · Sub Admin (can approve vendor payments, change pay r
 - To work from File Explorer, press Sync on the library in SharePoint once on each PC; then "Open in File Explorer" downloads a shortcut that opens the synced folder.
 
 ## Bringing a BuildingConnected invitation in
-- **Fill from BuildingConnected** (button at the top of the opportunity form): on the invitation page press Ctrl+A, Ctrl+C, paste it in the box, press Read it. Claude fills only empty fields from what the page states (project, GC, contact, due date and time, addresses, job start date); GC and project addresses are checked and show their green check. Trades are never filled.
-- **Upload plans** (in the opportunity's file list): the zip (or PDF) from the invitation's Files tab. It streams to disk (up to 600 MB), is filed with the opportunity, copied in the background to `01. DL` in SharePoint, and the app's own copy is then removed. If SharePoint is down the app keeps its copy and a note says so.
-- The BuildingConnected API needs a paid Bid Board Pro subscription to read invitations (Autodesk answers `BB_PRO_SUBSCRIPTION_REQUIRED` without it), so the Gmail feed plus these two buttons are used instead.
+- The Gmail feed reads the invitation emails. The plans are downloaded from the invitation's Files tab (Download All) and added with **Upload plans** on the opportunity: the zip streams to disk (up to 600 MB), is copied in the background to `01. DL` in SharePoint, and the app's own copy is then removed. If SharePoint is down the app keeps its copy and a note says so.
+- The BuildingConnected API needs a paid Bid Board Pro subscription to read invitations, so it is not used.

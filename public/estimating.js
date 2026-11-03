@@ -24,26 +24,34 @@ const summary = (o) => h('div', { class: 'osum' }, h('strong', {}, o.name), o.pr
 const star = () => h('span', { class: 'req' }, ' *');
 const lbl = (t, required) => h('span', {}, t, required ? star() : '');
 
-// Street, city, state, ZIP. Press Verify: a match gets a green check and the fields fold away into one line. Change reopens them.
-function addressBlock({ kind, init, optional }) {
-  const f = { street: h('input', { placeholder: '123 Main St', autocomplete: 'off' }), city: h('input', { placeholder: 'City', autocomplete: 'off' }), state: h('input', { maxlength: 2, placeholder: 'FL', style: 'text-transform:uppercase', disabled: kind !== 'gc' ? true : null }), zip: h('input', { maxlength: 10, inputmode: 'numeric', placeholder: '32801' }) };
-  let token = null, verified = false; const msg = h('div'), box = h('div');
+// Street, city, state, ZIP. It checks itself: when street and city are filled in (or on opening an unchecked address) the address is
+// verified, the fields fold into one line, and a green check shows next to the heading. "Change" reopens the fields.
+function addressBlock({ kind, init, label, readonly = false }) {
+  const f = { street: h('input', { placeholder: '123 Main St', autocomplete: 'off', disabled: readonly || null }), city: h('input', { placeholder: 'City', autocomplete: 'off', disabled: readonly || null }), state: h('input', { maxlength: 2, placeholder: 'FL', style: 'text-transform:uppercase', disabled: readonly || kind !== 'gc' ? true : null }), zip: h('input', { maxlength: 10, inputmode: 'numeric', placeholder: '32801', disabled: readonly || null }) };
+  let token = null, verified = false, method = '', busy = false; const msg = h('div'), box = h('div', { class: 'addr' }), tick = h('span', { style: 'color:var(--green);font-weight:700;margin-left:.45rem' }), head = h('label', {}, label, tick);
   const read = () => ({ street: f.street.value.trim(), city: f.city.value.trim(), state: (kind === 'gc' ? f.state.value : 'FL').trim().toUpperCase(), zip: f.zip.value.trim() });
   const line = () => { const v = read(); return [v.street, v.city, [v.state, v.zip].filter(Boolean).join(' ')].filter(Boolean).join(', '); };
   const empty = () => { const v = read(); return !v.street && !v.city && !v.zip; };
-  function set(a, tok = null) { f.street.value = a?.street || ''; f.city.value = a?.city || ''; f.state.value = kind === 'gc' ? a?.state || '' : 'FL'; f.zip.value = a?.zip || ''; verified = !!(a?.verified && a?.street); token = verified ? tok : null; draw(); }
-  async function verify() {
-    notice(msg, ''); const r = await api('POST', '/address/verify', { ...read(), kind });
-    if (r.verified) { Object.entries(r.address).forEach(([k, v]) => (f[k].value = v)); token = r.token; verified = true; draw(); }
-    else if (r.serviceDown) { notice(msg, r.message, 'ok'); msg.append(h('button', { type: 'button', class: 'small', style: 'margin-top:.3rem', onclick: () => { Object.entries(r.address).forEach(([k, v]) => (f[k].value = v)); token = r.token; verified = true; draw(); } }, 'Use as entered')); }
-    else notice(msg, (r.errors || ['That address could not be verified.']).join(' '));
+  function set(a, tok = null) { f.street.value = a?.street || ''; f.city.value = a?.city || ''; f.state.value = kind === 'gc' ? a?.state || '' : 'FL'; f.zip.value = a?.zip || ''; verified = !!(a?.verified && a?.street); token = verified ? tok : null; method = ''; draw(); }
+  async function verify(silent) {
+    if (busy) return; busy = true; notice(msg, '');
+    try {
+      const r = await api('POST', '/address/verify', { ...read(), kind });
+      if (r.verified) { Object.entries(r.address).forEach(([k, v]) => (f[k].value = v)); token = r.token; verified = true; method = r.method; draw(); }
+      else if (r.noMatch) { notice(msg, r.errors[0]); if (r.token) msg.append(h('button', { type: 'button', class: 'small', style: 'margin-top:.3rem', onclick: () => { Object.entries(r.address).forEach(([k, v]) => (f[k].value = v)); token = r.token; verified = true; method = 'format'; draw(); } }, 'Use as entered')); }
+      else if (!silent) notice(msg, (r.errors || ['That address could not be verified.']).join(' '));
+    } catch (e) { if (!silent) notice(msg, e.message); } finally { busy = false; }
   }
   function draw() {
-    if (verified) box.replaceChildren(h('div', { class: 'addr-ok' }, h('span', { class: 'tick' }, '✓'), h('span', {}, line()), h('button', { type: 'button', class: 'small', onclick: () => { verified = false; token = null; draw(); } }, 'Change')));
-    else box.replaceChildren(h('div', { class: 'form' }, field('Street', f.street, 'wide'), field('City', f.city), field('State', f.state), field('ZIP', f.zip), h('div', {}, h('button', { type: 'button', onclick: guard(msg, verify) }, 'Verify address'))), msg);
+    tick.textContent = verified ? '✓' : ''; tick.title = verified ? (method === 'format' ? 'Address looks complete' : 'Address verified') : '';
+    if (verified) box.replaceChildren(h('div', { class: 'addr-ok' }, h('span', { class: 'tick' }, '✓'), h('span', {}, line()), readonly ? '' : h('button', { type: 'button', class: 'small', onclick: () => { verified = false; token = null; draw(); } }, 'Change')));
+    else box.replaceChildren(h('div', { class: 'form' }, field('Street', f.street, 'wide'), field('City', f.city), field('State', f.state), field('ZIP', f.zip), readonly ? '' : h('div', {}, h('button', { type: 'button', onclick: () => verify(false) }, 'Verify address'))), msg);
   }
-  set(init);
-  return { el: box, set, empty, ok: () => verified, get: () => ({ ...read(), ...(token ? { token } : {}) }) };
+  const auto = () => { const v = read(); if (!readonly && !verified && v.street && v.city) verify(true); };
+  for (const k of ['street', 'city', 'state', 'zip']) f[k].addEventListener('change', () => { verified = false; token = null; auto(); });
+  set(init); if (!verified) setTimeout(auto, 0);
+  if (readonly && empty()) box.replaceChildren(h('span', { class: 'muted' }, '—'));
+  return { el: box, head, set, empty, ok: () => verified, get: () => ({ ...read(), ...(token ? { token } : {}) }) };
 }
 function tradePicker(all, selected, canAdd) {
   const sel = new Set(selected), box = h('div', { class: 'chips' }), list = [...all];
@@ -51,29 +59,33 @@ function tradePicker(all, selected, canAdd) {
     canAdd ? h('button', { type: 'button', class: 'chip', onclick: async () => { const n = prompt('Name of the trade to add'); if (!n || !n.trim()) return; try { const r = await api('POST', '/admin/trades', { name: n.trim(), sort: list.length + 1 }); OPTS = null; list.push({ id: r.id, name: n.trim() }); sel.add(r.id); draw(); } catch (e) { alert(e.message); } } }, '+ New trade') : '');
   draw(); return { el: box, get: () => [...sel] };
 }
+// The log is kept closed until someone opens it.
 function notesPanel(o, canWrite) {
-  const box = h('div'), err = h('div'); const text = h('textarea', { rows: 2, placeholder: 'Add a note. Status changes and edits are logged here automatically.' });
-  const draw = (notes) => box.replaceChildren(h('div', { class: 'notes' }, notes.length ? notes.map((n) => h('div', { class: 'note ' + n.kind }, h('div', {}, n.body), h('div', { class: 'meta' }, `${n.kind === 'System' ? 'System' : n.who || 'User'} · ${when(n.at)} ET`))) : h('p', { class: 'muted' }, 'No notes yet.')));
+  const box = h('div'), err = h('div'), text = h('textarea', { rows: 2, placeholder: 'Add a note. Status changes and edits are logged here automatically.' }), sum = h('summary', { style: 'cursor:pointer;font-weight:600' });
+  const draw = (notes) => { sum.textContent = `Notes and activity (${notes.length})`; box.replaceChildren(h('div', { class: 'notes' }, notes.length ? notes.map((n) => h('div', { class: 'note ' + n.kind }, h('div', {}, n.body), h('div', { class: 'meta' }, `${n.kind === 'System' ? 'System' : n.who || 'User'} · ${when(n.at)} ET`))) : h('p', { class: 'muted' }, 'No notes yet.'))); };
   draw(o.notes || []);
-  const add = guard(err, async () => { if (!text.value.trim()) return; await api('POST', `/opportunities/${o.id}/notes`, { body: text.value }); text.value = ''; const fresh = await api('GET', '/opportunities/' + o.id); draw(fresh.notes); });
-  return h('div', {}, h('label', {}, 'Notes'), box, canWrite ? h('div', {}, text, h('button', { type: 'button', class: 'small', style: 'margin-top:.3rem', onclick: add }, 'Add note')) : '', err);
+  const add = guard(err, async () => { if (!text.value.trim()) return; await api('POST', `/opportunities/${o.id}/notes`, { body: text.value }); text.value = ''; draw((await api('GET', '/opportunities/' + o.id)).notes); });
+  return h('details', { class: 'notes-d' }, sum, box, canWrite ? h('div', {}, text, h('button', { type: 'button', class: 'small', style: 'margin-top:.3rem', onclick: add }, 'Add note')) : '', err);
 }
+// Plans and files. "Open Plans" appears once a PDF with BID SET in its name is in the job's 01. DL folder; the proposal PDFs listed
+// are whatever is in the job's 02. Proposal folder, plus anything uploaded here.
 function filesPanel(o, canWrite, err) {
-  const file = h('input', { type: 'file', style: 'display:none', onchange: guard(err, async () => { const f = file.files[0]; if (!f) return; await uploadFile(`/opportunities/${o.id}/files?kind=Submittal`, f); file.value = ''; render(); }) });
-  const plans = h('input', { type: 'file', accept: '.zip,.pdf', style: 'display:none', onchange: guard(err, async () => { const f = plans.files[0]; if (!f) return; notice(err, `Uploading ${f.name} (${(f.size / 1048576).toFixed(1)} MB). Keep this page open until it finishes…`, 'ok'); const r = await uploadFile(`/opportunities/${o.id}/plans`, f); plans.value = ''; notice(err, r.sharepoint ? 'Plans uploaded. Copying them to the 01. DL folder in SharePoint now; a note appears here when it is done.' : 'Plans uploaded.', 'ok'); setTimeout(render, 1800); }) });
-  return h('div', {}, h('div', { class: 'row spread' }, h('label', {}, 'Submittal folder (all PDFs and files)'), canWrite ? h('span', { class: 'row', style: 'gap:.4rem' }, file, plans, h('button', { type: 'button', class: 'small primary', onclick: () => plans.click(), title: 'The zip from the BuildingConnected Files tab (Download All)' }, 'Upload plans'), h('button', { type: 'button', class: 'small', onclick: () => file.click() }, '+ Add file')) : ''),
-    o.files.length ? h('table', {}, h('tbody', {}, o.files.map((f) => h('tr', {}, h('td', {}, h('a', { href: f.local === false ? f.spUrl || '#' : '/api/opportunity-files/' + f.id, target: '_blank', rel: 'noopener' }, f.name), f.local === false ? h('span', { class: 'muted', style: 'font-size:12px' }, '  (in SharePoint)') : ''), h('td', {}, h('span', { class: 'pill' }, f.kind)), h('td', { class: 'muted' }, when(f.at)), h('td', {}, canWrite && !o.submissions.some((s) => s.fileId === f.id) ? h('button', { class: 'small danger', onclick: guard(err, async () => { if (confirm(`Remove ${f.name}?`)) { await api('DELETE', `/opportunities/${o.id}/files/${f.id}`); render(); } }) }, 'Remove') : ''))))) : h('p', { class: 'muted' }, 'No files yet. The proposal PDF is added when the bid is submitted.'),
-    h('div', { style: 'margin-top:.5rem' }, h('label', {}, 'Shared folder'), folderButtons(o, canWrite, 'opportunity', OPTS?.sharepoint !== false)));
+  const plans = h('input', { type: 'file', accept: '.zip,.pdf', style: 'display:none', onchange: guard(err, async () => { const f = plans.files[0]; if (!f) return; notice(err, `Uploading ${f.name} (${(f.size / 1048576).toFixed(1)} MB). Keep this page open until it finishes…`, 'ok'); const r = await uploadFile(`/opportunities/${o.id}/plans`, f); plans.value = ''; notice(err, r.sharepoint ? 'Plans uploaded. Copying them to the 01. DL folder in SharePoint now; a note appears in the log when it is done.' : 'Plans uploaded.', 'ok'); setTimeout(render, 1800); }) });
+  const live = h('div'), mine = o.files.length ? h('table', {}, h('tbody', {}, o.files.map((f) => h('tr', {}, h('td', {}, h('a', { href: f.local === false ? f.spUrl || '#' : '/api/opportunity-files/' + f.id, target: '_blank', rel: 'noopener' }, f.name), f.local === false ? h('span', { class: 'muted', style: 'font-size:12px' }, '  (in SharePoint)') : ''), h('td', {}, h('span', { class: 'pill' }, f.kind)), h('td', { class: 'muted' }, when(f.at)), h('td', {}, canWrite && !o.submissions.some((s) => s.fileId === f.id) ? h('button', { class: 'small danger', onclick: guard(err, async () => { if (confirm(`Remove ${f.name}?`)) { await api('DELETE', `/opportunities/${o.id}/files/${f.id}`); render(); } }) }, 'Remove') : ''))))) : '';
+  api('GET', `/opportunities/${o.id}/folder-files`).then((r) => live.replaceChildren(r.plans.length ? h('div', { class: 'row', style: 'flex-wrap:wrap;gap:.4rem;margin:.4rem 0' }, r.plans.map((p, i) => h('a', { class: 'small', href: p.webUrl, target: '_blank', rel: 'noopener', title: p.name }, i === 0 ? 'Open Plans' : 'Open Plans · ' + p.name.slice(0, 30)))) : '',
+    r.proposals.length ? h('div', {}, h('label', {}, 'Proposal PDFs in the job folder'), r.proposals.map((p) => h('div', {}, h('a', { href: p.webUrl, target: '_blank', rel: 'noopener', style: 'font-size:14px' }, p.name)))) : '')).catch(() => {});
+  return h('div', {}, h('div', { class: 'row spread' }, h('label', {}, 'Plans and files'), canWrite ? h('span', {}, plans, h('button', { type: 'button', class: 'small primary', onclick: () => plans.click(), title: 'The zip from the BuildingConnected Files tab (Download All)' }, 'Upload plans')) : ''), live,
+    mine || h('p', { class: 'muted' }, 'Nothing uploaded in the app yet. The proposal PDF is added when the bid is submitted.'));
 }
 
 // ---------------------------------------------------------------- the shared folder: open it in SharePoint or in File Explorer
-// A web page cannot open File Explorer by itself. So "Open in File Explorer" gives a small shortcut file that Windows opens in Explorer,
+// A web page cannot open File Explorer by itself. So "Lead Folder" gives a small shortcut file that Windows opens in Explorer,
 // pointing at the folder where the SharePoint library is synced on this PC (set once, remembered in this browser).
 const SYNC_KEY = 'byother.syncRoot';
 const syncRoot = () => { try { return localStorage.getItem(SYNC_KEY) || ''; } catch { return ''; } };
 const setSyncRoot = (v) => { try { localStorage.setItem(SYNC_KEY, v); } catch { /* private window: asked again next time */ } };
 function askSyncRoot() {
-  const cur = syncRoot(), v = prompt('Where is the shared library on this PC?\n\nIn File Explorer, find the folder OneDrive made when you pressed Sync in SharePoint (for example C:\\Users\\Benny\\ByOther Projects - Documents) and paste its full path.', cur || '');
+  const cur = syncRoot(), v = prompt('Where is the shared library on this PC?\n\nIn File Explorer, find the folder OneDrive made when you pressed Sync in SharePoint (for example C:\\Users\\Benny\\by Other Construction\\ByOther Projects - Documents) and paste its full path.', cur || '');
   if (v === null) return null; const t = v.trim().replace(/[\\/]+$/, ''); if (!t) return null; setSyncRoot(t); return t;
 }
 const localPath = (root, spPath) => root + '\\' + String(spPath).split('/').join('\\');
@@ -83,75 +95,67 @@ function openInExplorer(name, spPath) {
   const blob = new Blob([`[InternetShortcut]\r\nURL=${url}\r\n`], { type: 'application/octet-stream' }), a = document.createElement('a');
   a.href = URL.createObjectURL(blob); a.download = String(name).replace(/[\\/:*?"<>|]/g, ' ').slice(0, 80) + '.url'; document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
 }
-// kind: 'opportunity' or 'project'. Shows what the record has: a SharePoint folder (open it), or a way to make one.
+// The one-click version used in the lists.
+const leadFolderButton = (o) => (o.spPath ? h('button', { type: 'button', class: 'small', title: 'Opens the lead\'s folder in File Explorer', onclick: () => openInExplorer(o.name, o.spPath) }, 'Lead Folder') : h('span', { class: 'muted' }, '—'));
+// Opens the first BID SET plan PDF from the job's 01. DL folder (or says there is none yet).
+const openPlansButton = (o) => h('button', { type: 'button', class: 'small', onclick: async () => { const win = window.open('', '_blank'); try { const r = await api('GET', `/opportunities/${o.id}/folder-files`); if (r.plans.length) win.location = r.plans[0].webUrl; else { win.close(); alert('There is no BID SET PDF in the 01. DL folder yet.'); } } catch (e) { win.close(); alert(e.message); } } }, 'Open Plans');
+// For one record's page: SharePoint link, File Explorer shortcut, the path to copy. (A project that has no folder can still be given one.)
 export function folderButtons(o, w, kind = 'opportunity', sharepointOn = true) {
   const err = h('div'), path = o.spPath;
   const where = path ? h('div', { style: 'margin:.2rem 0 .5rem' }, h('div', { class: 'muted', style: 'font-size:13px;word-break:break-all' }, 'In SharePoint: ' + path.split('/').join(' / ')),
     syncRoot() ? h('div', { class: 'muted', style: 'font-size:13px;word-break:break-all;user-select:all' }, 'On this PC: ' + localPath(syncRoot(), path)) : h('div', { class: 'muted', style: 'font-size:13px' }, 'Press "PC folder…" once to show where it is on this PC.')) : '';
   if (o.folderUrl) return h('div', {}, where, h('div', { class: 'row', style: 'flex-wrap:wrap;gap:.4rem' },
     h('a', { class: 'small', href: o.folderUrl, target: '_blank', rel: 'noopener' }, 'Open in SharePoint'),
-    path ? h('button', { type: 'button', class: 'small', onclick: () => openInExplorer(o.name, path), title: 'Opens the folder in File Explorer (needs the library synced to this PC)' }, 'Open in File Explorer') : '',
+    path ? h('button', { type: 'button', class: 'small', onclick: () => openInExplorer(o.name, path), title: 'Opens the folder in File Explorer (needs the library synced to this PC)' }, 'Lead Folder') : '',
     path ? h('button', { type: 'button', class: 'small', onclick: (e) => { const root = syncRoot() || askSyncRoot(); if (root) copy(localPath(root, path), e.target); } }, 'Copy path') : '',
     path ? h('button', { type: 'button', class: 'small', onclick: () => askSyncRoot(), title: syncRoot() ? 'Now: ' + syncRoot() : '' }, 'PC folder…') : ''), err);
-  if (w && sharepointOn) return h('div', {}, h('button', { type: 'button', class: 'small', onclick: guard(err, async () => { await api('POST', `/${kind === 'project' ? 'projects' : 'opportunities'}/${o.id}/folder`, {}); render(); }) }, 'Create folder in SharePoint'), err);
-  return h('span', { class: 'muted' }, sharepointOn ? 'No folder yet' : 'SharePoint is not connected yet');
+  if (kind === 'project' && w && sharepointOn) return h('div', {}, h('button', { type: 'button', class: 'small', onclick: guard(err, async () => { await api('POST', `/projects/${o.id}/folder`, {}); render(); }) }, 'Create folder in SharePoint'), err);
+  return h('span', { class: 'muted' }, !sharepointOn ? 'SharePoint is not connected yet' : kind === 'project' ? 'No folder yet' : 'The folder is created automatically when the lead is Reviewed or Accepted.');
 }
 
-// ---------------------------------------------------------------- the one opportunity form (New and Edit, from any tracker)
-async function opportunityForm(o) {
-  const op = await opts(), known = await api('GET', '/gcs/known'), isNew = !o, me = state.user;
-  const full = o ? await api('GET', '/opportunities/' + o.id) : null; const canAddTrade = ['Super Admin', 'Sub Admin', 'Exec Assistant'].includes(me.role);
-  const f = { name: h('input', { value: full?.name ?? '', required: true }), client: h('input', { value: full?.client ?? '', required: true }), gc: h('input', { value: full?.gc ?? '', required: true, list: 'gc-list', autocomplete: 'off' }),
-    contact: h('input', { value: full?.contact ?? '' }), email: h('input', { type: 'email', value: full?.email ?? '' }), phone: h('input', { type: 'tel', value: full?.phone ?? '' }),
-    source: h('select', { required: true }, h('option', { value: '' }, 'Choose…'), op.sources.map((s) => h('option', { value: s }, s))), link: h('input', { type: 'url', value: full?.link ?? '', placeholder: 'https://app.buildingconnected.com/…' }),
-    est: h('select', { required: true }, h('option', { value: '' }, 'Choose…'), op.estimators.map((u) => h('option', { value: u.id }, u.name || u.email))),
-    due: h('input', { type: 'date', value: full?.due ?? '', required: isNew || !!full?.due }), time: h('input', { type: 'time', value: full?.dueTime ?? '' }), start: h('input', { type: 'date', value: full?.plannedStart ?? '' }),
-    mall: h('input', { type: 'checkbox', checked: full?.mall ? true : null }), note: h('textarea', { rows: 2, placeholder: 'Anything worth remembering' }) };
+// ---------------------------------------------------------------- the one opportunity form: the same layout to read it (Open) and to change it (Edit)
+// In Open mode an empty field reads as a dash, not a blank date picker.
+const dash = (readonly, value, attrs) => (readonly && !value ? h('input', { value: '—', disabled: true }) : h('input', { ...attrs, value: value ?? '', disabled: readonly || null }));
+function buildOpportunityForm(full, op, known, { readonly = false } = {}) {
+  const isNew = !full, me = state.user, canAddTrade = ['Super Admin', 'Sub Admin', 'Exec Assistant'].includes(me.role), ro = readonly || null;
+  const f = { name: h('input', { value: full?.name ?? '', required: true, disabled: ro }), client: h('input', { value: full?.client ?? '', required: true, disabled: ro }), gc: h('input', { value: full?.gc ?? '', required: true, list: 'gc-list', autocomplete: 'off', disabled: ro }),
+    contact: h('input', { value: full?.contact ?? '', disabled: ro }), email: h('input', { type: 'email', value: full?.email ?? '', disabled: ro }), phone: h('input', { type: 'tel', value: full?.phone ?? '', disabled: ro }),
+    source: h('select', { required: true, disabled: ro }, h('option', { value: '' }, 'Choose…'), op.sources.map((s) => h('option', { value: s }, s))), link: h('input', { type: 'url', value: full?.link ?? '', placeholder: 'https://app.buildingconnected.com/…', disabled: ro }),
+    est: h('select', { required: true, disabled: ro }, h('option', { value: '' }, 'Choose…'), op.estimators.map((u) => h('option', { value: u.id }, u.name || u.email))),
+    due: dash(readonly, full?.due, { type: 'date', required: isNew || !!full?.due }), time: dash(readonly, full?.dueTime, { type: 'time' }), start: dash(readonly, full?.plannedStart, { type: 'date' }),
+    mall: h('input', { type: 'checkbox', checked: full?.mall ? true : null, disabled: ro }), note: h('textarea', { rows: 2, placeholder: 'Anything worth remembering' }) };
   f.source.value = full?.sourceType ?? ''; f.est.value = full?.estimatorId ?? (isNew && op.estimators.some((u) => u.id === me.id) ? me.id : '');
-  let type = full?.type ?? ''; const typeBox = h('div', { class: 'seg' }); const drawType = () => typeBox.replaceChildren(...op.projectTypes.map((t) => h('button', { type: 'button', class: t === type ? 'on' : '', onclick: () => { type = t; drawType(); } }, t === 'Office / Medical / Other' ? 'Medical / Office' : t))); drawType();
-  const gcb = addressBlock({ kind: 'gc', init: full?.gcAddr, optional: true }), proj = addressBlock({ kind: 'project', init: full ? { street: full.address, city: full.city, state: 'FL', zip: full.zip, verified: full.addrVerified } : null });
-  const picker = tradePicker(op.trades, (full?.consideredTrades || []).map((t) => t.tradeId), canAddTrade); const linkLabel = h('label', {}, 'Invitation link');
-  const sync = () => { linkLabel.replaceChildren('Invitation link', f.source.value === 'Building Connected' ? star() : ''); f.link.required = f.source.value === 'Building Connected'; }; f.source.onchange = sync; sync();
+  let type = full?.type ?? ''; const typeBox = h('div', { class: 'seg' }); const drawType = () => typeBox.replaceChildren(...op.projectTypes.map((t) => h('button', { type: 'button', class: t === type ? 'on' : '', disabled: ro, onclick: () => { type = t; drawType(); } }, t === 'Office / Medical / Other' ? 'Medical / Office' : t))); drawType();
+  const gcb = addressBlock({ kind: 'gc', init: full?.gcAddr, label: 'GC address (optional)', readonly }), proj = addressBlock({ kind: 'project', init: full ? { street: full.address, city: full.city, state: 'FL', zip: full.zip, verified: full.addrVerified } : null, label: 'Project address (Florida)', readonly });
+  const picker = tradePicker(op.trades, (full?.consideredTrades || []).map((t) => t.tradeId), canAddTrade && !readonly); const linkLabel = h('label', {}, 'Invitation link');
+  const sync = () => { linkLabel.replaceChildren('Invitation link', f.source.value === 'Building Connected' && !readonly ? star() : ''); f.link.required = f.source.value === 'Building Connected'; }; f.source.onchange = sync; sync();
   const hint = h('div', { class: 'muted wide', style: 'font-size:13px' });
-  f.gc.onchange = () => { const g = known.find((x) => x.name.toLowerCase() === f.gc.value.trim().toLowerCase()); if (!g) { hint.textContent = f.gc.value.trim() ? 'A new GC. It joins the list when you save.' : ''; return; } hint.textContent = 'A GC we already work with. Its details were filled in.';
+  f.gc.onchange = () => { if (readonly) return; const g = known.find((x) => x.name.toLowerCase() === f.gc.value.trim().toLowerCase()); if (!g) { hint.textContent = f.gc.value.trim() ? 'A new GC. It joins the list when you save.' : ''; return; } hint.textContent = 'A GC we already work with. Its details were filled in.';
     f.gc.value = g.name; if (gcb.empty() && g.addr) gcb.set(g.addr); if (!f.contact.value) f.contact.value = g.contact; if (!f.email.value) f.email.value = g.email; if (!f.phone.value) f.phone.value = g.phone; };
-  const fillBtn = h('div', { class: 'wide' }, h('button', { type: 'button', class: 'small primary', onclick: () => fillFromPage() }, 'Fill from BuildingConnected'), h('span', { class: 'muted', style: 'font-size:13px;margin-left:.5rem' }, 'On the invitation page press Ctrl+A then Ctrl+C, then paste it here. Only empty fields are filled.'));
-  function fillFromPage() {
-    const text = h('textarea', { rows: 9, placeholder: 'Paste the whole invitation page here (Ctrl+V)' }), linkIn = h('input', { type: 'url', placeholder: 'https://app.buildingconnected.com/opportunities/… (optional: the address from the browser bar)' }), msg = h('div');
-    const blank = (el) => !String(el.value || '').trim(), done = [];
-    const put = (el, v, label) => { if (v && blank(el)) { el.value = v; done.push(label); } };
-    const bg = modal('Fill from BuildingConnected', h('div', {}, h('p', { class: 'muted' }, 'Claude reads the page text and fills what it states. Anything it cannot find stays empty. You check the form before saving.'), h('div', { class: 'form' }, field('Invitation page text', text, 'wide'), field('Invitation link (the address in your browser)', linkIn, 'wide')), msg,
-      h('div', { class: 'row', style: 'justify-content:flex-end;margin-top:.8rem' }, h('button', { type: 'button', class: 'primary', onclick: guard(msg, async () => {
-        notice(msg, 'Reading the page…', 'ok'); const r = await api('POST', '/opportunity-page', { text: text.value }), x = r.fields;
-        put(f.name, x.name, 'project name'); put(f.client, x.client, 'client'); put(f.gc, x.gc, 'GC'); if (x.gc) f.gc.onchange(); put(f.contact, x.contact, 'GC contact'); put(f.email, x.email, 'GC email'); put(f.phone, x.phone, 'GC phone');
-        put(f.due, x.due, 'bid due date'); put(f.time, x.dueTime, 'due time'); put(f.start, x.start, 'job start date'); put(f.link, linkIn.value.trim(), 'invitation link');
-        if (!f.source.value) { f.source.value = 'Building Connected'; sync(); done.push('source'); } if (!type && x.type) { type = x.type; drawType(); done.push('project type'); }
-        if (gcb.empty() && x.gcAddr.street) { gcb.set(x.gcAddr, x.gcAddr.token); done.push('GC address' + (x.gcAddr.verified ? ' (verified)' : ' (press Verify)')); }
-        if (proj.empty() && x.addr.street) { proj.set(x.addr, x.addr.token); done.push('project address' + (x.addr.verified ? ' (verified)' : ' (press Verify)')); }
-        bg.remove(); const note2 = h('div', { class: 'ok wide' }, `Filled: ${done.join(', ') || 'nothing new (the fields already had values)'}.${r.missing.length ? ' Not on the page: ' + r.missing.join(', ') + '.' : ''}${r.warnings.length ? ' ' + r.warnings.join(' ') : ''}`); hint.replaceChildren(note2);
-      }) }, 'Read it'))));
-  }
-  const fields = [summaryOrBlank(full), fillBtn, h('datalist', { id: 'gc-list' }, known.map((g) => h('option', { value: g.name }))),
-    field(lbl('Project name', true), f.name), field(lbl('Client name', true), f.client), field(lbl('GC name', true), f.gc), hint,
-    h('div', { class: 'wide' }, h('label', {}, 'GC address (optional)'), gcb.el),
+  const req = (t) => (readonly ? t : lbl(t, true));
+  const nodes = [h('datalist', { id: 'gc-list' }, known.map((g) => h('option', { value: g.name }))),
+    field(req('Project name'), f.name), field(req('Client name'), f.client), field(req('GC name'), f.gc), hint,
+    h('div', { class: 'wide' }, gcb.head, gcb.el),
     h('div', { class: 'wide' }, h('label', {}, 'GC estimating contact')), field('Name', f.contact), field('Email', f.email), field('Phone', f.phone),
-    h('div', { class: 'wide' }, h('label', {}, lbl('Project address (Florida)', true)), proj.el),
-    field(lbl('Source', true), f.source), h('div', {}, linkLabel, f.link), field(lbl('Estimator', true), f.est),
-    field(lbl('Bid due date', true), f.due), field('Bid due time (Eastern)', f.time), field('Planned project start (for follow-up timing)', f.start),
-    h('div', { class: 'wide' }, h('label', {}, lbl('Project type', true)), typeBox, h('label', { style: 'text-transform:none;letter-spacing:0;font-size:15px;font-weight:400;margin-top:.5rem;display:block' }, f.mall, ' In a shopping center / mall')),
-    h('div', { class: 'wide' }, h('label', {}, 'Trades being considered'), picker.el),
-    isNew ? '' : h('div', { class: 'wide' }, h('label', {}, 'Shared folder'), folderButtons(full, canEstimate(), 'opportunity', op.sharepoint)),
-    isNew ? h('div', { class: 'wide' }, h('label', {}, 'Note'), f.note, h('div', { class: 'muted', style: 'font-size:13px' }, 'A note with your name and the date and time is added automatically.')) : h('div', { class: 'wide' }, notesPanel(full, canEstimate()))];
-  formModal(isNew ? 'New opportunity' : `Edit · ${full.name}`, fields.filter(Boolean), async () => {
+    h('div', { class: 'wide' }, proj.head, proj.el),
+    field(req('Source'), f.source), h('div', {}, linkLabel, f.link), field(req('Estimator'), f.est),
+    field(req('Bid due date'), f.due), field('Due time (ET)', f.time), field('Planned start', f.start),
+    h('div', { class: 'wide' }, h('label', {}, req('Project type')), typeBox, h('label', { style: 'text-transform:none;letter-spacing:0;font-size:15px;font-weight:400;margin-top:.5rem;display:block' }, f.mall, ' In a shopping center / mall')),
+    h('div', { class: 'wide' }, h('label', {}, 'Trades being considered'), readonly && !(full?.consideredTrades || []).length ? h('span', { class: 'muted' }, 'Chosen by the estimator') : picker.el),
+    isNew ? h('div', { class: 'wide' }, h('label', {}, 'Note'), f.note, h('div', { class: 'muted', style: 'font-size:13px' }, 'A note with your name and the date and time is added automatically.')) : ''].filter((x) => x !== '');
+  const body = () => {
     if (!type) throw new Error('Choose the project type.');
-    if (!proj.ok()) throw new Error('Verify the project address first. Press Verify address until it shows the green check.');
-    if (!gcb.empty() && !gcb.ok()) throw new Error('Verify the GC address, or clear its fields.');
-    const body = { name: f.name.value, client: f.client.value, gc: f.gc.value, addr: proj.get(), gcAddr: gcb.empty() ? { street: '', city: '', state: '', zip: '' } : gcb.get(), contact: f.contact.value, email: f.email.value, phone: f.phone.value, sourceType: f.source.value, link: f.link.value, estimatorId: f.est.value || null, due: f.due.value || null, dueTime: f.time.value || null, plannedStart: f.start.value || null, type, mall: f.mall.checked, tradeIds: picker.get() };
-    if (isNew) body.note = f.note.value; else delete body.note;
-    await api(isNew ? 'POST' : 'PUT', '/opportunities' + (isNew ? '' : '/' + o.id), body); render();
-  }, isNew ? 'Add opportunity' : 'Save changes');
+    if (!proj.ok()) throw new Error('The project address is not verified yet. Fill in street, city and ZIP; it checks itself and shows a green check.');
+    if (!gcb.empty() && !gcb.ok()) throw new Error('The GC address is not verified yet, or clear its fields.');
+    const b = { name: f.name.value, client: f.client.value, gc: f.gc.value, addr: proj.get(), gcAddr: gcb.empty() ? { street: '', city: '', state: '', zip: '' } : gcb.get(), contact: f.contact.value, email: f.email.value, phone: f.phone.value, sourceType: f.source.value, link: f.link.value, estimatorId: f.est.value || null, due: f.due.value || null, dueTime: f.time.value || null, plannedStart: f.start.value || null, type, mall: f.mall.checked, tradeIds: picker.get() };
+    if (isNew) b.note = f.note.value; return b;
+  };
+  return { nodes, body, wrap: () => h('div', { class: 'form oform' + (readonly ? ' ro' : '') }, nodes) };
 }
-const summaryOrBlank = (o) => (o ? summary(o) : null);
+async function opportunityForm(o) {   // a new opportunity, in a pop-up (an existing one is opened on its own page)
+  const op = await opts(), known = await api('GET', '/gcs/known'); const built = buildOpportunityForm(null, op, known);
+  formModal('New opportunity', built.nodes, async () => { await api('POST', '/opportunities', built.body()); render(); }, 'Add opportunity');
+}
 
 // ---------------------------------------------------------------- moving between statuses (same look for every move)
 async function statusModal(o, to) {
@@ -224,12 +228,13 @@ export async function estimatingView(arg, arg2) {
   const tab = TABS.some(([t]) => t === arg) ? arg : 'bids', detailId = arg && !TABS.some(([t]) => t === arg) ? arg : null, err = h('div'), w = canEstimate();
   const search = state.estSearch || '';
   const sbox = h('input', { placeholder: 'Find a project, GC, or proposal #', value: search, onchange: (e) => { state.estSearch = e.target.value; render(); } });
-  const q = `q=${encodeURIComponent(search)}`;
+  const scope = state.estScope || 'mine', q = `q=${encodeURIComponent(search)}&scope=${scope}`;
   const data = tab === 'bids' ? await api('GET', `/opportunities?tab=bids&${q}${state.estAll ? '&all=1' : ''}`)
     : tab === 'proposals' ? await api('GET', `/opportunities?tab=proposals&${q}&filter=${encodeURIComponent(state.propFilter || 'Active')}`)
     : tab === 'submittals' ? await api('GET', `/opportunities?tab=submittals&${q}`) : null;
-  const st = data?.stats || (await api('GET', '/opportunities?tab=proposals')).stats;
+  const st = data?.stats || (await api('GET', `/opportunities?tab=proposals&scope=${scope}`)).stats;
   const kpi = (l, v, tone = '') => h('div', { class: 'kpi ' + tone }, h('div', { class: 'l' }, l), h('div', { class: 'v' }, v));
+  const scopeBar = h('div', { class: 'row spread', style: 'margin:.2rem 0' }, h('span', { class: 'muted', style: 'font-size:13px' }, scope === 'mine' ? 'Accepted, working, submitted and follow-up figures are yours. New and Reviewing are for the whole company.' : 'Showing the whole company.'), h('div', { class: 'seg' }, [['mine', 'Mine'], ['all', 'All']].map(([v, l]) => h('button', { type: 'button', class: v === scope ? 'on' : '', onclick: () => { state.estScope = v; render(); } }, l))));
   const head = h('div', { class: 'grid kpis', style: 'grid-template-columns:repeat(auto-fit,minmax(140px,1fr))' }, kpi('New opportunities', st.openLeads), kpi('Reviewing', st.reviewing), kpi('Accepted this month', st.accepted), kpi('Working now', st.working), kpi('Submitted this month', st.submitted), kpi('Follow-ups due', st.awaitingFollowUp, st.awaitingFollowUp ? 'warn' : ''), kpi('Awaiting award', st.interested, st.interested ? 'good' : ''));
   const tabs = h('div', { class: 'tabs', style: 'margin-top:1rem' }, TABS.map(([t, l]) => h('a', { class: t === tab ? 'on' : '', href: '#/estimating/' + t }, l)));
   let body;
@@ -238,9 +243,9 @@ export async function estimatingView(arg, arg2) {
   else if (tab === 'submittals') body = submittalsPanel(data, err, w);
   else if (tab === 'followups') body = await followUpsPanel(err, w, arg === 'followups' ? arg2 : null);
   else body = await insightsTab(err);
-  const detail = detailId ? await opportunityDetail(detailId, err, w) : '';
+  const detail = detailId ? await opportunityDetail(detailId, err, w, arg2 === 'edit') : '';
   return C.shell('estimating', [h('div', { class: 'row spread' }, h('h1', {}, 'Estimating'), h('div', { class: 'row' }, sbox, w && h('button', { onclick: importForm }, 'Import leads'), w && h('button', { class: 'primary', onclick: () => opportunityForm(null).catch((e) => alert(e.message)) }, '+ Opportunity'))),
-    h('p', { class: 'sub' }, 'Florida bid invitations to proposals to awarded projects. Reviewing and Accepted work moves to the Proposal Tracker; an award builds the project in Job Costing.'), head, tabs, err, detail, body]);
+    h('p', { class: 'sub' }, 'Florida bid invitations to proposals to awarded projects. Reviewing and Accepted work moves to the Proposal Tracker; an award builds the project in Job Costing.'), scopeBar, head, tabs, err, detail, body]);
 }
 async function importForm() {
   const conn = (await api('GET', '/estimating/connection')).buildingConnected; const csv = h('textarea', { rows: 8, placeholder: 'Paste the CSV here, or choose a file below. First row = headings (Project, GC / Company, City, State, Bid Due, …).' }), file = h('input', { type: 'file', accept: '.csv,text/csv' });
@@ -250,7 +255,7 @@ async function importForm() {
 }
 
 // ---------------------------------------------------------------- Bid Opportunities
-const BID_RULES = (r) => `One list of NEW opportunities, ordered by week, then closeness to Orlando, then shopping centers, then Retail, Restaurant, and Medical / Office. Weeks run Monday–Sunday: a bid due ON a Monday goes in the prior week. Undated leads stay visible. A New lead is declined ${r.declineNewDays} days after its bid due date, and the system notes it; leads with no date never expire. Search includes everything seen in the last 30 days, declined too; older ones must be added by hand. Reviewing and Accepted opportunities move to the Proposal Tracker.`;
+const BID_RULES = (r) => `One list of NEW opportunities, ordered by week, then closeness to Orlando, then shopping centers, then Retail, Restaurant, and Medical / Office. Weeks run Monday–Sunday: a bid due ON a Monday goes in the prior week. Undated leads stay visible. A New lead is declined ${r.declineNewDays} days after its bid due date, after 7 working days if nobody takes it up, and a Tier 3 or 4 lead is declined when its week is over; every change is written in the lead's log. Declined leads stay searchable for 30 days from the day they were declined; older ones must be added by hand. Reviewing and Accepted opportunities move to the Proposal Tracker.`;
 function bidFeedBar(feed, err, w) {
   const bar = h('div', { class: 'card', style: 'padding:.7rem 1rem' }); const refresh = guard(err, async () => { await api('POST', '/bids/refresh', {}); render(); });
   if (!feed.connected) { bar.append(h('div', { class: 'row spread' }, h('span', {}, feed.googleSetUp ? 'Bid invitations are read from your BuildingConnected emails. The owner connects Gmail once in Admin.' : 'Bid invitations will be read from your BuildingConnected emails once Gmail is connected (see Admin).'), C.isSuper() ? h('a', { href: '#/admin' }, 'Open Admin') : '')); return bar; }
@@ -260,7 +265,7 @@ function bidFeedBar(feed, err, w) {
   return bar;
 }
 const weekLabel = (n) => (n.startsWith('Week Of ') ? fmtDay(n.slice(8)) : n === 'Due This Week — Too Tight To Bid' ? 'This week — too tight to bid' : n === 'Missed / Past Due' ? 'Missed / past due' : n === 'No Bid Due Date Provided' ? 'No bid due date provided' : n);
-const BID_COLS = [['week', 'Week Of'], ['project', 'Project / Location'], ['gc', 'General Contractors / Contact'], ['due', 'Bid Due'], ['status', 'Status'], ['invitation', 'Invitation'], ['onedrive', 'OneDrive Link']];
+const BID_COLS = [['week', 'Week Of'], ['project', 'Project / Location'], ['gc', 'General Contractors / Contact'], ['due', 'Bid Due'], ['status', 'Status'], ['invitation', 'Invitation'], ['onedrive', 'Lead Folder']];
 function inviteCell(o) {
   const inv = (o.invitations || []).filter((i) => i.link), list = inv.length ? inv : o.link ? [{ gc: o.gc, link: o.link }] : [];
   return h('td', { style: 'white-space:nowrap' }, list.length ? list.map((i) => h('div', {}, h('a', { href: i.link, target: '_blank', rel: 'noopener', title: `Open the ${i.gc} invitation on BuildingConnected` }, list.length > 1 ? `View · ${i.gc.split(/[ ,]/)[0]}` : 'View Invitation'))) : '—', o.emailLink ? h('div', {}, h('a', { href: o.emailLink, target: '_blank', rel: 'noopener', class: 'muted', style: 'font-size:13px' }, 'Email')) : '');
@@ -283,28 +288,25 @@ function bidsPanel(data, err, w, feed) {
           h('td', { style: 'white-space:normal;min-width:240px' }, h('strong', {}, o.name), o.client && o.client !== o.gc ? sub('Client: ' + o.client) : '', sub([addrLine(o), o.mall ? 'Shopping center' : '', o.type, o.sourceType].filter(Boolean).join(' · '))),
           h('td', { style: 'white-space:normal;min-width:200px' }, contactBlock(o)), dueCell(o),
           h('td', {}, statusSelect(o, w), o.autoDeclined ? sub('Auto-declined') : o.declinedReason ? sub(o.declinedReason) : ''),
-          inviteCell(o), h('td', {}, o.folderUrl ? h('a', { href: o.folderUrl, target: '_blank', rel: 'noopener' }, 'Open folder') : h('span', { class: 'muted' }, '—')),
-          h('td', {}, h('div', { class: 'stack' }, h('button', { class: 'small', onclick: () => (location.hash = '#/estimating/' + o.id) }, 'Open'), w ? h('button', { class: 'small', onclick: () => opportunityForm(o).catch((e) => alert(e.message)) }, 'Edit') : ''))))))) : h('p', { class: 'muted', style: 'padding:1rem 0' }, feed.connected ? 'No new opportunities. They appear after the next refresh (8:00 AM and 1:00 PM), or press Refresh now.' : 'No opportunities yet. Connect Gmail in Admin, or add one with + Opportunity.')));
+          inviteCell(o), h('td', {}, h('div', { class: 'stack' }, leadFolderButton(o), o.spPath ? openPlansButton(o) : '')),
+          h('td', {}, h('div', { class: 'stack' }, h('button', { class: 'small', onclick: () => (location.hash = '#/estimating/' + o.id) }, 'Open'), w ? h('button', { class: 'small', onclick: () => (location.hash = `#/estimating/${o.id}/edit`) }, 'Edit') : ''))))))) : h('p', { class: 'muted', style: 'padding:1rem 0' }, feed.connected ? 'No new opportunities. They appear after the next refresh (8:00 AM and 1:00 PM), or press Refresh now.' : 'No opportunities yet. Connect Gmail in Admin, or add one with + Opportunity.')));
 }
 
 // ---------------------------------------------------------------- Proposal Tracker
 const tradeList = (o) => (o.tradePrices.length ? h('div', {}, o.tradePrices.map((p) => h('div', { style: 'font-size:13px;white-space:nowrap' }, `${p.name} ${usd(p.amount)}`)), h('strong', { style: 'font-size:13px' }, usd(o.total))) : o.consideredTrades.length ? sub('Considering: ' + o.consideredTrades.map((t) => t.name).join(', ')) : sub('—'));
 function filterChips(list, current, counts, onPick) { return h('div', { class: 'filters' }, list.map((k) => h('button', { type: 'button', class: 'chip' + (k === current ? ' on' : ''), onclick: () => onPick(k) }, `${k === 'Decided Not To Submit' ? 'Decided Not To Submit' : k}${counts?.[k] != null ? ' ' + counts[k] : ''}`))); }
-function folderModal(o) {
-  const msg = h('div'); const fp = o.folderPlan;
-  modal('Folder for this proposal', h('div', {}, o.folderUrl || OPTS?.sharepoint ? h('div', { style: 'margin-bottom:.8rem' }, folderButtons(o, canEstimate(), 'opportunity', OPTS?.sharepoint !== false)) : '', h('p', {}, 'The standard folder tree for the proposal:'), h('pre', { class: 'draft' }, fp.root + '\n' + fp.folders.map((x) => '  ' + x).join('\n')), C.hasFolderAccess() ? h('button', { type: 'button', onclick: guard(msg, async () => { const where = await C.createProposalFolders(fp); notice(msg, `Created in ${where}`, 'ok'); }) }, 'Create these folders on my computer…') : '', C.folderNote(), msg));
-}
+const LEGEND = h('p', { class: 'muted', style: 'font-size:13px;margin:.2rem 0 .6rem' }, h('span', { class: 'swatch green' }), ' submitted  ', h('span', { class: 'swatch yellow' }), ' started, time left  ', h('span', { class: 'swatch red' }), ' due today or past due, not submitted');
 function proposalsPanel(data, err, w) {
   const open = (o) => (location.hash = '#/estimating/' + o.id);
   const filters = ['Active', 'Reviewing', 'Accepted', 'Started', 'Submitted', 'Decided Not To Submit', 'All'];
-  return h('div', { class: 'card' }, h('h2', {}, 'Proposal Tracker'), filterChips(filters, data.filter, data.counts, (k) => { state.propFilter = k; render(); }),
-    data.rows.length ? h('div', { class: 'scroll' }, h('table', { class: 'biglist' }, h('thead', {}, h('tr', {}, ['Proposal / Project', 'General Contractors', 'Estimator / Scope', 'Due', 'Status', 'Proposed Price By Trade', 'Invitation', 'Files', 'Actions'].map((t) => h('th', {}, t)))),
-      h('tbody', {}, data.rows.map((o) => h('tr', {},
-        h('td', { style: 'white-space:normal;min-width:220px' }, o.proposalId ? h('strong', {}, o.proposalId) : pill('Reviewing'), h('div', { class: 'edit', onclick: () => open(o) }, o.name), sub(addrLine(o))),
+  return h('div', { class: 'card' }, h('h2', {}, 'Proposal Tracker'), filterChips(filters, data.filter, data.counts, (k) => { state.propFilter = k; render(); }), LEGEND,
+    data.rows.length ? h('div', { class: 'scroll' }, h('table', { class: 'biglist' }, h('thead', {}, h('tr', {}, ['Proposal / Project', 'General Contractors', 'Estimator / Scope', 'Due', 'Status', 'Proposed Price By Trade', 'Invitation', 'Lead Folder', 'Actions'].map((t) => h('th', {}, t)))),
+      h('tbody', {}, data.rows.map((o) => h('tr', { class: 'tone-' + (o.tone || 'none') },
+        h('td', { style: 'white-space:normal;min-width:220px' }, o.proposalId ? h('strong', {}, o.proposalId) : pill('Reviewing'), h('div', { class: 'edit', onclick: () => open(o) }, o.name), sub(addrLine(o)), o.expiry === 'expiring' ? h('div', { class: 'neg', style: 'font-size:12px;font-weight:600' }, 'Lead is expiring') : ''),
         h('td', { style: 'white-space:normal;min-width:180px' }, contactBlock(o)), h('td', { style: 'white-space:normal' }, o.estimator || '—', o.consideredTrades.length ? sub(o.consideredTrades.map((t) => t.name).join(', ')) : ''),
         h('td', {}, fmtDay(o.due), sub(o.countdown)), h('td', {}, statusSelect(o, w)), h('td', {}, tradeList(o)),
-        inviteCell(o), h('td', {}, o.files.length ? h('a', { href: '#/estimating/' + o.id }, `${o.files.length} file${o.files.length === 1 ? '' : 's'}`) : '—', o.folderUrl ? h('div', {}, h('a', { href: o.folderUrl, target: '_blank', rel: 'noopener' }, 'SharePoint')) : ''),
-        h('td', {}, h('div', { class: 'stack' }, w && ['Accepted', 'Started'].includes(o.status) ? h('button', { class: 'small primary', onclick: () => submitModal(o) }, 'Submit') : '', w ? h('button', { class: 'small', onclick: () => opportunityForm(o).catch((e) => alert(e.message)) }, 'Edit') : '', o.acceptedDate ? h('button', { class: 'small', onclick: async () => folderModal(await api('GET', '/opportunities/' + o.id)) }, 'Folder') : ''))))))) : h('p', { class: 'muted', style: 'padding:1rem 0' }, 'Nothing here yet. Mark a New opportunity Reviewing or Accepted from Bid Opportunities.'));
+        inviteCell(o), h('td', {}, h('div', { class: 'stack' }, leadFolderButton(o), o.spPath ? openPlansButton(o) : '')),
+        h('td', {}, h('div', { class: 'stack' }, w && ['Accepted', 'Started'].includes(o.status) ? h('button', { class: 'small primary', onclick: () => submitModal(o) }, 'Submit') : '', w && o.tone === 'red' ? h('button', { class: 'small danger', title: 'The due date has arrived and nothing was submitted: submit it, or say why not', onclick: () => statusModal(o, 'Decided Not To Submit').catch((e) => alert(e.message)) }, 'Decide now') : '', w ? h('button', { class: 'small', onclick: () => (location.hash = `#/estimating/${o.id}/edit`) }, 'Edit') : ''))))))) : h('p', { class: 'muted', style: 'padding:1rem 0' }, 'Nothing here yet. Mark a New opportunity Reviewing or Accepted from Bid Opportunities.'));
 }
 
 // ---------------------------------------------------------------- Submittal Tracker (list and calendar)
@@ -313,14 +315,23 @@ function submittalsPanel(data, err, w) {
   const FIL = { All: () => true, 'Not Submitted': (o) => ['Accepted', 'Started'].includes(o.status), Submitted: (o) => o.status === 'Submitted', Awarded: (o) => o.status === 'Awarded', 'Not Awarded': (o) => o.status === 'Not Awarded', 'No Communication': (o) => o.status === 'No Communication' };
   const rows = data.rows.filter(FIL[filter]), counts = Object.fromEntries(Object.entries(FIL).map(([k, f]) => [k, data.rows.filter(f).length]));
   const toggle = h('div', { class: 'seg' }, ['list', 'calendar'].map((v) => h('button', { type: 'button', class: v === view ? 'on' : '', onclick: () => { state.subView = v; render(); } }, v === 'list' ? 'List' : 'Calendar')));
-  return h('div', { class: 'card' }, h('div', { class: 'row spread' }, h('h2', {}, 'Submittal Tracker'), toggle), filterChips(Object.keys(FIL), filter, counts, (k) => { state.subFilter = k; render(); }), view === 'calendar' ? calendar(rows) : submittalList(rows, w));
+  return h('div', { class: 'card' }, h('div', { class: 'row spread' }, h('h2', {}, 'Submittal Tracker'), toggle), filterChips(Object.keys(FIL), filter, counts, (k) => { state.subFilter = k; render(); }), LEGEND, tradeTally(data.rows.filter((o) => o.status === 'Submitted')), view === 'calendar' ? calendar(rows) : submittalList(rows, w));
 }
+// What is out with GCs right now, by trade: how many bids and how much, and the total across all trades.
+function tradeTally(rows) {
+  const by = new Map(); let total = 0; for (const o of rows) for (const t of o.lastSubmission?.trades || []) { const e = by.get(t.name) || { bids: 0, amount: 0 }; e.bids++; e.amount += Number(t.amount); by.set(t.name, e); total += Number(t.amount); }
+  if (!by.size) return '';
+  return h('details', { open: true, style: 'margin:.2rem 0 .8rem' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, `Submitted and waiting: ${rows.length} bid${rows.length === 1 ? '' : 's'}, ${usd(total)}`),
+    h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Trade'), h('th', { class: 'n' }, 'Bids'), h('th', { class: 'n' }, 'Total'))), h('tbody', {}, [...by].sort((a, b) => b[1].amount - a[1].amount).map(([n, e]) => h('tr', {}, h('td', {}, n), h('td', { class: 'n' }, e.bids), h('td', { class: 'n' }, usd(e.amount))))), h('tfoot', {}, h('tr', { class: 'total' }, h('td', {}, 'All trades'), h('td', { class: 'n' }, [...by.values()].reduce((n, e) => n + e.bids, 0)), h('td', { class: 'n' }, usd(total))))));
+}
+// The PDFs in the job's 02. Proposal folder, loaded when asked for (it asks SharePoint).
+const folderPdfs = (o) => { const box = h('div'); box.append(h('button', { type: 'button', class: 'small', onclick: async (e) => { e.target.textContent = 'Looking…'; try { const r = await api('GET', `/opportunities/${o.id}/folder-files`); box.replaceChildren(r.proposals.length ? r.proposals.map((p) => h('div', {}, h('a', { href: p.webUrl, target: '_blank', rel: 'noopener', style: 'font-size:13px' }, p.name))) : h('span', { class: 'muted', style: 'font-size:13px' }, 'No PDFs in the proposal folder')); } catch (er) { box.replaceChildren(h('span', { class: 'neg', style: 'font-size:13px' }, er.message)); } } }, 'Folder PDFs')); return box; };
 function submittalList(rows, w) {
   if (!rows.length) return h('p', { class: 'muted', style: 'padding:1rem 0' }, 'Nothing here. Accepted and Started work appears here until it is submitted.');
   return h('div', { class: 'scroll' }, h('table', { class: 'biglist' }, h('thead', {}, h('tr', {}, ['Proposal / Project', 'General Contractors', 'Due', 'Submitted', 'Price By Trade', 'Status', 'Proposal PDFs', 'Actions'].map((t) => h('th', {}, t)))),
-    h('tbody', {}, rows.map((o) => { const s = o.lastSubmission; return h('tr', {}, h('td', { style: 'white-space:normal;min-width:200px' }, h('strong', {}, o.proposalId || ''), h('div', { class: 'edit', onclick: () => (location.hash = '#/estimating/' + o.id) }, o.name), sub(addrLine(o))),
+    h('tbody', {}, rows.map((o) => { const s = o.lastSubmission; return h('tr', { class: 'tone-' + (o.tone || 'none') }, h('td', { style: 'white-space:normal;min-width:200px' }, h('strong', {}, o.proposalId || ''), h('div', { class: 'edit', onclick: () => (location.hash = '#/estimating/' + o.id) }, o.name), sub(addrLine(o))),
       h('td', { style: 'white-space:normal' }, o.gc, o.contact ? sub(o.contact) : ''), h('td', {}, fmtDay(o.due)), h('td', {}, s ? [fmtDay(s.date), sub(`Version ${s.version} · ${s.method}`)] : h('span', { class: 'muted' }, 'Not yet')), h('td', {}, tradeList(o)), h('td', {}, statusSelect(o, w)),
-      h('td', {}, o.files.filter((f) => f.kind !== 'Other').length ? o.files.filter((f) => f.kind !== 'Other').map((f) => h('div', {}, h('a', { href: '/api/opportunity-files/' + f.id, target: '_blank', rel: 'noopener', style: 'font-size:13px' }, f.name))) : h('span', { class: 'muted' }, 'No PDFs yet')),
+      h('td', {}, o.files.filter((f) => f.kind !== 'Other').length ? o.files.filter((f) => f.kind !== 'Other').map((f) => h('div', {}, h('a', { href: '/api/opportunity-files/' + f.id, target: '_blank', rel: 'noopener', style: 'font-size:13px' }, f.name))) : h('span', { class: 'muted' }, 'No PDFs yet'), o.spPath ? folderPdfs(o) : ''),
       h('td', {}, h('div', { class: 'stack' }, w && ['Accepted', 'Started'].includes(o.status) ? h('button', { class: 'small primary', onclick: () => submitModal(o) }, 'Submit') : '', s ? h('button', { class: 'small', onclick: () => (location.hash = '#/estimating/followups/' + o.id) }, 'Follow up') : '', h('button', { class: 'small', onclick: () => (location.hash = '#/estimating/' + o.id) }, 'Open'))));
     }))));
 }
@@ -335,21 +346,22 @@ function calendar(rows) {
     h('p', { class: 'muted', style: 'font-size:13px' }, 'Submitted bids sit on the day they were actually sent, with the original due date shown. Bids not yet sent sit on their due date.'));
 }
 
-// ---------------------------------------------------------------- one opportunity, everything gathered
-async function opportunityDetail(id, err, w) {
-  const o = await api('GET', '/opportunities/' + id), op = await opts();
-  const row = (l, v) => h('div', {}, h('label', {}, l), h('div', {}, v || '—'));
-  const gcA = o.gcAddr?.street ? [o.gcAddr.street, o.gcAddr.city, [o.gcAddr.state, o.gcAddr.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ') : '';
+// ---------------------------------------------------------------- one opportunity: Open and Edit share one layout
+async function opportunityDetail(id, err, w, editing) {
+  const o = await api('GET', '/opportunities/' + id), op = await opts(), known = await api('GET', '/gcs/known');
+  const built = buildOpportunityForm(o, op, known, { readonly: !editing }), msg = h('div');
+  const save = guard(msg, async () => { await api('PUT', '/opportunities/' + id, built.body()); location.hash = '#/estimating/' + id; render(); });
   return h('div', { class: 'card', style: 'border-color:var(--navy)' }, h('div', { class: 'row spread' }, h('h2', {}, `${o.proposalId ? o.proposalId + ' · ' : ''}${o.name}`), h('a', { href: '#/estimating/' + (['New', 'Declined'].includes(o.status) ? 'bids' : o.lastSubmission ? 'submittals' : 'proposals') }, 'Close')),
-    h('div', { class: 'row', style: 'margin:.3rem 0 .8rem' }, statusSelect(o, w), w ? h('button', { class: 'small', onclick: () => opportunityForm(o).catch((e) => alert(e.message)) }, 'Edit') : '', o.lastSubmission ? h('a', { href: '#/estimating/followups/' + o.id }, 'Open follow-up') : '', o.projectId ? h('a', { href: '#/projects/' + o.projectId }, 'Open the project') : ''),
-    h('div', { class: 'form' }, row('Client', o.client), row('GC', o.gc + (o.additionalGcs ? ' (also ' + o.additionalGcs + ')' : '')), row('GC address', gcA && h('span', {}, gcA, o.gcAddr.verified ? ' ✓' : '')), row('GC contact', [o.contact, o.email, o.phone].filter(Boolean).join(' · ')),
-      row('Project address', addrLine(o) && h('span', {}, addrLine(o), o.addrVerified ? ' ✓' : '')), row('Source', o.sourceType), row('Invitation', o.link && h('a', { href: o.link, target: '_blank', rel: 'noopener' }, 'Open invitation')), row('Estimator', o.estimator),
-      row('Bid due', o.due ? fmtDay(o.due) + (o.dueTime ? ' ' + o.dueTime + ' ET' : '') : 'No bid due date'), row('Project type', o.type + (o.mall ? ' · shopping center' : '')), row('Planned start', o.plannedStart ? fmtDay(o.plannedStart) : ''), row('Trades considered', o.consideredTrades.map((t) => t.name).join(', '))),
-    o.tradePrices.length ? h('p', {}, h('strong', {}, 'Proposed: '), o.tradePrices.map((p) => `${p.name} ${usd(p.amount)}`).join(' · '), ` = ${usd(o.total)}`) : '',
-    o.submissions.length ? h('div', {}, h('label', {}, 'Bid versions'), h('table', {}, h('tbody', {}, o.submissions.map((s) => h('tr', {}, h('td', {}, 'v' + s.version), h('td', {}, fmtDay(s.date)), h('td', {}, s.method), h('td', { class: 'n' }, usd(s.price)), h('td', {}, (s.trades || []).map((t) => t.name).join(', ')), h('td', {}, w && o.status === 'Submitted' ? h('button', { class: 'small danger', onclick: guard(err, async () => { const why = prompt('Why remove this submission? (the PDF stays in the folder)'); if (why) { await api('POST', `/opportunities/${o.id}/submissions/${s.id}/void`, { reason: why }); render(); } }) }, 'Remove') : '')))))) : '',
-    h('div', { style: 'margin-top:.8rem' }, filesPanel(o, w, err)), h('div', { style: 'margin-top:.8rem' }, notesPanel(o, w)),
-    o.acceptedDate && !o.projectId ? await takeoffCard(o, err, w) : '',
-    w && !o.projectId ? h('div', { style: 'margin-top:.6rem' }, h('button', { class: 'small danger', onclick: guard(err, async () => { if (confirm(`Delete ${o.name}? This removes its notes and files.`)) { await api('DELETE', '/opportunities/' + o.id); location.hash = '#/estimating/bids'; } }) }, 'Delete opportunity')) : '');
+    h('div', { class: 'row', style: 'margin:.3rem 0 .8rem;flex-wrap:wrap;gap:.5rem' }, statusSelect(o, w), o.expiry === 'expiring' ? h('span', { class: 'neg', style: 'font-size:13px;font-weight:600' }, 'Lead is expiring') : '',
+      w && !editing ? h('button', { class: 'small', onclick: () => (location.hash = `#/estimating/${id}/edit`) }, 'Edit') : '', w && editing ? h('button', { class: 'small primary', onclick: save }, 'Save changes') : '', editing ? h('button', { class: 'small', onclick: () => (location.hash = '#/estimating/' + id) }, 'Cancel') : '',
+      o.lastSubmission ? h('a', { href: '#/estimating/followups/' + o.id }, 'Open follow-up') : '', o.projectId ? h('a', { href: '#/projects/' + o.projectId }, 'Open the project') : ''), msg,
+    built.wrap(),
+    o.tradePrices.length ? h('p', { style: 'margin-top:.8rem' }, h('strong', {}, 'Proposed: '), o.tradePrices.map((p) => `${p.name} ${usd(p.amount)}`).join(' · '), ` = ${usd(o.total)}`) : '',
+    o.submissions.length ? h('div', { style: 'margin-top:.8rem' }, h('label', {}, 'Bid versions'), h('table', {}, h('tbody', {}, o.submissions.map((s) => h('tr', {}, h('td', {}, 'v' + s.version), h('td', {}, fmtDay(s.date)), h('td', {}, s.method), h('td', { class: 'n' }, usd(s.price)), h('td', {}, (s.trades || []).map((t) => t.name).join(', ')), h('td', {}, w && o.status === 'Submitted' ? h('button', { class: 'small danger', onclick: guard(err, async () => { const why = prompt('Why remove this submission? (the PDF stays in the folder)'); if (why) { await api('POST', `/opportunities/${o.id}/submissions/${s.id}/void`, { reason: why }); render(); } }) }, 'Remove') : '')))))) : '',
+    h('div', { style: 'margin-top:.8rem' }, h('label', {}, 'Shared folder'), folderButtons(o, w, 'opportunity', OPTS?.sharepoint !== false)),
+    h('div', { style: 'margin-top:.8rem' }, filesPanel(o, w, err)),
+    h('div', { style: 'margin-top:.8rem' }, notesPanel(o, w)),
+    o.acceptedDate && !o.projectId ? await takeoffCard(o, err, w) : '');
 }
 
 // ---------------------------------------------------------------- Follow Ups
@@ -446,7 +458,7 @@ async function takeoffCard(o, err, w) {
       w && r.status !== 'Applied' ? h('div', { class: 'row', style: 'margin-top:.8rem' }, h('button', { onclick: () => { const d = h('input'), s2 = h('select', {}, sections.map((x) => h('option', { value: x }, x))); formModal('Add an item the plans missed', [field('Section', s2), field('Description', d, 'wide')], async () => { await api('POST', `/takeoff/${r.id}/items`, { section: s2.value, description: d.value }); render(); }, 'Add'); } }, '+ Add item'),
         h('button', { onclick: guard(msg, async () => { await api('POST', `/takeoff/${r.id}/verify`, {}); render(); }) }, 'Mark verified'), h('button', { class: 'primary', disabled: r.status !== 'Verified' ? true : null, title: r.status !== 'Verified' ? 'Verify every included item first' : '', onclick: guard(msg, async () => { const x = await api('POST', `/takeoff/${r.id}/apply`, {}); notice(msg, `Applied to ${x.trades} trade prices. Review them under Price trades.`, 'ok'); render(); }) }, 'Apply to proposal prices')) : '');
   };
-  return h('div', { style: 'margin-top:1rem;border-top:1px solid var(--line);padding-top:.8rem' }, h('div', { class: 'row spread' }, h('h2', {}, 'Plan takeoff (AI-assisted)'), w && h('div', { class: 'row' }, file, h('button', { onclick: () => file.click() }, 'Upload plans (PDF) and read them'))),
+  return h('div', { style: 'margin-top:1rem;border-top:1px solid var(--line);padding-top:.8rem' }, h('div', { class: 'row spread' }, h('h2', {}, 'Plan takeoff (AI-assisted)'), w && h('div', { class: 'row' }, file, h('button', { onclick: () => file.click() }, 'Read plans with AI (PDF)'))),
     h('p', { class: 'muted' }, 'Reads demo keynotes, wall types, paint by code, and carpentry the responsibility matrix assigns to the contractor. You verify each item and add prices; nothing reaches the proposal until you apply it.'), msg, runs.map(runCard), runs.length ? '' : h('p', { class: 'muted' }, 'No takeoff yet.'));
 }
 

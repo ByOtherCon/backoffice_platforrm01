@@ -103,3 +103,18 @@ export async function syncGcs(year = todayEastern().slice(0, 4)) {
     return { added, found: names.length };
   } catch { return { added: 0, found: 0 }; }
 }
+
+// What is in the job's folder right now: the BID SET plan PDFs in 01. DL (for the Open Plans link) and the PDFs in 02. Proposal.
+// A lead whose folder exists in SharePoint but was never linked is linked here (nothing is created for a lead that has no P number yet).
+export async function folderFiles(oppId) {
+  if (!enabled()) return { enabled: false, plans: [], proposals: [] };
+  let [o] = await q('SELECT id, sp_item_id, proposal_id, status FROM opportunities WHERE id=$1', [oppId]); if (!o) throw new HttpError(404, 'Opportunity not found.');
+  if (!o.sp_item_id && (o.proposal_id || ['Reviewing', 'Accepted', 'Started', 'Submitted'].includes(o.status))) { await tryEnsureOpportunityFolder(oppId); [o] = await q('SELECT id, sp_item_id FROM opportunities WHERE id=$1', [oppId]); }
+  if (!o?.sp_item_id) return { enabled: true, linked: false, plans: [], proposals: [] };
+  try {
+    const kids = await SP.listFolder(o.sp_item_id), sub = (n) => kids.find((k) => k.folder && k.name === n);
+    const pdf = (n) => /\.pdf$/i.test(n);
+    const [plans, proposals] = await Promise.all([sub('01. DL') ? SP.findFiles(sub('01. DL').id, (n) => pdf(n) && /bid\s*set/i.test(n), 3) : [], sub('02. Proposal') ? SP.findFiles(sub('02. Proposal').id, pdf, 2) : []]);
+    return { enabled: true, linked: true, plans, proposals };
+  } catch (e) { return { enabled: true, linked: true, plans: [], proposals: [], error: oneLine(e) }; }
+}

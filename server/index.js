@@ -21,6 +21,7 @@ import * as fu from './followups.js';
 import * as aiu from './aiUsage.js';
 import * as folders from './folders.js';
 import * as sharepoint from './sharepoint.js';
+import * as aps from './autodesk.js';
 import { verifyAddress } from './address.js';
 import * as db from './dashboard.js';
 import * as rp from './reports.js';
@@ -201,6 +202,14 @@ route('GET', '/api/gmail/callback', async ({ req, res, user }) => {
   if (p.get('error')) throw bad('Google did not allow the connection (' + p.get('error') + ').');
   await bd.finishConnect(p.get('code'), p.get('state')); res.writeHead(302, { location: '/#/admin', 'cache-control': 'no-store' }); res.end(); return 'sent';
 });
+route('GET', '/api/autodesk/status', async ({ user }) => { auth.requireRole(user, [...auth.MANAGE, 'Estimator']); const s = await aps.status(); if (!auth.SUPER.includes(user.role)) delete s.lastCheck; return s; });
+route('POST', '/api/autodesk/connect', async ({ user }) => { auth.requireRole(user, auth.SUPER); return { url: await aps.connectUrl(user) }; });
+route('GET', '/api/autodesk/callback', async ({ req, res, user }) => {
+  auth.requireRole(user, auth.SUPER); const p = new URL(req.url, 'http://x').searchParams;
+  await aps.finishConnect(user, p.get('code'), p.get('state'), p.get('error')); res.writeHead(302, { location: '/#/admin', 'cache-control': 'no-store' }); res.end(); return 'sent';
+});
+route('POST', '/api/autodesk/check', async ({ user, body }) => { auth.requireRole(user, auth.SUPER); return aps.check(body.link); });
+route('DELETE', '/api/autodesk', async ({ user }) => { auth.requireRole(user, auth.SUPER); await aps.disconnect(); return { ok: true }; });
 route('DELETE', '/api/gmail', async ({ user }) => { auth.requireRole(user, auth.SUPER); await bd.disconnect(); return { ok: true }; });
 route('GET', '/api/regions', async ({ user }) => { estRead(user); return bd.listRegions(); });
 route('PUT', '/api/regions', async ({ user, body }) => { auth.requireRole(user, auth.APPROVERS); await bd.saveRegion(body); return { ok: true }; });

@@ -518,6 +518,21 @@ async function aiCard() {
     h('div', { class: 'row', style: 'margin-top:.8rem' }, h('label', { style: 'margin:0' }, 'Monthly cap (tokens)'), cap, isSuper() && h('button', { onclick: guard(err, async () => { await api('PUT', '/settings/ai', { monthlyTokenCap: cap.value }); notice(err, 'Saved.', 'ok'); }) }, 'Save cap')));
 }
 
+// Super Admin: the BuildingConnected (Autodesk) connection.
+async function autodeskCard() {
+  const s = await api('GET', '/autodesk/status'), err = h('div'), link = h('input', { placeholder: 'Paste a BuildingConnected invitation link', style: 'min-width:320px' }), out = h('div');
+  const show = (r) => out.replaceChildren(h('div', {}, h('p', {}, `Account: ${r.account} · Offices: ${r.offices} · This invitation: ${r.opportunity} · Invitation list: ${r.list}`),
+    h('p', { class: 'muted', style: 'font-size:13px' }, `Fields Autodesk returned for the invitation: ${r.opportunityKeys.join(', ') || 'none'}`), r.sample ? h('div', {}, h('pre', { class: 'draft', style: 'max-height:260px;overflow:auto' }, r.sample), h('button', { type: 'button', class: 'small', onclick: (e) => navigator.clipboard?.writeText(r.sample).then(() => (e.target.textContent = 'Copied')) }, 'Copy what Autodesk returned')) : ''));
+  if (s.lastCheck) show(s.lastCheck);
+  return h('div', { class: 'card' }, h('h2', {}, 'BuildingConnected (Autodesk)'), err,
+    !s.configured ? h('div', {}, h('p', { class: 'err' }, 'Not set up yet.'), h('p', { class: 'muted' }, 'Add APS_CLIENT_ID and APS_CLIENT_SECRET on the server (Render → Environment). In your Autodesk app, add this callback address: ' + (s.callback || '(set PUBLIC_URL)'))) :
+    s.connected ? h('div', {}, h('p', { class: 'ok' }, `Connected${s.account ? ' as ' + s.account : ''}${s.company ? ' · ' + s.company : ''}. Read-only.`),
+      h('div', { class: 'row' }, link, h('button', { onclick: guard(err, async () => { notice(out, 'Asking Autodesk…', 'ok'); const r = await api('POST', '/autodesk/check', { link: link.value }); show(r); }) }, 'Check this invitation'), h('button', { class: 'small', onclick: guard(err, async () => { if (confirm('Disconnect BuildingConnected?')) { await api('DELETE', '/autodesk'); render(); } }) }, 'Disconnect')),
+      h('p', { class: 'muted', style: 'font-size:13px' }, 'Check reads one invitation and shows what Autodesk returns, so the fields can be matched to the bid list. Nothing is changed in BuildingConnected.'), out) :
+    h('div', {}, h('p', { class: s.needsReconnect ? 'err' : 'muted' }, s.needsReconnect ? 'The connection expired. Connect again.' : 'Ready to connect. Sign in with the Autodesk account that belongs to your BuildingConnected company.'),
+      h('p', { class: 'muted', style: 'font-size:13px' }, 'The callback address registered in the Autodesk app must be exactly: ' + (s.callback || '')), h('button', { class: 'primary', onclick: guard(err, async () => { const r = await api('POST', '/autodesk/connect', {}); location.assign(r.url); }) }, 'Connect BuildingConnected')));
+}
+
 // Super Admin: is the shared SharePoint folder connection working?
 async function sharepointCard() {
   const s = await api('GET', '/sharepoint/status?test=1'), err = h('div');
@@ -682,6 +697,7 @@ async function adminView() {
   const parts = [];
   for (const s of SECTIONS) parts.push(await adminSection(s));
   if (['Super Admin', 'Sub Admin'].includes(state.user.role)) parts.push(await bidFeedCard());
+  if (isSuper()) parts.push(await autodeskCard());
   parts.push(await clockSettingsCard());
   if (['Super Admin', 'Sub Admin'].includes(state.user.role)) parts.push(await overheadCard());
   parts.push(await aiCard()); if (isSuper()) { parts.push(await sharepointCard()); parts.push(await aiReportCard()); }

@@ -14,12 +14,12 @@ export const setGoogleFetch = (f) => { gfetch = f; };   // tests stand in for Go
 
 // ------------------------------------------------------------------ keeping the Google login safe
 const secretKey = () => { const k = process.env.SECRET_KEY; if (!k || k.length < 16) throw new HttpError(503, 'The server is missing its SECRET_KEY setting, so it cannot store a Google connection safely.'); return crypto.createHash('sha256').update(k).digest(); };
-const seal = (s) => { const iv = crypto.randomBytes(12), c = crypto.createCipheriv('aes-256-gcm', secretKey(), iv), enc = Buffer.concat([c.update(s, 'utf8'), c.final()]); return [iv, c.getAuthTag(), enc].map((b) => b.toString('base64')).join('.'); };
-const unseal = (s) => { const [iv, tag, enc] = s.split('.').map((x) => Buffer.from(x, 'base64')), d = crypto.createDecipheriv('aes-256-gcm', secretKey(), iv); d.setAuthTag(tag); return Buffer.concat([d.update(enc), d.final()]).toString('utf8'); };
-const sign = (s) => crypto.createHmac('sha256', secretKey()).update(s).digest('base64url');
+export const seal = (s) => { const iv = crypto.randomBytes(12), c = crypto.createCipheriv('aes-256-gcm', secretKey(), iv), enc = Buffer.concat([c.update(s, 'utf8'), c.final()]); return [iv, c.getAuthTag(), enc].map((b) => b.toString('base64')).join('.'); };
+export const unseal = (s) => { const [iv, tag, enc] = s.split('.').map((x) => Buffer.from(x, 'base64')), d = crypto.createDecipheriv('aes-256-gcm', secretKey(), iv); d.setAuthTag(tag); return Buffer.concat([d.update(enc), d.final()]).toString('utf8'); };
+export const sign = (s) => crypto.createHmac('sha256', secretKey()).update(s).digest('base64url');
 
 export const googleConfigured = () => !!(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
-const baseUrl = () => { const u = process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL; if (!u) throw new HttpError(503, 'The server does not know its own web address (PUBLIC_URL).'); return u.replace(/\/$/, ''); };
+export const baseUrl = () => { const u = process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL; if (!u) throw new HttpError(503, 'The server does not know its own web address (PUBLIC_URL).'); return u.replace(/\/$/, ''); };
 export const redirectUri = () => `${baseUrl()}/api/gmail/callback`;
 export function connectUrl(user) {
   if (!googleConfigured()) throw new HttpError(503, 'Google is not set up yet. Add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET on the server first.');

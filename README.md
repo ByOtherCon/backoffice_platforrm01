@@ -23,7 +23,7 @@ One system for By Other Construction: **Estimating** (bid invitations to awarded
 | `PUBLIC_URL` | The site's own address. Render supplies it automatically; set it only on another host. |
 | `SMTP_URL`, `EMAIL_FROM` | Sends vendor insurance-request emails. Without it they wait in the outbox on the Compliance page. |
 | `MS_TENANT_ID`, `MS_CLIENT_ID`, `MS_CLIENT_SECRET`, `MS_SITE_URL` | Shared project folders in SharePoint (Microsoft Graph, app-only; the app needs the Sites.ReadWrite.All application permission with admin consent). Optional `MS_LIBRARY` (default Documents) and `MS_ROOT_FOLDER` (default ByOther; set empty to start at the library root). |
-| `APS_CLIENT_ID`, `APS_CLIENT_SECRET` | Reserved for a future live BuildingConnected link (not built). Use CSV import today. |
+| `APS_CLIENT_ID`, `APS_CLIENT_SECRET` | BuildingConnected through your Autodesk app (read-only `data:read`). In the Autodesk app add the callback `https://<your site>/api/autodesk/callback`, then Admin → BuildingConnected → Connect. |
 
 ## Putting it online (Render)
 1. Put the project in a **private** GitHub repository (create a free GitHub account, make a private repo, push this folder).

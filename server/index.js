@@ -29,6 +29,7 @@ import * as bd from './bids.js';
 import * as pw from './passwords.js';
 import * as ct from './contracts.js';
 import * as pd from './projectDraft.js';
+import * as cod from './changeOrderDoc.js';
 import * as qbo from './quickbooks.js';
 import * as qbi from './qbImport.js';
 import * as acc from './access.js';
@@ -90,6 +91,13 @@ route('PUT', '/api/projects/:id', async ({ user, params, body }) => { manage(use
 route('POST', '/api/projects/:id/trades', async ({ user, params, body }) => { manage(user); await pj.addTrade(uuid(params.id), body); return { ok: true }; });
 route('PUT', '/api/projects/:id/trades/:tid', async ({ user, params, body }) => { manage(user); await pj.setTradeAmount(uuid(params.id), uuid(params.tid), body); return { ok: true }; });
 route('DELETE', '/api/projects/:id/trades/:tid', async ({ user, params }) => { manage(user); await pj.removeTrade(uuid(params.id), uuid(params.tid)); return { ok: true }; });
+// Change orders from a document (read into a draft first; nothing is added to the trades until it is confirmed).
+route('POST', '/api/projects/:id/change-orders/read', async ({ req, user, params }) => { manage(user); return cod.readChangeOrder(user, uuid(params.id), await readRaw(req), fname(req)); }, { raw: true });
+route('POST', '/api/projects/:id/change-orders/read-sharepoint', async ({ user, params, body }) => { manage(user); return cod.readChangeOrderFromSharePoint(user, uuid(params.id), body.itemId); });
+route('POST', '/api/projects/:id/change-orders/from-document', async ({ user, params, body }) => { manage(user); return pj.addChangeOrdersFromDocument(uuid(params.id), body); });
+route('DELETE', '/api/projects/:id/change-orders/draft/:docId', async ({ user, params }) => { manage(user); await cod.discardDraftFile(uuid(params.id), uuid(params.docId)); return { ok: true }; });
+route('POST', '/api/projects/:id/change-orders/:cid/file', async ({ req, user, params }) => { manage(user); return cod.setChangeOrderFile(user, uuid(params.id), uuid(params.cid), await readRaw(req), fname(req)); }, { raw: true });
+route('DELETE', '/api/projects/:id/change-orders/:cid/file', async ({ user, params }) => { manage(user); await cod.removeChangeOrderFile(uuid(params.id), uuid(params.cid)); return { ok: true }; });
 route('POST', '/api/projects/:id/change-orders', async ({ user, params, body }) => { await auth.requireProject(user, uuid(params.id)); return pj.addChangeOrder(params.id, body); });
 route('PUT', '/api/projects/:id/change-orders/:cid', async ({ user, params, body }) => { await auth.requireProject(user, uuid(params.id)); await pj.updateChangeOrder(params.id, uuid(params.cid), body); return { ok: true }; });
 route('DELETE', '/api/projects/:id/change-orders/:cid', async ({ user, params }) => { await auth.requireProject(user, uuid(params.id)); await pj.deleteChangeOrder(params.id, uuid(params.cid)); return { ok: true }; });

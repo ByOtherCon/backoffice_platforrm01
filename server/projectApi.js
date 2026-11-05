@@ -4,6 +4,7 @@ import { loadInputs, summarize } from './projects.js';
 import { validateTrade } from '../src/lib/costing.ts';
 import { addrLine } from '../src/lib/workflow.ts';
 import { addressColumns, legacyAddressColumns } from './address.js';
+import { deleteDocument } from './documents.js';
 
 // The project's address the way every screen shows it, and as separate fields for the form.
 const addrOf = (p) => ({ addr: { street: p.address ?? '', city: p.city ?? '', state: p.state || 'FL', zip: p.zip ?? '', verified: !!p.address_verified }, address: addrLine({ street: p.address, city: p.city, state: p.state, zip: p.zip }) });
@@ -28,15 +29,15 @@ export async function getProject(id) {
                        LEFT JOIN documents d ON d.id=p.contract_document_id WHERE p.id=$1`, [id]);
   if (!p) throw new HttpError(404, 'Project not found.');
   const loaded = await loadInputs([id]);
-  const cos = await q(`SELECT c.*, t.name AS trade FROM change_orders c JOIN project_trades pt ON pt.id=c.project_trade_id JOIN trades t ON t.id=pt.trade_id
-                       WHERE c.project_id=$1 ORDER BY c.number`, [id]);
+  const cos = await q(`SELECT c.*, t.name AS trade, d.name AS doc_name FROM change_orders c JOIN project_trades pt ON pt.id=c.project_trade_id JOIN trades t ON t.id=pt.trade_id
+                       LEFT JOIN documents d ON d.id=c.document_id AND d.storage_key IS NOT NULL WHERE c.project_id=$1 ORDER BY c.number`, [id]);
   const s = summarize(loaded.get(id));
   const approved = cos.filter((c) => c.status === 'Approved').reduce((n, c) => n + Math.round(c.amount * 100), 0) / 100;
   const pending = cos.filter((c) => c.status === 'Pending').reduce((n, c) => n + Math.round(c.amount * 100), 0) / 100;
   return {
     project: { id: p.id, name: p.name, gc: p.gc, gcId: p.gc_id, client: p.client, ...addrOf(p), retainagePct: p.retainage_pct, active: p.active, proposalId: p.proposal_id, refCode: p.ref_code ?? null, folderUrl: p.folder_url ?? null, spPath: p.sp_path ?? null, contractUrl: p.contract_url ?? null, lat: p.lat === null ? null : Number(p.lat), lng: p.lng === null ? null : Number(p.lng), geofenceRequired: p.geofence_required, geofenceMiles: Number(p.geofence_miles) },
     trades: s.trades, totals: s.project,
-    changeOrders: cos.map((c) => ({ id: c.id, number: c.number, description: c.description, projectTradeId: c.project_trade_id, trade: c.trade, status: c.status, approvedDate: c.approved_date, amount: c.amount })),
+    changeOrders: cos.map((c) => ({ id: c.id, number: c.number, description: c.description, projectTradeId: c.project_trade_id, trade: c.trade, status: c.status, approvedDate: c.approved_date, amount: c.amount, documentId: c.doc_name ? c.document_id : null, documentName: c.doc_name ?? null })),
     coTotals: { approved, pending },
   };
 }
@@ -169,6 +170,32 @@ export async function addChangeOrder(projectId, b) {
     });
   } catch (e) { throw e instanceof HttpError ? e : (e.code === '23505' ? new HttpError(409, 'That CO # is already used on this project.') : e); }
 }
+// Change orders read from a document. One document can change several trades; each trade gets its own change order row. A trade that is
+// not on the project yet is added to it with a zero original amount (the change order is what brings it in).
+export async function addChangeOrdersFromDocument(projectId, b) {
+  const number = text(b.number, 'CO #', { max: 40 }), description = text(b.description, 'Description', { max: 500, required: false }) || 'Change order';
+  if (!['Pending', 'Approved', 'Rejected'].includes(b.status)) throw bad('Choose a valid status.');
+  const approvedDate = dateStr(b.approvedDate || null, 'Approved date'); if (b.status === 'Approved' && !approvedDate) throw bad('Enter the approved date for an approved change order.');
+  const lines = Array.isArray(b.lines) ? b.lines : []; if (!lines.length) throw bad('Add at least one line.');
+  const seen = new Set(); for (const l of lines) { if (!l.tradeId) throw bad('Choose a trade for every line.'); if (seen.has(l.tradeId)) throw bad('Each trade can be on this change order only once. Combine the lines for the same trade.'); seen.add(l.tradeId); }
+  try {
+    return await tx(async (t) => {
+      if (b.documentId) { const d = await t('SELECT 1 FROM documents WHERE id=$1 AND project_id=$2', [b.documentId, projectId]); if (!d.length) throw bad('That file is not on this project.'); }
+      const made = [];
+      for (const l of lines) {
+        const amount = money(l.amount, 'Revenue change', { negative: true }); const [tr] = await t('SELECT id, name FROM trades WHERE id=$1 AND NOT archived', [l.tradeId]); if (!tr) throw bad('Choose a trade from the list.');
+        let [pt] = await t('SELECT id FROM project_trades WHERE project_id=$1 AND trade_id=$2', [projectId, l.tradeId]);
+        if (!pt) [pt] = await t('INSERT INTO project_trades(project_id,trade_id,original_amount) VALUES ($1,$2,0) RETURNING id', [projectId, l.tradeId]);
+        const num = lines.length > 1 ? `${number} - ${tr.name}` : number;
+        const [c] = await t(`INSERT INTO change_orders(project_id,project_trade_id,number,description,status,approved_date,amount,document_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+          [projectId, pt.id, num, text(l.description, 'Description', { max: 500, required: false }) || description, b.status, approvedDate, amount, b.documentId || null]);
+        const x = (await loadInputsWith(t, projectId)).find((y) => y.ptId === pt.id); const errs = validateTrade(x.input); if (errs.length) throw bad(errs[0]);
+        made.push({ id: c.id, number: num });
+      }
+      return { created: made };
+    });
+  } catch (e) { throw e instanceof HttpError ? e : (e.code === '23505' ? new HttpError(409, 'That CO # is already used on this project.') : e); }
+}
 export async function updateChangeOrder(projectId, id, b) {
   const v = parseCO(b, false);
   try {
@@ -188,12 +215,20 @@ export async function updateChangeOrder(projectId, id, b) {
   } catch (e) { throw e.code === '23505' ? new HttpError(409, 'That CO # is already used on this project.') : e; }
 }
 export async function deleteChangeOrder(projectId, id) {
+  let doc = null;
   await tx(async (t) => {
-    const [cur] = await t('DELETE FROM change_orders WHERE id=$1 AND project_id=$2 RETURNING project_trade_id', [id, projectId]);
+    const [cur] = await t('DELETE FROM change_orders WHERE id=$1 AND project_id=$2 RETURNING project_trade_id, document_id', [id, projectId]);
     if (!cur) throw new HttpError(404, 'Change order not found.');
     const tr = (await loadInputsWith(t, projectId)).find((x) => x.ptId === cur.project_trade_id);
     const errs = tr ? validateTrade(tr.input) : []; if (errs.length) throw bad(errs[0]);
+    doc = cur.document_id;
   });
+  if (doc) await dropUnusedDocument(doc);
+}
+// A change order file nobody uses any more is removed (the platform copy; a copy already in SharePoint stays there).
+export async function dropUnusedDocument(docId) {
+  if (!docId || (await q('SELECT 1 FROM change_orders WHERE document_id=$1 LIMIT 1', [docId])).length) return;
+  try { await deleteDocument(docId); } catch { /* still referenced elsewhere: leave it */ }
 }
 export async function dashboard(user, manageAll) {
   const rows = await listProjects(user, manageAll);

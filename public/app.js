@@ -266,11 +266,44 @@ function changeOrders(p, reload) {
       h('div', {}, h('label', {}, 'Status'), f.status), h('div', {}, h('label', {}, 'Approved date'), f.date), h('div', {}, h('label', {}, 'Revenue change'), f.amount)), e2,
       h('div', { class: 'row', style: 'margin-top:1rem;justify-content:flex-end' }, h('button', { class: 'primary', type: 'submit' }, 'Save'))));
   };
-  return h('div', { class: 'card' }, h('div', { class: 'row spread' }, h('h2', {}, 'Change orders'), h('button', { class: 'primary', onclick: () => edit(null) }, '+ Add change order')), err,
-    p.changeOrders.length ? h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, ['CO #', 'Description', 'Trade', 'Approved date', 'Status'].map((t) => h('th', {}, t)), h('th', { class: 'n' }, 'Revenue change'), h('th'))),
-      h('tbody', {}, p.changeOrders.map((c) => h('tr', {}, h('td', {}, c.number), h('td', { style: 'white-space:normal' }, c.description), h('td', {}, c.trade), h('td', {}, c.approvedDate || '—'), h('td', {}, h('span', { class: 'pill ' + c.status }, c.status)), h('td', { class: 'n ' + cls(c.amount) }, usd(c.amount)),
+  // From a document: AI reads the change order, a person checks it, then each trade gets its own change order.
+  const fromDoc = () => {
+    const pid = p.project.id, note = h('div'), body = h('div'), pick = h('input', { type: 'file', accept: '.pdf,.png,.jpg,.jpeg', style: 'display:none' }); let draft = null, added = false;
+    const allTrades = state.trades.filter((t) => !t.archived), onProject = new Set(p.trades.map((t) => t.tradeId));
+    const bg = modal('Change order from a document', h('div', { style: 'min-width:min(46rem,90vw)' }, h('div', { class: 'row', style: 'flex-wrap:wrap;gap:.5rem' }, pick, h('button', { type: 'button', class: 'small', onclick: () => pick.click() }, 'Upload Change Order PDF'), spBtn()), h('p', { class: 'muted', style: 'font-size:13px' }, 'AI reads it; you check it; then the amounts are added to the trades. The file is kept on the project.'), note, body));
+    const discard = () => { if (draft && !added) api('DELETE', `/projects/${pid}/change-orders/draft/${draft.documentId}`).catch(() => {}); };
+    new MutationObserver((_, ob) => { if (!document.body.contains(bg)) { ob.disconnect(); discard(); } }).observe(document.body, { childList: true });
+    function spBtn() { const b = h('button', { type: 'button', class: 'small', style: 'display:none', onclick: guard(note, async () => { const it = await pickFromSharePoint(api, { title: 'Choose a change order from SharePoint' }); if (!it) return; read(() => api('POST', `/projects/${pid}/change-orders/read-sharepoint`, { itemId: it.id })); }) }, 'Choose From SharePoint'); api('GET', '/sharepoint/status').then((s) => { if (s.configured) b.style.display = ''; }).catch(() => {}); return b; }
+    const read = async (get) => { discard(); notice(note, 'Reading the change order with AI. This can take a minute…', 'ok'); try { draft = await get(); } catch (e) { notice(note, e.message); return; } notice(note, ''); show(); };
+    pick.onchange = () => { const f = pick.files[0]; pick.value = ''; if (f) read(() => uploadFile(`/projects/${pid}/change-orders/read`, f)); };
+    function show() {
+      const d = draft, e2 = h('div'); const f = { no: h('input', { value: d.number }), status: h('select', {}, ['Pending', 'Approved', 'Rejected'].map((x) => h('option', { value: x }, x))), date: h('input', { type: 'date', value: d.approvedDate || '' }), desc: h('input', { value: d.description || '' }) }; f.status.value = d.status;
+      const rows = h('tbody'); const lineRow = (l) => {
+        const sel = h('select', { class: l.tradeId ? '' : 'needs' }, h('option', { value: '' }, 'Choose trade…'), allTrades.map((t) => h('option', { value: t.id }, t.name))); sel.value = l.tradeId || '';
+        const amt = h('input', { type: 'number', step: '0.01', value: l.amount ?? '', class: l.amount == null ? 'needs' : '', style: 'width:9rem' }), ds = h('input', { value: l.description || '', style: 'width:100%;min-width:14rem' });
+        const hint = h('span', { class: 'muted', style: 'font-size:12px' }), upd = () => { hint.textContent = sel.value && !onProject.has(sel.value) ? 'new on this project' : ''; sel.classList.toggle('needs', !sel.value); }; sel.onchange = upd; upd();
+        const tr = h('tr', {}, h('td', {}, ds), h('td', {}, sel, ' ', hint), h('td', { class: 'n' }, amt), h('td', {}, h('button', { type: 'button', class: 'small', onclick: () => tr.remove() }, 'Remove'))); tr._get = () => ({ tradeId: sel.value, description: ds.value, amount: amt.value }); rows.append(tr);
+      };
+      (d.lines.length ? d.lines : [{}]).forEach(lineRow);
+      body.replaceChildren(h('p', { class: 'muted', style: 'margin:.3rem 0' }, `File kept: ${d.fileName}`),
+        d.error ? h('div', { class: 'err' }, d.error) : '', d.warnings?.length ? h('div', { class: 'err' }, h('ul', { style: 'margin:0;padding-left:1.1rem' }, d.warnings.map((w) => h('li', {}, w)))) : '',
+        h('div', { class: 'form' }, field('CO #', f.no), field('Status', f.status), field('Approved date', f.date), field('What changed', f.desc, 'wide')),
+        h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Line'), h('th', {}, 'Trade'), h('th', { class: 'n' }, 'Revenue change'), h('th'))), rows)),
+        h('button', { type: 'button', class: 'small', onclick: () => lineRow({}) }, '+ Add line'), e2,
+        h('div', { class: 'row', style: 'margin-top:1rem;justify-content:flex-end' }, h('button', { type: 'button', class: 'primary', onclick: guard(e2, async () => {
+          const lines = [...rows.children].map((r) => r._get()).filter((l) => l.tradeId || l.amount);
+          await api('POST', `/projects/${pid}/change-orders/from-document`, { documentId: d.documentId, number: f.no.value, status: f.status.value, approvedDate: f.date.value || null, description: f.desc.value, lines }); added = true; bg.remove(); reload();
+        }) }, 'Add To Trades')));
+    }
+  };
+  const fileCell = (c) => { const pick = h('input', { type: 'file', accept: '.pdf,.png,.jpg,.jpeg', style: 'display:none', onchange: guard(err, async () => { const f = pick.files[0]; pick.value = ''; if (!f) return; await uploadFile(`/projects/${p.project.id}/change-orders/${c.id}/file`, f); reload(); }) });
+    return h('td', { style: 'white-space:normal' }, c.documentId ? h('a', { href: `/api/documents/${c.documentId}/file`, target: '_blank', rel: 'noopener' }, c.documentName) : h('span', { class: 'muted' }, '—'), ' ', pick, h('button', { class: 'small', onclick: () => pick.click() }, c.documentId ? 'Replace' : 'Add File'),
+      c.documentId ? [' ', h('button', { class: 'small danger', onclick: guard(err, async () => { if (confirm(`Remove ${c.documentName} from ${c.number}?`)) { await api('DELETE', `/projects/${p.project.id}/change-orders/${c.id}/file`); reload(); } }) }, 'Remove')] : ''); };
+  return h('div', { class: 'card' }, h('div', { class: 'row spread' }, h('h2', {}, 'Change orders'), h('div', { class: 'row', style: 'gap:.5rem' }, h('button', { onclick: fromDoc }, 'From A Document'), h('button', { class: 'primary', onclick: () => edit(null) }, '+ Add change order'))), err,
+    p.changeOrders.length ? h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, ['CO #', 'Description', 'Trade', 'Approved date', 'Status'].map((t) => h('th', {}, t)), h('th', { class: 'n' }, 'Revenue change'), h('th', {}, 'File'), h('th'))),
+      h('tbody', {}, p.changeOrders.map((c) => h('tr', {}, h('td', {}, c.number), h('td', { style: 'white-space:normal' }, c.description), h('td', {}, c.trade), h('td', {}, c.approvedDate || '—'), h('td', {}, h('span', { class: 'pill ' + c.status }, c.status)), h('td', { class: 'n ' + cls(c.amount) }, usd(c.amount)), fileCell(c),
         h('td', {}, h('button', { class: 'small', onclick: () => edit(c) }, 'Edit'), ' ', h('button', { class: 'small danger', onclick: guard(err, async () => { if (confirm(`Delete ${c.number}?`)) { await api('DELETE', `/projects/${p.project.id}/change-orders/${c.id}`); reload(); } }) }, 'Delete'))))),
-      h('tfoot', {}, h('tr', { class: 'total' }, h('td', { colspan: 5 }, 'Approved total (updates Trade Overview)'), h('td', { class: 'n' }, usd(p.coTotals.approved)), h('td')), h('tr', {}, h('td', { colspan: 5, class: 'muted' }, 'Pending (not yet in contract)'), h('td', { class: 'n muted' }, usd(p.coTotals.pending)), h('td'))))) : h('p', { class: 'muted' }, 'No change orders yet.'));
+      h('tfoot', {}, h('tr', { class: 'total' }, h('td', { colspan: 5 }, 'Approved total (updates Trade Overview)'), h('td', { class: 'n' }, usd(p.coTotals.approved)), h('td'), h('td')), h('tr', {}, h('td', { colspan: 5, class: 'muted' }, 'Pending (not yet in contract)'), h('td', { class: 'n muted' }, usd(p.coTotals.pending)), h('td'), h('td'))))) : h('p', { class: 'muted' }, 'No change orders yet.'));
 }
 
 

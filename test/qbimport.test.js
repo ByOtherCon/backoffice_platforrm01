@@ -66,6 +66,7 @@ test('sync stages invoices (nothing touches billing), suggests the project from 
 test('review: lines are matched to the project trades; importing builds one billing row per trade with retainage and payments spread in proportion', async () => {
   const a = await staged('C11031-1'); const prep = (await call('GET', `/api/quickbooks/invoices/${a.id}/prepare?projectId=${pid}`, null, asst)).body;
   assert.deepEqual(prep.guess, [ptDemo, ptDry, null]); assert.equal(prep.project.retainagePct, 10);
+  assert.deepEqual(prep.project.trades.map((t) => [t.name, t.contract, t.room]), [['Demolition', 20000, 20000], ['Framing & Drywall', 60000, 60000]]);   // the screen shows how much room each trade has
   assert.equal((await call('POST', `/api/quickbooks/invoices/${a.id}/import`, { projectId: pid, lines: [{ index: 0, projectTradeId: ptDemo }] }, asst)).status, 400);   // a line still has no trade
   const ok = await call('POST', `/api/quickbooks/invoices/${a.id}/import`, { projectId: pid, lines: [{ index: 0, projectTradeId: ptDemo }, { index: 1, projectTradeId: ptDry }] }, asst); assert.equal(ok.status, 200, JSON.stringify(ok.body)); assert.deepEqual([ok.body.invoices, ok.body.scheduled], [2, true]);
   const rows = (await billing()).sort((x, y) => x.amount - y.amount); assert.deepEqual(rows.map((r) => [r.number, r.amount, r.retainageHeld, r.collected]), [['C11031-1', 10000, 1000, 5000], ['C11031-1', 30000, 3000, 15000]]);   // the -4000 retainage line split 1000 / 3000; the 20000 payment 5000 / 15000
@@ -75,7 +76,7 @@ test('review: lines are matched to the project trades; importing builds one bill
 test('the customer is remembered; billing rules still apply: an invoice that passes the contract is refused whole', async () => {
   invoices.push({ Id: '103', DocNumber: 'C11031-2', TxnDate: '2026-11-20', TotalAmt: 90000, CustomerRef: { value: '55', name: 'Sachse Construction:Mall at Millenia' }, MetaData: { LastUpdatedTime: LU }, Line: [{ DetailType: 'SalesItemLineDetail', Amount: 90000, Description: 'Drywall', SalesItemLineDetail: { ItemRef: { name: 'Services' } } }] });
   await call('POST', '/api/quickbooks/sync', {}, asst); const c = await staged('C11031-2'); assert.equal(c.suggestedProjectId, pid);
-  const r = await call('POST', `/api/quickbooks/invoices/${c.id}/import`, { projectId: pid, lines: [{ index: 0, projectTradeId: ptDry }], retainageHeld: 0 }, asst); assert.equal(r.status, 400); assert.match(r.body.error, /cannot exceed/i);
+  const r = await call('POST', `/api/quickbooks/invoices/${c.id}/import`, { projectId: pid, lines: [{ index: 0, projectTradeId: ptDry }], retainageHeld: 0 }, asst); assert.equal(r.status, 400); assert.match(r.body.error, /Not imported\. Framing & Drywall: this invoice bills \$90,000\.00, but the trade's contract is \$60,000\.00 and \$30,000\.00 is already billed \(room left: \$30,000\.00\)/);
   assert.equal((await staged('C11031-2')).status, 'New'); assert.equal((await billing()).length, 2);   // nothing half-saved
 });
 test('later payments on an imported invoice arrive by themselves; a changed total is flagged, never rewritten', async () => {

@@ -70,7 +70,9 @@ export async function list(status = 'New') {
 // Project data the review screen needs: its trades and default retainage.
 export async function projectInfo(projectId) {
   const [p] = await q('SELECT id, name, retainage_pct FROM projects WHERE id=$1', [projectId]); if (!p) throw new HttpError(404, 'Project not found.');
-  const trades = await q('SELECT pt.id, t.name, pt.original_amount::float8 AS contract FROM project_trades pt JOIN trades t ON t.id=pt.trade_id WHERE pt.project_id=$1 ORDER BY t.sort, t.name', [projectId]);
+  const trades = await q(`SELECT pt.id, t.name, (pt.original_amount + COALESCE((SELECT SUM(amount) FROM change_orders WHERE project_trade_id=pt.id AND status='Approved'),0))::float8 AS contract,
+      GREATEST(0, pt.original_amount + COALESCE((SELECT SUM(amount) FROM change_orders WHERE project_trade_id=pt.id AND status='Approved'),0) - COALESCE((SELECT SUM(amount) FROM client_invoices WHERE project_trade_id=pt.id),0))::float8 AS room
+    FROM project_trades pt JOIN trades t ON t.id=pt.trade_id WHERE pt.project_id=$1 ORDER BY t.sort, t.name`, [projectId]);
   return { id: p.id, name: p.name, retainagePct: Number(p.retainage_pct), trades };
 }
 // A first guess of the trade for each line, for the review screen.
@@ -104,6 +106,16 @@ export async function importInvoice(invoiceId, b) {
     const { splits, unassigned } = splitByTrade(lines, tradeOf, Number(proj.retainage_pct), override);
     if (unassigned.length) throw bad(`Choose a trade for: ${unassigned.slice(0, 3).map((i) => lines[i].description || lines[i].itemName || 'line ' + (i + 1)).join('; ')}${unassigned.length > 3 ? '…' : ''}`);
     if (!splits.length) throw bad('There is nothing to bill on this invoice.');
+    // Say it plainly when a trade has no room left, with the numbers, before the general billing rule has to refuse it.
+    const fmt = (n) => '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    for (const sp of splits) {
+      const [r] = await t(`SELECT t.name, pt.original_amount::float8 AS orig,
+          COALESCE((SELECT SUM(amount) FROM change_orders WHERE project_trade_id=pt.id AND status='Approved'),0)::float8 AS cos,
+          COALESCE((SELECT SUM(amount) FROM client_invoices WHERE project_trade_id=pt.id),0)::float8 AS billed
+        FROM project_trades pt JOIN trades t ON t.id=pt.trade_id WHERE pt.id=$1`, [sp.projectTradeId]);
+      const contract = r.orig + r.cos;
+      if (r.billed + sp.amount > contract + 0.005) throw bad(`Not imported. ${r.name}: this invoice bills ${fmt(sp.amount)}, but the trade's contract is ${fmt(contract)} and ${fmt(r.billed)} is already billed (room left: ${fmt(Math.max(0, contract - r.billed))}). Raise the trade's contract amount on the project (Projects, the project, Trade Overview), or choose a different trade for those lines.`);
+    }
     const number = String(inv.doc_number || 'QB-' + inv.qb_id).slice(0, 60), d = inv.txn_date || new Date().toISOString().slice(0, 10), due = inv.due_date && inv.due_date >= d ? inv.due_date : null;
     const rowIds = [];
     for (const s of splits) {

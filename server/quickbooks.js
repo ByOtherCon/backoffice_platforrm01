@@ -56,6 +56,15 @@ async function accessToken(force = false) {
   })();
   await refreshing; return { token: cache.token, realm: d.realmId };
 }
+// Intuit explains a refusal in its body ("Fault"), in either capitalisation. The tid lets Intuit support find the request.
+async function qbError(r, path) {
+  let why = ''; try {
+    const j = JSON.parse(await r.text()), f = j.Fault || j.fault, e = (f?.Error || f?.error || [])[0] || {};
+    why = [e.Message || e.message, e.Detail || e.detail, e.code ? `code ${e.code}` : ''].filter(Boolean).join(' · ').replace(/\s+/g, ' ').slice(0, 300);
+  } catch { /* not JSON */ }
+  const tid = r.headers?.get?.('intuit_tid'); console.error(`QuickBooks ${r.status} on ${path.split('?')[0]}${tid ? ' intuit_tid=' + tid : ''}: ${why || 'no detail'}`);
+  return new HttpError(502, `QuickBooks answered with an error (${r.status})${why ? ': ' + why : ''}${tid ? ' [ref ' + tid + ']' : ''}.`);
+}
 // One call to the QuickBooks API (query or read). Retries once with a fresh token if Intuit says the token is stale.
 export async function api(method, path, { realm: forcedRealm, params } = {}) {
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -63,7 +72,7 @@ export async function api(method, path, { realm: forcedRealm, params } = {}) {
     const url = `${API()}/v3/company/${realm}/${path}${path.includes('?') ? '&' : '?'}${new URLSearchParams({ minorversion: '75', ...(params || {}) })}`;
     let r; try { r = await ifetch(url, { method, headers: { authorization: 'Bearer ' + token, accept: 'application/json' } }); } catch { throw new HttpError(502, 'QuickBooks could not be reached.'); }
     if (r.status === 401 && attempt === 0) { cache = { token: null, exp: 0, realm: null }; continue; }
-    if (!r.ok) throw new HttpError(502, `QuickBooks answered with an error (${r.status}).`);
+    if (!r.ok) throw await qbError(r, path);
     return r.json();
   }
 }

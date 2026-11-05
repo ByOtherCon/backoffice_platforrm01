@@ -16,7 +16,7 @@ const lit = (iso) => String(iso).replace(/[^0-9T:.+\-Z]/g, '');   // only ever o
 async function pages(entity, since) {
   const out = []; const where = since ? ` where MetaData.LastUpdatedTime >= '${lit(since)}'` : '';
   for (let start = 1; start < 5000; start += 100) {
-    const r = await QB.query(`select * from ${entity}${where} orderby MetaData.LastUpdatedTime startposition ${start} maxresults 100`);
+    let r; try { r = await QB.query(`select * from ${entity}${where} orderby MetaData.LastUpdatedTime startposition ${start} maxresults 100`); } catch (e) { throw e instanceof HttpError ? new HttpError(e.status, `Reading ${entity}s: ${e.message}`) : e; }
     const rows = r?.QueryResponse?.[entity] ?? []; out.push(...rows); if (rows.length < 100) break;
   }
   return out;

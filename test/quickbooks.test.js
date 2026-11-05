@@ -69,6 +69,13 @@ test('reading: a stale token is refreshed once, and the NEW refresh token is kep
   const [a, b] = await Promise.all([qbo.query('x'), qbo.query('y')]); assert.ok(a && b);
   assert.ok(calls.some((c) => c.url.includes('/v3/company/9130/query?') && c.url.includes('minorversion=75') && c.auth === 'Bearer acc2' || c.auth === 'Bearer acc3'));
 });
+test('when QuickBooks refuses, its own explanation and reference are shown', async () => {
+  const keep = qbo.setIntuitFetch; let n = 0;
+  qbo.setIntuitFetch(async (url, init) => { const u = new URL(url); if (u.hostname.endsWith('quickbooks.api.intuit.com')) return { ok: false, status: 403, headers: { get: (k) => (k === 'intuit_tid' ? 'abc-123' : null) }, text: async () => JSON.stringify({ fault: { error: [{ message: 'message=ApplicationAuthorizationFailed; errorCode=003200; statusCode=403', detail: 'Token is for another app', code: '3200' }], type: 'SERVICE' } }) }; return intuit(url, init); });
+  await assert.rejects(() => qbo.query('select * from Invoice'), (e) => e.status === 502 && /error \(403\): message=ApplicationAuthorizationFailed.*Token is for another app · code 3200 \[ref abc-123\]/.test(e.message));
+  qbo.setIntuitFetch(async (url) => ({ ok: false, status: 403, text: async () => 'plain words' })); await assert.rejects(() => qbo.query('x'), /error \(403\)\.$/);
+  qbo.setIntuitFetch(intuit);
+});
 test('a revoked connection says to reconnect; switching environment asks to reconnect; disconnect removes it', async () => {
   refreshN = 99; staleOnce = true; await assert.rejects(() => qbo.query('x'), /Reconnect QuickBooks/); refreshN = 2;
   process.env.QBO_ENVIRONMENT = 'production'; await assert.rejects(() => qbo.query('x'), /connected to the sandbox environment/); process.env.QBO_ENVIRONMENT = 'sandbox';

@@ -49,7 +49,7 @@ test('W-9 alone, then an expired COI, still block payment; a current COI unlocks
   assert.equal((await doc('COI', { expiresOn: '2026-10-01' })).status, 200);
   const r = await pay(sub, 100); assert.equal(r.status, 409); assert.match(r.body.error, /expired 2026-10-01/);
   assert.equal((await call('POST', `/api/admin/subcontractors/${vendorId}/documents`, { category: 'COI', url: 'http://not-secure.example', expiresOn: '2027-01-01' }, asst)).status, 400);
-  assert.equal((await doc('COI', { expiresOn: '2027-06-30' })).status, 200);
+  assert.equal((await doc('COI', { expiresOn: '2099-06-30' })).status, 200);
   assert.equal((await pay(sub, 100)).status, 200);                                                 // current COI: approver can pay directly
 });
 
@@ -59,7 +59,7 @@ test('an exemption can replace the COI, and clearing documents blocks payment ag
   assert.equal((await doc('Exemption')).status, 200); assert.equal((await pay(sub, 100)).status, 200);
   await call('DELETE', `/api/admin/subcontractors/${vendorId}/documents/W-9`, null, asst);
   assert.equal((await pay(sub, 100)).status, 409);
-  assert.equal((await doc('W-9')).status, 200); assert.equal((await doc('COI', { expiresOn: '2027-06-30' })).status, 200);
+  assert.equal((await doc('W-9')).status, 200); assert.equal((await doc('COI', { expiresOn: '2099-06-30' })).status, 200);
   await call('DELETE', `/api/admin/subcontractors/${vendorId}/documents/Exemption`, null, asst); // back to W-9 + COI only
 });
 
@@ -103,7 +103,7 @@ test('insurance that lapses after approval blocks the payment', async () => {
   const approved = (await call('GET', '/api/payment-requests?status=Approved', null, asst)).body[0];
   await q(`UPDATE documents SET expires_on='2026-01-01' WHERE category='COI'`);
   const r = await call('POST', `/api/payment-requests/${approved.id}/pay`, { date: '2026-10-30' }, asst); assert.equal(r.status, 409); assert.match(r.body.error, /cannot be paid/);
-  await q(`UPDATE documents SET expires_on='2027-06-30' WHERE category='COI'`);
+  await q(`UPDATE documents SET expires_on='2099-06-30' WHERE category='COI'`);
   assert.equal((await call('POST', `/api/payment-requests/${approved.id}/pay`, { date: '2026-10-30' }, asst)).status, 200);
 });
 

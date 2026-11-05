@@ -50,7 +50,7 @@ export async function remove(kind, id) {
 // ---- users (Admin only) ----
 export const ROLES = ['Super Admin', 'Sub Admin', 'Exec Assistant', 'Estimator', 'Project Manager', 'Employee'];
 const ASSIGNABLE = ROLES.filter((r) => r !== 'Super Admin'); // there is exactly one Super Admin, set when the system is seeded
-export const listUsers = () => q('SELECT id,email,name,title,phone,role,active,employee_id,access FROM app_users ORDER BY email');
+export const listUsers = () => q('SELECT u.id,u.email,u.name,u.title,u.phone,u.role,u.active,u.employee_id,e.name AS employee,u.access FROM app_users u LEFT JOIN employees e ON e.id=u.employee_id ORDER BY u.email');
 export async function createUser(b) {
   const email = text(b.email, 'Email', { max: 200 }).toLowerCase();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw bad('Enter a valid email.');
@@ -59,6 +59,7 @@ export async function createUser(b) {
   try {
     const [u] = await q('INSERT INTO app_users(email,name,title,phone,role,password_hash) VALUES ($1,$2,$3,$6,$4,$5) RETURNING id,email,name,title,phone,role,active,access', [email, text(b.name, 'Name', { required: false }), text(b.title, 'Title', { max: 80, required: false }) || null, b.role, await hashPassword(b.password), text(b.phone, 'Phone', { max: 40, required: false }) || null]);
     if (b.access !== undefined) { const ac = parseAccess(b.access, WIDGETS); if (ac) { await q('UPDATE app_users SET access=$2 WHERE id=$1', [u.id, ac]); u.access = ac; } }
+    if (b.employeeId) { try { await updateUser(u.id, { employeeId: b.employeeId }); } catch (e) { await q('DELETE FROM app_users WHERE id=$1', [u.id]); throw e; } u.employee_id = b.employeeId; }   // the login is only kept if the link is valid
     return u;
   } catch (e) { throw dbError(e); }
 }
@@ -73,10 +74,17 @@ export async function updateUser(id, b, actingId) {
   if (b.role !== undefined) { if (!ASSIGNABLE.includes(b.role)) throw bad('Choose a valid role. There is only one Super Admin.'); add('role', b.role); }
   if (b.active !== undefined) { bool(b.active, 'Active'); add('active', b.active); }
   if (b.access !== undefined) { if (cur.role === 'Super Admin') throw bad('The owner always has access to everything.'); add('access', parseAccess(b.access, WIDGETS)); }
+  if (b.employeeId !== undefined) {
+    if (b.employeeId) {
+      if (!(await q('SELECT 1 FROM employees WHERE id=$1 AND active', [b.employeeId])).length) throw bad('Choose an active employee.');
+      if ((await q('SELECT 1 FROM app_users WHERE employee_id=$1 AND id <> $2', [b.employeeId, id])).length) throw bad('That employee is already linked to another login.');
+    }
+    add('employee_id', b.employeeId || null);
+  }
   if (b.password !== undefined) { if (String(b.password).length < MIN_PASSWORD) throw bad(`Password must be at least ${MIN_PASSWORD} characters.`); add('password_hash', await hashPassword(b.password)); }
   if (!sets.length) throw bad('Nothing to save.');
   if (cur.role === 'Super Admin' && (b.active === false || b.role !== undefined)) throw bad('The Super Admin cannot be demoted or deactivated.');
-  const r = await q(`UPDATE app_users SET ${sets.join(',')} WHERE id=$1 RETURNING id,email,name,title,phone,role,active,access`, vals);
+  const r = await q(`UPDATE app_users SET ${sets.join(',')} WHERE id=$1 RETURNING id,email,name,title,phone,role,active,employee_id,access`, vals);
   if (!r.length) throw new HttpError(404, 'Not found.');
   if (b.active === false || b.password !== undefined) await q('DELETE FROM sessions WHERE user_id=$1', [id]);
   return r[0];

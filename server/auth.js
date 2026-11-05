@@ -37,16 +37,16 @@ export async function login(email, password) {
   const token = await createSession(user.id);
   return { token, user: publicUser(user) };
 }
-export const publicUser = (u) => ({ id: u.id, email: u.email, name: u.name, role: u.role, areas: areasFor(u) });
+export const publicUser = (u) => ({ id: u.id, email: u.email, name: u.name, role: u.role, areas: areasFor(u), clock: !!(u.employee_id ?? u.linkedEmployeeId) });
 export async function userFromRequest(req) {
   const token = parseCookies(req.headers.cookie)[COOKIE];
   if (!token) return null;
-  const [r] = await q(`SELECT s.user_id, s.employee_id, u.email, u.name, u.role, u.access, u.active AS user_active, e.name AS emp_name, e.active AS emp_active
+  const [r] = await q(`SELECT s.user_id, s.employee_id, u.email, u.name, u.role, u.access, u.employee_id AS linked_employee_id, u.active AS user_active, e.name AS emp_name, e.active AS emp_active
                        FROM sessions s LEFT JOIN app_users u ON u.id=s.user_id LEFT JOIN employees e ON e.id=s.employee_id
                        WHERE s.token_hash=$1 AND s.expires_at>now()`, [sha(token)]);
   if (!r) return null;
   if (r.employee_id) return r.emp_active ? { id: null, employeeId: r.employee_id, email: null, name: r.emp_name, role: 'Employee', token } : null;
-  return r.user_active ? { id: r.user_id, email: r.email, name: r.name, role: r.role, access: r.access, token } : null;
+  return r.user_active ? { id: r.user_id, email: r.email, name: r.name, role: r.role, access: r.access, linkedEmployeeId: r.linked_employee_id, token } : null;
 }
 export const logout = (token) => q('DELETE FROM sessions WHERE token_hash=$1', [sha(token)]);
 export const sessionCookie = (token, secure) => `${COOKIE}=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_DAYS * 86400}${secure ? '; Secure' : ''}`;

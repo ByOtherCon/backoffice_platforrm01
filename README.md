@@ -105,3 +105,13 @@ Admin → QuickBooks. Connect once (Intuit developer app keys on Render, then **
 - **Access:** each person's access level (role) gives default areas. In the user form the owner can choose areas by hand (Estimating, Job costing, Invoice matching, Costs and receipts, Compliance, Reports, Admin lists) and which dashboard cards that person sees. An area the role does not normally have lets that person work in it as an office assistant would; approving payments and owner settings are never included. The owner always has everything.
 - **QuickBooks page:** anyone with the *Invoice matching* area gets a QuickBooks page in the menu (without Admin access) to review and import invoices.
 - **Sign in with Google:** staff sign in with their @byother.net Google account (domain set by `GOOGLE_LOGIN_DOMAIN`, default byother.net). It uses the same Google app as Gmail (`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`). One more redirect address must be added to that app in the Google Cloud console; Admin → Connections → Sign in with Google shows it with a Copy button. A Google account without a Desk Platform login, or with a switched-off one, is refused. Passwords keep working as a backup.
+
+## Time clock
+
+- The first screen asks **Office Platform** or **Time Clock**. The Time Clock (also reachable at `/clock`) is the field page: pick your name, enter your PIN, clock in to a project and trade. Employees and their PINs are set in Admin → Lists → Employees.
+- **Inside the platform:** a login can be linked to an employee (Admin → Company → Users & access → *Time Clock (Link To An Employee)*). That person gets a **Time Clock** page in the menu with the same clock-in, clock-out and "forgot to clock" screens. Time clock access is separate from the access areas, and one employee can be linked to one login.
+- Hours from either place post to the project's labor by project and trade, the same way.
+
+## To-dos and alerts
+
+To-dos default to today as the start date, have priority levels (Low, Normal, High, Urgent) and can be general (no attached record). Each to-do has a notes log that writes itself (who added, assigned, changed priority or due date, finished) plus comments from anyone who can open it, and can be sent to other people as a message. The number on the Messages tab counts unread messages plus to-dos that are new to you, due today or overdue.

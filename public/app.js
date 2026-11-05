@@ -1,6 +1,7 @@
 // by Other Desk Platform front end. All data is inserted with textContent (never innerHTML).
 import { h, usd, pct, cls, notice, guard, modal, formModal, field, todayStr, num } from '/ui.js';
 import * as estimating from '/estimating.js';
+import { makeClockUi } from '/clockui.js';
 const $app = document.getElementById('app');
 const state = { user: null, trades: [], gcs: [] };
 const MANAGERS = ['Super Admin', 'Sub Admin', 'Exec Assistant'];
@@ -21,6 +22,7 @@ function shell(active, content) {
   const areas = state.user.areas || [], has = (a) => areas.includes(a), nav = [['dashboard', 'Dashboard']];
   if (has('estimating')) nav.push(['estimating', 'Estimating']); if (has('projects') || has('costs')) nav.push(['projects', 'Projects']); nav.push(['messages', 'Messages']); if (has('reports')) nav.push(['reports', 'Reports']);
   if (has('billing')) nav.push(['quickbooks', 'QuickBooks']); if (has('compliance')) nav.push(['compliance', 'Compliance']);
+  if (state.user.clock) nav.push(['timeclock', 'Time Clock']);
   if (isSuper() || state.user.role === 'Sub Admin' || has('lists')) nav.push(['admin', 'Admin']);
   return h('div', {},
     h('header', { class: 'top' },
@@ -54,8 +56,18 @@ function resetView(token) {
     h('img', { src: '/logo.png', alt: 'ByOther Construction' }), h('div', { class: 'card' }, who, h('div', {}, h('label', {}, 'New password'), n1), h('div', { style: 'margin-top:.8rem' }, h('label', {}, 'Type it again'), n2), err,
       h('button', { class: 'primary', style: 'width:100%;margin-top:.8rem', type: 'submit' }, 'Save new password'), h('button', { type: 'button', class: 'small', style: 'margin-top:.6rem', onclick: done }, 'Back to sign in'))));
 }
-let loginMsg = null;
+let loginMsg = null, chose = false;
+// The first screen: pick the platform (office) or the time clock (field crews, PIN). A link to a page, a reset link or a sign-in message goes straight to the form.
+function chooserView() {
+  const tile = (title, text, props) => h(props.href ? 'a' : 'button', { ...props, class: 'tile' }, h('strong', {}, title), h('span', { class: 'muted' }, text));
+  return h('div', { class: 'login' }, h('img', { src: '/logo.png', alt: 'ByOther Construction' }), h('p', { style: 'text-align:center;font-size:1.25rem;font-weight:300;color:var(--navy);margin:.4rem 0 1rem' }, 'by Other Desk Platform'),
+    h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin-top:0;text-align:center' }, 'Where to?'),
+      tile('Office Platform', 'Estimating, projects, billing and reports. Sign in with Google or a password.', { onclick: () => { chose = true; render(); } }),
+      tile('Time Clock', 'Clock in and out of a job with your name and PIN.', { href: '/clock' })));
+}
 function loginView() {
+  const direct = chose || loginMsg || new URLSearchParams(location.search).has('login_error') || new URLSearchParams(location.search).has('reset') || (location.hash.length > 2 && location.hash !== '#/dashboard');
+  if (!direct) return chooserView();
   const resetToken = new URLSearchParams(location.search).get('reset'); if (resetToken) return resetView(resetToken);
   const err = h('div'); const email = h('input', { type: 'email', autocomplete: 'username', required: true }); const pw = h('input', { type: 'password', autocomplete: 'current-password', required: true });
   const form = h('form', { onsubmit: guard(err, async (e) => { e.preventDefault(); const r = await api('POST', '/login', { email: email.value, password: pw.value }); state.user = r.user; location.hash = '#/dashboard'; await boot(); }) },
@@ -700,6 +712,11 @@ async function qboReview(inv) {
     }, 'Import');
 }
 // The invoice-matching page: for anyone given that area, without going through Admin.
+// The time clock inside the platform, for a login linked to an employee. Same clock as the field page; hours land on the project and trade.
+async function timeclockView() {
+  const home = await api('GET', '/me/clock/home'); const ui = makeClockUi({ api, base: '/me/clock', reload: () => render() });
+  return shell('timeclock', [h('h1', {}, 'Time Clock'), h('p', { class: 'sub' }, `${home.employee.name}: clock in to a project and trade. Your hours post to that project's labor.`), h('div', { style: 'max-width:560px' }, ...ui.body(home))]);
+}
 async function quickbooksView() {
   const s = await api('GET', '/quickbooks/review'), err = h('div'); const live = s.connected && s.connectedEnvironment === s.environment;
   let body;
@@ -891,21 +908,22 @@ function accessEditor(u, roleSel, opt) {
   return { el, get: () => (customA.checked || customW.checked ? { areas: customA.checked ? areas.filter((a) => a.c.checked).map((a) => a.id) : null, widgets: customW.checked ? widgets.filter((w) => w.c.checked).map((w) => w.id) : null } : null) };
 }
 async function usersSection() {
-  const rows = await api('GET', '/admin/users'); const err = h('div'); const opt = await api('GET', '/access/options');
+  const rows = await api('GET', '/admin/users'); const err = h('div'); const opt = await api('GET', '/access/options'); const emps = (await api('GET', '/admin/employees')).filter((e) => e.active);
   const userForm = (u) => {
     const f = { email: h('input', { type: 'email', value: u?.email ?? '', disabled: !!u }), name: h('input', { value: u?.name ?? '' }), title: h('input', { value: u?.title ?? '', placeholder: 'Estimator, Exec Assistant…' }), phone: h('input', { type: 'tel', value: u?.phone ?? '', placeholder: 'Used in follow-up emails' }), role: h('select', {}, ROLE_LIST.map((r) => h('option', { value: r }, r))), pw: h('input', { type: 'password', autocomplete: 'new-password', placeholder: u ? 'Leave blank to keep' : 'Min 10 characters' }) };
+    f.emp = h('select', {}, h('option', { value: '' }, 'Not linked (no time clock)'), emps.filter((e) => !rows.some((x) => x.employee_id === e.id && x.id !== u?.id)).map((e) => h('option', { value: e.id }, e.name))); f.emp.value = u?.employee_id || '';
     if (u) f.role.value = u.role;
     const owner = u?.role === 'Super Admin'; const acc = owner ? null : accessEditor(u, f.role, opt);
-    formModal(u ? `Edit ${u.email}` : 'Add user', [field('Company email', f.email), field('Name', f.name), field('Title', f.title), field('Phone', f.phone), ...(owner ? [h('p', { class: 'muted' }, 'This is the owner account. Its access level stays Super Admin. Change your password with the Password button at the top.')] : [field('Access level', f.role), field(u ? 'New password' : 'Password', f.pw)]), ...(acc ? [acc.el] : [])], async () => {
-      if (u) { const body = { name: f.name.value, title: f.title.value, phone: f.phone.value }; if (!owner) { body.role = f.role.value; body.access = acc.get(); if (f.pw.value) body.password = f.pw.value; } await api('PUT', '/admin/users/' + u.id, body); }
-      else await api('POST', '/admin/users', { email: f.email.value, name: f.name.value, title: f.title.value, phone: f.phone.value, role: f.role.value, password: f.pw.value, access: acc.get() });
+    formModal(u ? `Edit ${u.email}` : 'Add user', [field('Company email', f.email), field('Name', f.name), field('Title', f.title), field('Phone', f.phone), field('Time Clock (Link To An Employee)', f.emp), ...(owner ? [h('p', { class: 'muted' }, 'This is the owner account. Its access level stays Super Admin. Change your password with the Password button at the top.')] : [field('Access level', f.role), field(u ? 'New password' : 'Password', f.pw)]), ...(acc ? [acc.el] : [])], async () => {
+      if (u) { const body = { name: f.name.value, title: f.title.value, phone: f.phone.value, employeeId: f.emp.value || null }; if (!owner) { body.role = f.role.value; body.access = acc.get(); if (f.pw.value) body.password = f.pw.value; } await api('PUT', '/admin/users/' + u.id, body); }
+      else await api('POST', '/admin/users', { email: f.email.value, name: f.name.value, title: f.title.value, phone: f.phone.value, role: f.role.value, password: f.pw.value, access: acc.get(), employeeId: f.emp.value || null });
       render();
     }, u ? 'Save' : 'Add user');
   };
   return h('div', { class: 'card' }, h('div', { class: 'row spread' }, h('h2', {}, 'Users & access'), h('button', { class: 'primary', onclick: () => userForm(null) }, '+ Add user')), err,
     h('p', { class: 'muted' }, 'Super Admin: owner only. Sub Admin and Exec Assistant manage records and money. Estimators work the estimating funnel. Project Managers see assigned projects.'),
     h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, ['Email', 'Name', 'Title', 'Access', 'Areas', 'Active'].map((t) => h('th', {}, t)), h('th'))),
-      h('tbody', {}, rows.map((u) => h('tr', { class: u.active ? '' : 'muted' }, h('td', {}, u.email), h('td', {}, u.name), h('td', {}, u.title || ''), h('td', {}, u.role), h('td', { class: 'muted', style: 'font-size:13px' }, u.role === 'Super Admin' ? 'Everything' : u.access ? [u.access.areas ? `${u.access.areas.length} chosen` : 'Role default', u.access.widgets ? ` · ${u.access.widgets.length} dashboard cards` : ''] : 'Role default'), h('td', {}, u.active ? 'Yes' : 'No'),
+      h('tbody', {}, rows.map((u) => h('tr', { class: u.active ? '' : 'muted' }, h('td', {}, u.email), h('td', {}, u.name), h('td', {}, u.title || ''), h('td', {}, u.role), h('td', { class: 'muted', style: 'font-size:13px' }, (u.employee ? `Clock: ${u.employee} · ` : '') + (u.role === 'Super Admin' ? 'Everything' : u.access ? [u.access.areas ? `${u.access.areas.length} chosen` : 'Role default', u.access.widgets ? ` · ${u.access.widgets.length} dashboard cards` : ''] : 'Role default')), h('td', {}, u.active ? 'Yes' : 'No'),
         h('td', {}, u.role === 'Super Admin' ? [h('button', { class: 'small', onclick: () => userForm(u) }, 'Edit'), ' ', h('span', { class: 'muted' }, 'Owner')] : [h('button', { class: 'small', onclick: () => userForm(u) }, 'Edit'), ' ', h('button', { class: 'small', onclick: guard(err, async () => { await api('PUT', '/admin/users/' + u.id, { active: !u.active }); render(); }) }, u.active ? 'Deactivate' : 'Activate')])))))));
 }
 // Every Admin section folds away under its own title. Which ones are open is remembered in this browser only.
@@ -994,7 +1012,7 @@ async function render() {
   const [, page = 'dashboard', id, tab] = location.hash.split('/');
   try {
     if (['admin'].includes(page) || (page === 'projects' && !id)) [state.trades, state.gcs] = await Promise.all([api('GET', '/admin/trades'), api('GET', '/admin/gcs')]).catch(() => [state.trades, state.gcs]);
-    const view = page === 'estimating' ? await estimatingView(id, tab) : page === 'messages' ? await messagesView(id) : page === 'quickbooks' ? await quickbooksView() : page === 'admin' ? await adminView(id) : page === 'receipts' || (page === 'projects' && id === 'receipts') || (page === 'projects' && !id && !state.user.areas?.includes('projects') && state.user.areas?.includes('costs')) ? await receiptsView() : page === 'compliance' ? await complianceView() : page === 'projects' ? (id ? await projectView(id, tab) : await projectsView()) : page === 'reports' ? await reportsView() : await dashboardView();
+    const view = page === 'estimating' ? await estimatingView(id, tab) : page === 'messages' ? await messagesView(id) : page === 'timeclock' ? await timeclockView() : page === 'quickbooks' ? await quickbooksView() : page === 'admin' ? await adminView(id) : page === 'receipts' || (page === 'projects' && id === 'receipts') || (page === 'projects' && !id && !state.user.areas?.includes('projects') && state.user.areas?.includes('costs')) ? await receiptsView() : page === 'compliance' ? await complianceView() : page === 'projects' ? (id ? await projectView(id, tab) : await projectsView()) : page === 'reports' ? await reportsView() : await dashboardView();
     if (token === rendering) { $app.replaceChildren(view); updateBell(); updateMessagesBadge(); }
   } catch (e) { if (token === rendering && state.user) $app.replaceChildren(shell(page, h('div', { class: 'err' }, e.message))); }
 }

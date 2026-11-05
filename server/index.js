@@ -58,7 +58,7 @@ route('GET', '/api/auth/google/callback', async ({ req, res }) => {
   res.writeHead(302, headers); res.end(); return 'sent';
 });
 route('POST', '/api/logout', async ({ user, res }) => { if (user) await auth.logout(user.token); send(res, 200, { ok: true }, { 'set-cookie': auth.clearCookie(SECURE) }); return 'sent'; });
-route('GET', '/api/me', async ({ user }) => { if (!user) throw new HttpError(401, 'Sign in required.'); return { user: { id: user.id, email: user.email, name: user.name, role: user.role, areas: acc.areasFor(user) } }; });
+route('GET', '/api/me', async ({ user }) => { if (!user) throw new HttpError(401, 'Sign in required.'); return { user: { id: user.id, email: user.email, name: user.name, role: user.role, areas: acc.areasFor(user), clock: !!user.linkedEmployeeId } }; });
 route('GET', '/api/access/options', async ({ user }) => { auth.requireRole(user, auth.SUPER); return acc.options(db.widgetList()); });
 
 route('POST', '/api/me/password', async ({ user, body }) => { if (!user) throw new HttpError(401, 'Sign in required.'); return pw.changeOwn(user, body.current, body.next); });
@@ -119,6 +119,12 @@ route('POST', '/api/supplier-invoices/:id/payments', async ({ user, params, body
 const emp = (u) => { if (!u || u.role !== 'Employee') throw new HttpError(401, 'Sign in with your PIN.'); return u.employeeId; };
 route('GET', '/api/clock/roster', async () => tc.roster());
 route('POST', '/api/clock/login', async ({ body, res }) => { const r = await tc.clockLogin(body.employeeId, body.pin); send(res, 200, { employee: r.employee }, { 'set-cookie': auth.sessionCookie(r.token, SECURE) }); return 'sent'; });
+// The same clock, from inside the platform, for a login that is linked to an employee (Admin → Company → Users & access).
+const myClock = (u) => { if (!u?.id) throw new HttpError(401, 'Sign in required.'); if (!u.linkedEmployeeId) throw new HttpError(403, 'Your login is not linked to a time clock employee. Ask the owner to link it.'); return u.linkedEmployeeId; };
+route('GET', '/api/me/clock/home', async ({ user }) => tc.clockHome(myClock(user)));
+route('POST', '/api/me/clock/in', async ({ user, body }) => tc.clockIn(myClock(user), body));
+route('POST', '/api/me/clock/out', async ({ user, body }) => tc.clockOut(myClock(user), body));
+route('POST', '/api/me/clock/manual', async ({ user, body }) => tc.manualEntry(myClock(user), body));
 route('GET', '/api/clock/home', async ({ user }) => tc.clockHome(emp(user)));
 route('POST', '/api/clock/in', async ({ user, body }) => tc.clockIn(emp(user), body));
 route('POST', '/api/clock/out', async ({ user, body }) => tc.clockOut(emp(user), body));

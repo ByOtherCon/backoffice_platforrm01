@@ -5,6 +5,8 @@ import { parseAccess } from './access.js';
 import { WIDGETS } from './dashboard.js';
 import { addressColumns, legacyAddressColumns } from './address.js';
 import { applyDefaultPin } from './timeclock.js';
+import { vendorCompliance } from './compliance.js';
+import { tryEnsureSubFolder } from './subVerify.js';
 
 const bool = (v, l) => { if (typeof v !== 'boolean') throw bad(`${l} must be true or false.`); return v; };
 const oneOf = (list) => (v, l) => { if (!list.includes(v)) throw bad(`Choose a valid ${l}.`); return v; };
@@ -40,12 +42,17 @@ const dbError = (e) => {
 const strip = (r) => { if ('pin_hash' in r) { r.has_pin = !!r.pin_hash; delete r.pin_hash; delete r.pin_failed; delete r.pin_locked_until; } return r; };
 // Pay rates are for the Super Admin only. Everyone else gets employee records without them.
 const PAY_FIELDS = ['hourly_rate', 'pay_type'];
-export const list = async (kind, { rates = false } = {}) => (await q(`SELECT * FROM ${KINDS[kind].table} ORDER BY ${KINDS[kind].order}`)).map(strip).map((r) => { if (kind === 'employees' && !rates) for (const f of PAY_FIELDS) delete r[f]; return r; });
+export const list = async (kind, { rates = false } = {}) => {
+  const rows = (await q(`SELECT * FROM ${KINDS[kind].table} ORDER BY ${KINDS[kind].order}`)).map(strip).map((r) => { if (kind === 'employees' && !rates) for (const f of PAY_FIELDS) delete r[f]; return r; });
+  if (kind === 'subcontractors') { const v = new Map((await vendorCompliance()).map((x) => [x.id, x])); for (const r of rows) { const x = v.get(r.id); r.verified = !!x?.verified; r.blockers = x?.blockers ?? []; r.docs = x?.docs ?? {}; r.address_match = x?.addressMatch ?? 'None'; } }   // is this subcontractor verified, and what is missing
+  return rows;
+};
 export const touchesPay = (kind, body) => kind === 'employees' && PAY_FIELDS.some((f) => body && body[f] !== undefined);
 export async function create(kind, body) {
   const v = parse(kind, body, true), keys = Object.keys(v);
   let row; try { row = (await q(`INSERT INTO ${KINDS[kind].table} (${keys.join(',')}) VALUES (${keys.map((_, i) => '$' + (i + 1)).join(',')}) RETURNING *`, keys.map((k) => v[k])))[0]; } catch (e) { throw dbError(e); }
   if (kind === 'employees') { await applyDefaultPin(row.id); return strip((await q('SELECT * FROM employees WHERE id=$1', [row.id]))[0]); }   // every employee can sign in to the time clock from day one
+  if (kind === 'subcontractors') await tryEnsureSubFolder(row.id);   // saved to SharePoint: ByOther / Subcontractors / <name>
   return strip(row);
 }
 export async function update(kind, id, body) {
@@ -54,6 +61,7 @@ export async function update(kind, id, body) {
   try {
     const r = await q(`UPDATE ${KINDS[kind].table} SET ${keys.map((k, i) => `${k}=$${i + 2}`).join(',')} WHERE id=$1 RETURNING *`, [id, ...keys.map((k) => v[k])]);
     if (!r.length) throw new HttpError(404, 'Not found.');
+    if (kind === 'subcontractors' && body.name !== undefined) await tryEnsureSubFolder(id);   // a renamed subcontractor's folder is renamed
     if (kind === 'employees' && body.phone !== undefined) { await applyDefaultPin(id); return strip((await q('SELECT * FROM employees WHERE id=$1', [id]))[0]); }   // an automatic PIN follows the phone number; a chosen one never changes
     return strip(r[0]);
   } catch (e) { throw dbError(e); }

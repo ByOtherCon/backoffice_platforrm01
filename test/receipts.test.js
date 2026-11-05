@@ -55,7 +55,7 @@ test('vendor documents can be uploaded straight onto a vendor and unlock payment
   assert.equal((await upload(`/api/documents/upload?category=COI&subcontractorId=${v}`, PDF, 'coi.pdf', asst)).status, 400);                    // COI needs an expiry
   assert.equal((await upload(`/api/documents/upload?category=COI&subcontractorId=${v}&expiresOn=2027-12-31`, PDF, 'coi.pdf', asst)).status, 200);
   assert.equal((await upload(`/api/documents/upload?category=Contract&subcontractorId=${v}`, PDF, 'x.pdf', asst)).status, 400);
-  const c = (await call('GET', '/api/compliance/vendors', null, asst)).body.find((x) => x.id === v); assert.deepEqual([c.status, c.canPay, c.docs.COI.file], ['Valid', true, true]);
+  const c = (await call('GET', '/api/compliance/vendors', null, asst)).body.find((x) => x.id === v); assert.deepEqual([c.status, c.docsOk, c.canPay, c.docs.COI.file], ['Valid', true, false, true]);   // documents in order, but no verified address yet: not payable
   const w9 = c.docs['W-9'].id;
   assert.equal((await call('DELETE', `/api/documents/${w9}`, null, asst)).status, 200);                                                         // deleting clears the vendor's pointer
   assert.equal((await call('GET', '/api/compliance/vendors', null, asst)).body.find((x) => x.id === v).canPay, false);

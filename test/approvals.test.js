@@ -32,6 +32,7 @@ test('setup: project, a vendor with a $10,000 bill and no paperwork', async () =
   pid = (await call('POST', '/api/projects', { name: 'Site A', gcId: gc, client: 'C', address: 'A', trades: [{ tradeId: t1, amount: 50000 }] }, asst)).body.id;
   demo = (await call('GET', `/api/projects/${pid}`, null, asst)).body.trades[0].id;
   vendorId = (await call('POST', '/api/admin/subcontractors', { name: 'Atlas Interiors', email: 'atlas@example.com' }, asst)).body.id;
+  await q(`UPDATE subcontractors SET address='1 Main St', city='Orlando', state='FL', zip='32801', address_verified=true WHERE id=$1`, [vendorId]); assert.equal((await call('POST', `/api/admin/subcontractors/${vendorId}/confirm-address`, {}, asst)).status, 200);   // a verified address that a person compared with the documents
   com = (await call('POST', `/api/projects/${pid}/commitments`, { projectTradeId: demo, subcontractorId: vendorId, contractAmount: 10000 }, asst)).body.id;
   bill = (await call('POST', `/api/projects/${pid}/commitments/${com}/bills`, { number: 'A-1', date: '2026-10-10', amount: 10000 }, asst)).body.id;
 });

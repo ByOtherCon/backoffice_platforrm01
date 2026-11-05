@@ -28,6 +28,7 @@ test('setup: project with two trades, one vendor, one supplier', async () => {
   const t1 = (await call('POST', '/api/admin/trades', { name: 'Demolition' }, office)).body.id, t2 = (await call('POST', '/api/admin/trades', { name: 'Drywall' }, office)).body.id;
   const gc = (await call('POST', '/api/admin/gcs', { name: 'GC' }, office)).body.id;
   vendorId = (await call('POST', '/api/admin/subcontractors', { name: 'Atlas Interiors' }, office)).body.id;
+  await q(`UPDATE subcontractors SET address='1 Main St', city='Orlando', state='FL', zip='32801', address_verified=true WHERE id=$1`, [vendorId]); assert.equal((await call('POST', `/api/admin/subcontractors/${vendorId}/confirm-address`, {}, office)).status, 200);   // a verified address that a person compared with the documents
   for (const d of [{ category: 'W-9', url: 'https://example.com/w9.pdf' }, { category: 'COI', url: 'https://example.com/coi.pdf', expiresOn: '2099-12-31' }]) assert.equal((await call('POST', `/api/admin/subcontractors/${vendorId}/documents`, d, office)).status, 200);
   supplierId = (await call('POST', '/api/admin/suppliers', { name: 'Build Supply Co.' }, office)).body.id;
   pid = (await call('POST', '/api/projects', { name: 'Proj', gcId: gc, client: 'C', address: 'A', retainagePct: 10, trades: [{ tradeId: t1, amount: 25000 }, { tradeId: t2, amount: 100000 }] }, office)).body.id;

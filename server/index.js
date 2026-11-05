@@ -32,6 +32,7 @@ import * as pd from './projectDraft.js';
 import * as cod from './changeOrderDoc.js';
 import { projectsHome } from './projectsHome.js';
 import * as qbc from './qbCosts.js';
+import * as sv from './subVerify.js';
 import * as qbo from './quickbooks.js';
 import * as qbi from './qbImport.js';
 import * as acc from './access.js';
@@ -165,6 +166,8 @@ route('POST', '/api/time/recalculate', async ({ user }) => { auth.requireRole(us
 // Compliance, approvals, notifications, notices to owner
 route('GET', '/api/compliance/vendors', async ({ user }) => { manage(user); return cp.vendorCompliance(); });
 route('POST', '/api/admin/subcontractors/:id/documents', async ({ user, params, body }) => { manage(user); return cp.setVendorDoc(uuid(params.id), body); });
+route('POST', '/api/admin/subcontractors/:id/confirm-address', async ({ user, params, body }) => { manage(user); await cp.confirmAddress(uuid(params.id), user.id, body.confirm !== false); return { ok: true }; });
+route('POST', '/api/admin/subcontractors/:id/folder', async ({ user, params }) => { manage(user); return sv.ensureSubFolder(uuid(params.id)); });
 route('DELETE', '/api/admin/subcontractors/:id/documents/:cat', async ({ user, params }) => { manage(user); await cp.clearVendorDoc(uuid(params.id), decodeURIComponent(params.cat)); return { ok: true }; });
 route('POST', '/api/compliance/scan', async ({ user }) => { manage(user); const a = await cp.scan(), b = await cp.scanNtos(); return { ...a, ntos: b, ...(await cp.sendQueued()) }; });
 route('GET', '/api/payment-requests', async ({ req, user }) => { manage(user); const u = new URL(req.url, 'http://x').searchParams; return ap.listRequests({ status: u.get('status'), projectId: u.get('projectId') }); });

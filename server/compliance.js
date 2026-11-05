@@ -2,19 +2,23 @@ import nodemailer from 'nodemailer';
 import { q, tx } from './db.js';
 import { bad, text, dateStr, httpsUrl, HttpError } from './http.js';
 import { MANAGE } from './auth.js';
-import { evaluate, stageFor } from '../src/lib/compliance.ts';
+import { evaluate, stageFor, addressChecks, addrKey } from '../src/lib/compliance.ts';
 
 const today = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date());
 const DOC_COL = { 'W-9': 'w9_document_id', COI: 'coi_document_id', Exemption: 'exemption_document_id' };
 
 // ------------------------------------------------------------------ vendor documents and status
-const SELECT = `SELECT s.id, s.name, s.email, s.archived, w.id AS w9_id, w.name AS w9_name, w.url AS w9_url, w.storage_key AS w9_key,
+const SELECT = `SELECT s.id, s.name, s.email, s.archived, s.address AS a_street, s.city AS a_city, s.state AS a_state, s.zip AS a_zip, s.address_verified, s.address_confirmed_key, s.address_confirmed_at, s.folder_url, w.read_address AS w9_read, w.read_name AS w9_read_name, c.read_address AS coi_read, w.id AS w9_id, w.name AS w9_name, w.url AS w9_url, w.storage_key AS w9_key,
     c.id AS coi_id, c.name AS coi_name, c.url AS coi_url, c.storage_key AS coi_key, c.expires_on AS coi_expires,
     x.id AS ex_id, x.name AS ex_name, x.url AS ex_url, x.storage_key AS ex_key, x.expires_on AS ex_expires
   FROM subcontractors s LEFT JOIN documents w ON w.id=s.w9_document_id LEFT JOIN documents c ON c.id=s.coi_document_id LEFT JOIN documents x ON x.id=s.exemption_document_id`;
 const shape = (r, asOf) => {
   const ev = evaluate({ w9: !!r.w9_id, coi: { present: !!r.coi_id, expires: r.coi_expires }, exemption: { present: !!r.ex_id, expires: r.ex_expires } }, asOf);
-  return { id: r.id, name: r.name, email: r.email, archived: r.archived, ...ev,
+  const addr = { street: r.a_street, city: r.a_city, state: r.a_state, zip: r.a_zip }, ac = addressChecks({ ...addr, verified: !!r.address_verified, confirmedKey: r.address_confirmed_key }, r.w9_read);
+  // verified = documents in order AND the address is checked AND it matches what the documents say; only a verified subcontractor can be paid
+  const verified = ev.canPay && ac.reasons.length === 0, blockers = [...ev.reasons, ...ac.reasons];
+  return { id: r.id, name: r.name, email: r.email, archived: r.archived, ...ev, docsOk: ev.canPay, canPay: verified, verified, blockers, addressMatch: ac.match, address: addr, addressChecked: !!r.address_verified, folderUrl: r.folder_url ?? null,
+    addressOnDocs: { w9: r.w9_read ?? null, w9Name: r.w9_read_name ?? null, coi: r.coi_read ?? null }, confirmedAt: ac.match === 'Confirmed' ? r.address_confirmed_at : null,
     docs: { 'W-9': r.w9_id ? { id: r.w9_id, name: r.w9_name, url: r.w9_url, file: !!r.w9_key } : null, COI: r.coi_id ? { id: r.coi_id, name: r.coi_name, url: r.coi_url, file: !!r.coi_key, expires: r.coi_expires } : null, Exemption: r.ex_id ? { id: r.ex_id, name: r.ex_name, url: r.ex_url, file: !!r.ex_key, expires: r.ex_expires } : null } };
 };
 export async function vendorCompliance(asOf = today()) {
@@ -43,7 +47,7 @@ export async function clearVendorDoc(subId, category) {
 export async function assertCanPay(t, subcontractorId, asOf = today()) {
   const [r] = await t(`${SELECT} WHERE s.id=$1`, [subcontractorId]); if (!r) throw bad('Vendor not found.');
   const v = shape(r, asOf);
-  if (!v.canPay) throw new HttpError(409, `${v.name} cannot be paid: ${v.reasons.join('; ')}.`);
+  if (!v.canPay) throw new HttpError(409, `${v.name} is an unverified subcontractor and cannot be paid: ${v.blockers.join('; ')}.`);
 }
 
 // ------------------------------------------------------------------ notifications and email outbox
@@ -132,4 +136,12 @@ export async function scanNtos(asOf = today()) {
     n += await notifyRoles(MANAGE, { kind: 'nto', title: r.overdue ? `Notice to Owner overdue: ${r.project}` : `Notice to Owner due in ${r.daysLeft} day${r.daysLeft === 1 ? '' : 's'}: ${r.project}`, body: `First furnished ${r.firstFurnished}; deadline ${r.due}.`, link: `#/projects/${r.projectId}/docs`, dedupe: `nto:${r.projectId}:${r.overdue ? 'overdue' : 'soon'}` });
   }
   return n;
+}
+
+// A person compared the address on the documents with the subcontractor's address and says they are the same. It stands only while the address stays as it was.
+export async function confirmAddress(subId, userId, confirm = true) {
+  const [r] = await q('SELECT address, city, state, zip, address_verified FROM subcontractors WHERE id=$1', [subId]); if (!r) throw new HttpError(404, 'Subcontractor not found.');
+  if (!confirm) { await q('UPDATE subcontractors SET address_confirmed_key=NULL, address_confirmed_by=NULL, address_confirmed_at=NULL WHERE id=$1', [subId]); return; }
+  if (!r.address_verified || !r.address || !r.city || !r.state || !r.zip) throw bad('Verify the subcontractor\'s address first (Admin, Lists, Subcontractors).');
+  await q('UPDATE subcontractors SET address_confirmed_key=$2, address_confirmed_by=$3, address_confirmed_at=now() WHERE id=$1', [subId, addrKey({ street: r.address, city: r.city, state: r.state, zip: r.zip }), userId]);
 }

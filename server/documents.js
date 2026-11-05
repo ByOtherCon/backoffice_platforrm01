@@ -4,6 +4,7 @@ import path from 'node:path';
 import { q, tx } from './db.js';
 import { bad, text, dateStr, httpsUrl, HttpError } from './http.js';
 import * as folders from './folders.js';
+import { afterVendorUpload } from './subVerify.js';
 
 export const UPLOAD_DIR = path.resolve(process.env.UPLOAD_DIR || 'uploads');
 export const CATEGORIES = ['Contract', 'Proposal', 'COI', 'W-9', 'Exemption', 'Approved CO', 'Invoice', 'Client Invoice', 'Vendor Invoice', 'Receipt', 'Plans', 'Notice to Owner', 'Supplier Statement', 'Employee ID', 'Other'];
@@ -55,6 +56,7 @@ export async function uploadDocument(user, { category, name, filename, bytes, pr
       return { id: d.id };
     }).then(async (r) => {
       if (projectId) { const [pr] = await q('SELECT ref_code FROM projects WHERE id=$1', [projectId]); if (pr?.ref_code) await q('UPDATE documents SET ref_code=$2 WHERE id=$1', [r.id, pr.ref_code]); const up = await folders.pushProjectFile(projectId, { category, filename, bytes, mime: f.mime }); if (up?.webUrl) await q('UPDATE documents SET sp_url=$2 WHERE id=$1', [r.id, up.webUrl]); }
+      if (subcontractorId) { try { const x = await afterVendorUpload(user, { docId: r.id, subId: subcontractorId, category, filename, bytes, mime: f.mime }); return { ...r, ...x }; } catch { /* the file is saved either way */ } }   // copied to the subcontractor's SharePoint folder; the address on it is read
       return r;
     });
   } catch (e) { await fs.promises.rm(path.join(UPLOAD_DIR, f.key), { force: true }); throw e; }

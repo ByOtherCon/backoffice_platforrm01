@@ -101,7 +101,7 @@ export async function getCosts(projectId, { rates = false } = {}) {
     const invoiced = r2(mine.reduce((n, b) => n + b.amount, 0)), paid = r2(mine.reduce((n, b) => n + b.paid, 0));
     const held = s.hold_released ? 0 : Math.min(s.hold_amount, r2(invoiced - paid));
     return { id: s.id, vendor: s.vendor, subcontractorId: s.subcontractor_id, trade: s.trade, projectTradeId: s.project_trade_id, contract: s.contract_amount, invoiced, paid, balance: r2(invoiced - paid),
-      remaining: Math.max(0, r2(s.contract_amount - invoiced)), holdAmount: s.hold_amount, holdReason: s.hold_reason, holdReleased: s.hold_released, held, availableToPay: r2(invoiced - paid - held), materialsIncluded: s.materials_included, bills: mine, compliance: { status: comp.get(s.subcontractor_id)?.status, canPay: comp.get(s.subcontractor_id)?.canPay, reasons: comp.get(s.subcontractor_id)?.reasons ?? [] } };
+      remaining: Math.max(0, r2(s.contract_amount - invoiced)), holdAmount: s.hold_amount, holdReason: s.hold_reason, holdReleased: s.hold_released, held, availableToPay: r2(invoiced - paid - held), materialsIncluded: s.materials_included, bills: mine, compliance: { status: comp.get(s.subcontractor_id)?.status, canPay: comp.get(s.subcontractor_id)?.canPay, verified: !!comp.get(s.subcontractor_id)?.verified, reasons: comp.get(s.subcontractor_id)?.blockers ?? [] } };
   });
   const sup = await q(`SELECT sa.id AS alloc_id, sa.amount, sa.project_trade_id, t.name AS trade, si.id AS invoice_id, si.reference, si.invoice_date, si.total, s.name AS supplier,
                          COALESCE((SELECT SUM(amount) FROM supplier_payments WHERE supplier_invoice_id=si.id),0) paid_total

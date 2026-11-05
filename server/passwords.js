@@ -30,7 +30,7 @@ export async function requestReset(email) {
       const token = crypto.randomBytes(32).toString('base64url');
       await q(`INSERT INTO password_resets(user_id,token_hash,expires_at) VALUES ($1,$2, now() + ($3 || ' minutes')::interval)`, [u.id, sha(token), String(RESET_MINUTES)]);
       try {
-        await sendMail({ to: u.email, subject: 'Reset your ByOther Back Office password',
+        await sendMail({ to: u.email, subject: 'Reset your by Other Desk Platform password',
           text: `Hello${u.name ? ' ' + u.name : ''},\n\nSomeone asked to reset the password for ${u.email}. To choose a new one, open this link within ${RESET_MINUTES} minutes:\n\n${baseUrl()}/?reset=${token}\n\nIf you did not ask for this, ignore this email. Your password stays the same.\n` });
       } catch (e) { console.error('Password-reset email could not be sent:', e.message); }
     }

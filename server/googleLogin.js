@@ -1,4 +1,4 @@
-// "Sign in with Google" for the company's Google Workspace. Google only proves who someone is; they still need a Back Office account
+// "Sign in with Google" for the company's Google Workspace. Google only proves who someone is; they still need a Desk Platform account
 // (added by the owner in Admin, with their access chosen) and it must be active. Only accounts of the company domain are accepted.
 import crypto from 'node:crypto';
 import { q } from './db.js';
@@ -39,7 +39,7 @@ export async function finish(req, code, state) {
   if (info.email_verified !== true) return fail('Google says that email address is not verified.');
   if (!email.endsWith('@' + domain()) || String(info.hd || '').toLowerCase() !== domain()) return fail(`Use your @${domain()} Google account.`);
   const [u] = await q('SELECT id FROM app_users WHERE lower(email)=$1 AND active', [email]);
-  if (!u) return fail(`${email} does not have a Back Office login yet. Ask the owner to add you.`);
+  if (!u) return fail(`${email} does not have a by Other Desk Platform login yet. Ask the owner to add you.`);
   return { token: await createSession(u.id), email };
 }
 export const clearNonce = (secure) => cookie('', secure, 0);

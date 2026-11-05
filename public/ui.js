@@ -1,4 +1,16 @@
 // Shared UI kit: every screen (office app and field clock) builds forms, modals and messages from these.
+
+// App rule: the first letter of each word is a capital in buttons, headings, tabs, table headers and labels
+// ("Receipts & Supplier Invoices"), including words like "and". Sentences (long text) are left alone.
+export const titleCase = (text) => {
+  const s = String(text); const words = s.trim().split(/\s+/).filter(Boolean);
+  if (!words.length || words.length > 7 || (/[.!?]\s*$/.test(s.trim()) && words.length > 3)) return s;   // a sentence, not a title
+  const BRAND = '\u0001';   // the company name is "by Other" and stays that way
+  return s.replace(/\bby Other\b/g, BRAND).replace(/(^|[\s(\[\/\-\u2013\u2014+])([a-z][^\s)\]\/\-]*)/g, (m, pre, word) => (/[0-9@:]|^https?/.test(word) ? m : pre + word[0].toUpperCase() + word.slice(1))).replaceAll(BRAND, 'by Other');   // codes, emails, links and times are left as they are
+};
+const TITLED = new Set(['button', 'th', 'label', 'h1', 'h2', 'h3', 'h4', 'summary', 'legend']);
+const titled = (tag, attrs, kid) => typeof kid === 'string' && (TITLED.has(tag) || (tag === 'a' && String(attrs?.href || '').startsWith('#/'))) ? titleCase(kid) : kid;
+
 export const h = (tag, attrs = {}, ...kids) => {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs || {})) {
@@ -8,7 +20,7 @@ export const h = (tag, attrs = {}, ...kids) => {
     else if (k === 'value') el.value = v;
     else el.setAttribute(k, v === true ? '' : v);
   }
-  for (const kid of kids.flat(Infinity)) if (kid != null && kid !== false) el.append(kid.nodeType ? kid : document.createTextNode(String(kid)));
+  for (const kid of kids.flat(Infinity)) if (kid != null && kid !== false) el.append(kid.nodeType ? kid : document.createTextNode(String(titled(tag, attrs, typeof kid === 'string' ? kid : kid))));
   return el;
 };
 

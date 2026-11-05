@@ -1,4 +1,4 @@
-// byOther Project Desk front end. All data is inserted with textContent (never innerHTML).
+// by Other Desk Platform front end. All data is inserted with textContent (never innerHTML).
 import { h, usd, pct, cls, notice, guard, modal, formModal, field, todayStr, num } from '/ui.js';
 import * as estimating from '/estimating.js';
 const $app = document.getElementById('app');
@@ -19,8 +19,8 @@ async function api(method, path, body) {
 // ------------------------------------------------------------------ shell
 function shell(active, content) {
   const areas = state.user.areas || [], has = (a) => areas.includes(a), nav = [['dashboard', 'Dashboard']];
-  if (has('estimating')) nav.push(['estimating', 'Estimating']); if (has('projects')) nav.push(['projects', 'Projects']); nav.push(['messages', 'Messages']); if (has('reports')) nav.push(['reports', 'Reports']);
-  if (has('billing')) nav.push(['quickbooks', 'QuickBooks']); if (has('costs')) nav.push(['receipts', 'Receipts']); if (has('compliance')) nav.push(['compliance', 'Compliance']);
+  if (has('estimating')) nav.push(['estimating', 'Estimating']); if (has('projects') || has('costs')) nav.push(['projects', 'Projects']); nav.push(['messages', 'Messages']); if (has('reports')) nav.push(['reports', 'Reports']);
+  if (has('billing')) nav.push(['quickbooks', 'QuickBooks']); if (has('compliance')) nav.push(['compliance', 'Compliance']);
   if (isSuper() || state.user.role === 'Sub Admin' || has('lists')) nav.push(['admin', 'Admin']);
   return h('div', {},
     h('header', { class: 'top' },
@@ -59,7 +59,7 @@ function loginView() {
   const resetToken = new URLSearchParams(location.search).get('reset'); if (resetToken) return resetView(resetToken);
   const err = h('div'); const email = h('input', { type: 'email', autocomplete: 'username', required: true }); const pw = h('input', { type: 'password', autocomplete: 'current-password', required: true });
   const form = h('form', { onsubmit: guard(err, async (e) => { e.preventDefault(); const r = await api('POST', '/login', { email: email.value, password: pw.value }); state.user = r.user; location.hash = '#/dashboard'; await boot(); }) },
-    h('img', { src: '/logo.png', alt: 'ByOther Construction' }), h('div', { class: 'card' },
+    h('img', { src: '/logo.png', alt: 'ByOther Construction' }), h('p', { style: 'text-align:center;font-size:1.25rem;font-weight:300;color:var(--navy);margin:.4rem 0 1rem' }, 'by Other Desk Platform'), h('div', { class: 'card' },
       h('div', {}, h('label', {}, 'Company email'), email), h('div', { style: 'margin-top:.8rem' }, h('label', {}, 'Password'), pw), err,
       h('button', { class: 'primary', style: 'width:100%;margin-top:.8rem', type: 'submit' }, 'Sign in'),
       h('button', { type: 'button', class: 'small', style: 'margin-top:.6rem', onclick: () => forgotForm(email.value) }, 'Forgot password?')));
@@ -115,6 +115,8 @@ async function dashboardView() {
 }
 
 // ------------------------------------------------------------------ projects
+// Projects and Receipts & Supplier Invoices live together: costs belong to projects.
+const projectsTabs = (active) => h('div', { class: 'tabs' }, state.user.areas?.includes('projects') ? h('a', { class: active === 'projects' ? 'on' : '', href: '#/projects' }, 'Projects') : '', state.user.areas?.includes('costs') ? h('a', { class: active === 'receipts' ? 'on' : '', href: '#/projects/receipts' }, 'Receipts & Supplier Invoices') : '');
 async function projectsView() {
   const rows = await api('GET', '/projects');
   const canAdd = isManager();
@@ -124,7 +126,7 @@ async function projectsView() {
       h('td', {}, r.name, r.active ? '' : h('span', { class: 'pill', style: 'margin-left:.5rem' }, 'Inactive')), h('td', {}, r.gc),
       h('td', { class: 'n' }, usd(r.contract)), h('td', { class: 'n' }, usd(r.billed)), h('td', { class: 'n' }, usd(r.currentlyDue)),
       h('td', { class: 'n ' + cls(r.projectedProfit) }, usd(r.projectedProfit)), h('td', { class: 'n' }, pct(r.marginPct))))))) : h('p', { class: 'muted' }, 'No projects yet.');
-  return shell('projects', [h('div', { class: 'row spread' }, h('h1', {}, 'Projects'), canAdd && h('button', { class: 'primary', onclick: newProjectModal }, '+ New project')), h('div', { class: 'card' }, body)]);
+  return shell('projects', [h('div', { class: 'row spread' }, h('h1', {}, 'Projects'), canAdd && h('button', { class: 'primary', onclick: newProjectModal }, '+ New project')), projectsTabs('projects'), h('div', { class: 'card' }, body)]);
 }
 
 
@@ -334,6 +336,7 @@ async function costsTab(p, canEdit, reload) {
   const c = await api('GET', `/projects/${p.project.id}/costs`); const err = h('div'); const base = `/projects/${p.project.id}`;
   const th = (t, n) => h('th', { class: n ? 'n' : '' }, t);
   const run = (fn) => guard(err, async () => { await fn(); reload(); });
+  const toReceipts = state.user.areas?.includes('costs') ? h('p', { style: 'margin:.2rem 0 .8rem' }, h('a', { href: '#/projects/receipts' }, 'Receipts & Supplier Invoices'), h('span', { class: 'muted' }, '  (upload a receipt or invoice and split it across projects and trades)')) : '';
 
   const addVendor = async () => {
     const subs = (await api('GET', '/admin/subcontractors')).filter((s) => !s.archived);
@@ -385,7 +388,7 @@ async function costsTab(p, canEdit, reload) {
   const tally = h('div', { class: 'card' }, h('h2', {}, 'Cost by trade'), h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, th('Trade'), th('Subcontractors', 1), th('Vendors', 1), th('Labor', 1), th('Actual cost', 1), th('Still to bill (subcontractors)', 1), th('Payable', 1), th('Contract', 1), th('Projected profit', 1))),
     h('tbody', {}, p.trades.map((t) => h('tr', {}, h('td', {}, t.name), h('td', { class: 'n' }, usd(t.subInvoiced)), h('td', { class: 'n' }, usd(t.supplierCost)), h('td', { class: 'n' }, usd(t.laborCost)), h('td', { class: 'n' }, usd(t.actualCost)), h('td', { class: 'n' }, usd(t.subRemaining)), h('td', { class: 'n' }, usd(t.totalPayable)), h('td', { class: 'n' }, usd(t.contract)), h('td', { class: 'n ' + cls(t.projectedProfit) }, usd(t.projectedProfit))))),
     h('tfoot', {}, h('tr', { class: 'total' }, h('td', {}, 'Whole project (incl. project-level costs)'), h('td', { class: 'n' }, usd(T.subInvoiced)), h('td', { class: 'n' }, usd(T.supplierCost)), h('td', { class: 'n' }, usd(T.laborCost)), h('td', { class: 'n' }, usd(T.actualCost)), h('td', { class: 'n' }, usd(T.subRemaining)), h('td', { class: 'n' }, usd(T.totalPayable)), h('td', { class: 'n' }, usd(T.contract)), h('td', { class: 'n ' + cls(T.projectedProfit) }, usd(T.projectedProfit)))))));
-  return h('div', {}, err, vendors, suppliers, labor, tally);
+  return h('div', {}, err, toReceipts, vendors, suppliers, labor, tally);
 }
 
 
@@ -570,7 +573,8 @@ async function receiptsView() {
   const [list, opts, use] = await Promise.all([api('GET', '/receipts'), Promise.all([api('GET', '/trade-options'), api('GET', '/admin/suppliers')]).then(([projects, suppliers]) => ({ projects, suppliers: suppliers.filter((s) => !s.archived) })), api('GET', '/ai/usage')]);
   const err = h('div'); const file = h('input', { type: 'file', accept: '.pdf,.png,.jpg,.jpeg', style: 'display:none', onchange: guard(err, async () => { const f = file.files[0]; if (!f) return; notice(err, 'Reading the receipt…', 'ok'); const res = await uploadFile('/receipts/parse', f); notice(err, ''); receiptReview(res, opts, render); file.value = ''; }) });
   const th = (t, n) => h('th', { class: n ? 'n' : '' }, t);
-  return shell('receipts', [h('div', { class: 'row spread' }, h('h1', {}, 'Receipts & supplier invoices'), h('div', { class: 'row' }, file, h('button', { class: 'primary', onclick: () => file.click() }, 'Upload receipt or invoice'), h('button', { onclick: () => receiptReview({ parsed: null }, opts, render) }, 'Enter by hand'))),
+  return shell('projects', [h('div', { class: 'row spread' }, h('h1', {}, 'Receipts & Supplier Invoices'), h('div', { class: 'row' }, file, h('button', { class: 'primary', onclick: () => file.click() }, 'Upload receipt or invoice'), h('button', { onclick: () => receiptReview({ parsed: null }, opts, render) }, 'Enter by hand'))),
+    projectsTabs('receipts'),
     h('p', { class: 'sub' }, use.connected ? 'Upload a Home Depot (or any) receipt or invoice. It is read for you, then you choose the project and trade for each line, or send tools to company overhead. Nothing posts until you save.' : 'AI reading is not connected yet, so receipts are entered by hand. Uploaded files are still saved.'), err,
     h('div', { class: 'card' }, list.length ? h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, th('Date'), th('Vendor'), th('Invoice #'), th('Where it went'), th('Total', 1), th('Paid', 1), th(''))),
       h('tbody', {}, list.map((r) => h('tr', {}, h('td', {}, r.invoice_date || '—'), h('td', {}, r.supplier, r.source === 'AI' ? h('span', { class: 'pill', style: 'margin-left:.4rem' }, 'Read by AI') : ''), h('td', {}, r.reference.startsWith('NO-NUMBER') ? '—' : r.reference),
@@ -954,7 +958,7 @@ async function render() {
   const [, page = 'dashboard', id, tab] = location.hash.split('/');
   try {
     if (['admin'].includes(page) || (page === 'projects' && !id)) [state.trades, state.gcs] = await Promise.all([api('GET', '/admin/trades'), api('GET', '/admin/gcs')]).catch(() => [state.trades, state.gcs]);
-    const view = page === 'estimating' ? await estimatingView(id, tab) : page === 'messages' ? await messagesView(id) : page === 'quickbooks' ? await quickbooksView() : page === 'admin' ? await adminView(id) : page === 'receipts' ? await receiptsView() : page === 'compliance' ? await complianceView() : page === 'projects' ? (id ? await projectView(id, tab) : await projectsView()) : page === 'reports' ? await reportsView() : await dashboardView();
+    const view = page === 'estimating' ? await estimatingView(id, tab) : page === 'messages' ? await messagesView(id) : page === 'quickbooks' ? await quickbooksView() : page === 'admin' ? await adminView(id) : page === 'receipts' || (page === 'projects' && id === 'receipts') || (page === 'projects' && !id && !state.user.areas?.includes('projects') && state.user.areas?.includes('costs')) ? await receiptsView() : page === 'compliance' ? await complianceView() : page === 'projects' ? (id ? await projectView(id, tab) : await projectsView()) : page === 'reports' ? await reportsView() : await dashboardView();
     if (token === rendering) { $app.replaceChildren(view); updateBell(); }
   } catch (e) { if (token === rendering && state.user) $app.replaceChildren(shell(page, h('div', { class: 'err' }, e.message))); }
 }

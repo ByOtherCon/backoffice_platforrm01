@@ -52,8 +52,8 @@ test('a company Google account with an active login is signed in and lands on th
 test('refused: tampered state, a different browser, a bad code, no Back Office login, a switched-off login, unverified email, another domain', async () => {
   const back = async (opts) => { const r = await roundTrip(opts); assert.equal(r.status, 302); assert.equal(cookieOf(r, 'bo_session'), undefined, JSON.stringify(opts)); return decodeURIComponent(new URL(r.headers.get('location'), 'http://x').searchParams.get('login_error') || ''); };
   assert.match(await back({ tamper: true }), /not valid/); assert.match(await back({ keepCookie: false }), /not started in this browser/); assert.match(await back({ code: 'bad' }), /did not accept/);
-  profile = { email: 'new.person@byother.net', email_verified: true, hd: 'byother.net' }; assert.match(await back({}), /new\.person@byother\.net does not have a Back Office login/);
-  profile = { email: 'gone@byother.net', email_verified: true, hd: 'byother.net' }; assert.match(await back({}), /does not have a Back Office login/);   // inactive
+  profile = { email: 'new.person@byother.net', email_verified: true, hd: 'byother.net' }; assert.match(await back({}), /new\.person@byother\.net does not have a by Other Desk Platform login/);
+  profile = { email: 'gone@byother.net', email_verified: true, hd: 'byother.net' }; assert.match(await back({}), /does not have a by Other Desk Platform login/);   // inactive
   profile = { email: 'silvia@byother.net', email_verified: false, hd: 'byother.net' }; assert.match(await back({}), /not verified/);
   profile = { email: 'silvia@byother.net', email_verified: true }; assert.match(await back({}), /Use your @byother\.net/);                  // a personal account has no hosted domain
   profile = { email: 'silvia@byother.net', email_verified: true, hd: 'other.com' }; assert.match(await back({}), /Use your @byother\.net/);

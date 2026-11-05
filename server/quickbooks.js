@@ -7,7 +7,7 @@ import crypto from 'node:crypto';
 
 let ifetch = (...a) => fetch(...a);
 export const setIntuitFetch = (f) => { ifetch = f; };   // tests stand in for Intuit
-export const settings = () => ({ clientId: process.env.QBO_CLIENT_ID, secret: process.env.QBO_CLIENT_SECRET, environment: process.env.QBO_ENVIRONMENT === 'sandbox' ? 'sandbox' : 'production' });
+export const settings = () => ({ clientId: process.env.QBO_CLIENT_ID, secret: process.env.QBO_CLIENT_SECRET, environment: /^sandbox$/i.test(String(process.env.QBO_ENVIRONMENT || '').trim().replace(/^["']|["']$/g, '')) ? 'sandbox' : 'production' });   // "Sandbox", " sandbox " and quoted values all count
 export const configured = () => { const s = settings(); return !!(s.clientId && s.secret); };
 export const redirectUri = () => `${baseUrl()}/api/quickbooks/callback`;
 const API = () => (settings().environment === 'sandbox' ? 'https://sandbox-quickbooks.api.intuit.com' : 'https://quickbooks.api.intuit.com');
@@ -63,7 +63,8 @@ async function qbError(r, path) {
     why = [e.Message || e.message, e.Detail || e.detail, e.code ? `code ${e.code}` : ''].filter(Boolean).join(' · ').replace(/\s+/g, ' ').slice(0, 300);
   } catch { /* not JSON */ }
   const tid = r.headers?.get?.('intuit_tid'); console.error(`QuickBooks ${r.status} on ${path.split('?')[0]}${tid ? ' intuit_tid=' + tid : ''}: ${why || 'no detail'}`);
-  return new HttpError(502, `QuickBooks answered with an error (${r.status})${why ? ': ' + why : ''}${tid ? ' [ref ' + tid + ']' : ''}.`);
+  const hint = /\b3100\b/.test(why) ? ` This usually means the connected company and the server do not match: the server is using Intuit's ${settings().environment === 'sandbox' ? 'SANDBOX' : 'LIVE'} servers. A sandbox company needs QBO_ENVIRONMENT=sandbox on Render; a real company needs it removed and the production keys. Fix that, then Disconnect and Connect QuickBooks again.` : '';
+  return new HttpError(502, `QuickBooks answered with an error (${r.status})${why ? ': ' + why : ''}${tid ? ' [ref ' + tid + ']' : ''}.${hint}`);
 }
 // One call to the QuickBooks API (query or read). Retries once with a fresh token if Intuit says the token is stale.
 export async function api(method, path, { realm: forcedRealm, params } = {}) {
@@ -81,6 +82,6 @@ export const query = (sql) => api('GET', 'query', { params: { query: sql } });
 export async function status() {
   let redirect = null, problem = null; try { redirect = redirectUri(); } catch (e) { problem = e.message; }
   const s = settings(), d = await stored();
-  return { configured: configured(), connected: !!d, company: d?.company ?? null, realmId: d?.realmId ?? null, connectedAt: d?.connectedAt ?? null, connectedEnvironment: d?.environment ?? null, environment: s.environment, redirectUri: redirect, problem,
+  return { configured: configured(), apiHost: new URL(API()).host, connected: !!d, company: d?.company ?? null, realmId: d?.realmId ?? null, connectedAt: d?.connectedAt ?? null, connectedEnvironment: d?.environment ?? null, environment: s.environment, redirectUri: redirect, problem,
     needs: ['QBO_CLIENT_ID', 'QBO_CLIENT_SECRET'].filter((k) => !process.env[k]) };
 }

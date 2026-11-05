@@ -69,10 +69,17 @@ test('reading: a stale token is refreshed once, and the NEW refresh token is kep
   const [a, b] = await Promise.all([qbo.query('x'), qbo.query('y')]); assert.ok(a && b);
   assert.ok(calls.some((c) => c.url.includes('/v3/company/9130/query?') && c.url.includes('minorversion=75') && c.auth === 'Bearer acc2' || c.auth === 'Bearer acc3'));
 });
+test('the environment setting is forgiving about capitals, spaces and quotes, and the status says which Intuit servers are used', async () => {
+  for (const v of ['sandbox', 'Sandbox', ' SANDBOX ', '"sandbox"', "'sandbox'"]) { process.env.QBO_ENVIRONMENT = v; assert.equal(qbo.settings().environment, 'sandbox', v); }
+  for (const v of ['', undefined, 'production', 'sandbox-ish']) { if (v === undefined) delete process.env.QBO_ENVIRONMENT; else process.env.QBO_ENVIRONMENT = v; assert.equal(qbo.settings().environment, 'production', String(v)); }
+  process.env.QBO_ENVIRONMENT = 'sandbox'; assert.equal((await call('GET', '/api/quickbooks/status', owner)).body.apiHost, 'sandbox-quickbooks.api.intuit.com');
+});
 test('when QuickBooks refuses, its own explanation and reference are shown', async () => {
   const keep = qbo.setIntuitFetch; let n = 0;
   qbo.setIntuitFetch(async (url, init) => { const u = new URL(url); if (u.hostname.endsWith('quickbooks.api.intuit.com')) return { ok: false, status: 403, headers: { get: (k) => (k === 'intuit_tid' ? 'abc-123' : null) }, text: async () => JSON.stringify({ fault: { error: [{ message: 'message=ApplicationAuthorizationFailed; errorCode=003200; statusCode=403', detail: 'Token is for another app', code: '3200' }], type: 'SERVICE' } }) }; return intuit(url, init); });
   await assert.rejects(() => qbo.query('select * from Invoice'), (e) => e.status === 502 && /error \(403\): message=ApplicationAuthorizationFailed.*Token is for another app · code 3200 \[ref abc-123\]/.test(e.message));
+  qbo.setIntuitFetch(async (url, init) => { const u = new URL(url); if (u.hostname.endsWith('quickbooks.api.intuit.com')) return { ok: false, status: 403, headers: { get: () => null }, text: async () => JSON.stringify({ fault: { error: [{ message: 'message=ApplicationAuthorizationFailed; errorCode=003100; statusCode=403', code: '3100' }] } }) }; return intuit(url, init); });
+  await assert.rejects(() => qbo.query('select * from Invoice'), /code 3100.*SANDBOX servers.*QBO_ENVIRONMENT=sandbox/);
   qbo.setIntuitFetch(async (url) => ({ ok: false, status: 403, text: async () => 'plain words' })); await assert.rejects(() => qbo.query('x'), /error \(403\)\.$/);
   qbo.setIntuitFetch(intuit);
 });

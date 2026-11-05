@@ -82,6 +82,6 @@ export const query = (sql) => api('GET', 'query', { params: { query: sql } });
 export async function status() {
   let redirect = null, problem = null; try { redirect = redirectUri(); } catch (e) { problem = e.message; }
   const s = settings(), d = await stored();
-  return { configured: configured(), apiHost: new URL(API()).host, connected: !!d, company: d?.company ?? null, realmId: d?.realmId ?? null, connectedAt: d?.connectedAt ?? null, connectedEnvironment: d?.environment ?? null, environment: s.environment, redirectUri: redirect, problem,
+  return { configured: configured(), apiHost: new URL(API()).host, environmentSetting: process.env.QBO_ENVIRONMENT === undefined ? null : String(process.env.QBO_ENVIRONMENT).slice(0, 40), connected: !!d, company: d?.company ?? null, realmId: d?.realmId ?? null, connectedAt: d?.connectedAt ?? null, connectedEnvironment: d?.environment ?? null, environment: s.environment, redirectUri: redirect, problem,
     needs: ['QBO_CLIENT_ID', 'QBO_CLIENT_SECRET'].filter((k) => !process.env[k]) };
 }

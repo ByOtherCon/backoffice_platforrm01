@@ -73,6 +73,7 @@ test('the environment setting is forgiving about capitals, spaces and quotes, an
   for (const v of ['sandbox', 'Sandbox', ' SANDBOX ', '"sandbox"', "'sandbox'"]) { process.env.QBO_ENVIRONMENT = v; assert.equal(qbo.settings().environment, 'sandbox', v); }
   for (const v of ['', undefined, 'production', 'sandbox-ish']) { if (v === undefined) delete process.env.QBO_ENVIRONMENT; else process.env.QBO_ENVIRONMENT = v; assert.equal(qbo.settings().environment, 'production', String(v)); }
   process.env.QBO_ENVIRONMENT = 'sandbox'; assert.equal((await call('GET', '/api/quickbooks/status', owner)).body.apiHost, 'sandbox-quickbooks.api.intuit.com');
+  assert.equal((await call('GET', '/api/quickbooks/status', owner)).body.environmentSetting, 'sandbox'); delete process.env.QBO_ENVIRONMENT; assert.equal((await call('GET', '/api/quickbooks/status', owner)).body.environmentSetting, null); process.env.QBO_ENVIRONMENT = 'sandbox';
 });
 test('when QuickBooks refuses, its own explanation and reference are shown', async () => {
   const keep = qbo.setIntuitFetch; let n = 0;

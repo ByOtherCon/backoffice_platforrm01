@@ -55,7 +55,7 @@ test('connecting: owner only, signed state, token exchange with the keys, compan
   assert.equal((await call('GET', `/api/quickbooks/callback?code=good-code&state=${encodeURIComponent(state)}`, owner)).status, 400);                   // no company chosen
   assert.equal((await call('GET', `/api/quickbooks/callback?code=bad&realmId=9130&state=${encodeURIComponent(state)}`, owner)).status, 400);
   assert.equal((await call('GET', `/api/quickbooks/callback?code=good-code&realmId=9130&state=${encodeURIComponent(state)}`, sub)).status, 403);
-  calls = []; const ok = await call('GET', `/api/quickbooks/callback?code=good-code&realmId=9130&state=${encodeURIComponent(state)}`, owner); assert.equal(ok.status, 302); assert.equal(ok.location, '/#/admin');
+  calls = []; const ok = await call('GET', `/api/quickbooks/callback?code=good-code&realmId=9130&state=${encodeURIComponent(state)}`, owner); assert.equal(ok.status, 302); assert.equal(ok.location, '/#/admin/connections');
   const tok = calls.find((c) => c.url.includes('/tokens/bearer')); assert.equal(tok.auth, 'Basic ' + Buffer.from('cid:csecret').toString('base64')); assert.match(tok.body, /grant_type=authorization_code/);
   assert.ok(calls.some((c) => c.url.startsWith('https://sandbox-quickbooks.api.intuit.com/v3/company/9130/companyinfo/9130')));   // sandbox keys talk to the sandbox server
   const s = (await call('GET', '/api/quickbooks/status', owner)).body; assert.deepEqual([s.connected, s.company, s.realmId, s.connectedEnvironment], [true, 'Sandbox Company_US_1', '9130', 'sandbox']);

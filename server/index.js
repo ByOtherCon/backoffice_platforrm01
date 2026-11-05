@@ -178,7 +178,7 @@ route('GET', '/api/quickbooks/connect', async ({ user }) => { auth.requireRole(u
 route('GET', '/api/quickbooks/callback', async ({ req, res, user }) => {
   auth.requireRole(user, auth.SUPER); const p = new URL(req.url, 'http://x').searchParams;
   if (p.get('error')) throw bad('Intuit did not allow the connection (' + p.get('error') + ').');
-  await qbo.finishConnect(p.get('code'), p.get('state'), p.get('realmId')); qbi.sync().catch((e) => console.error('QuickBooks first sync', e.message)); res.writeHead(302, { location: '/#/admin', 'cache-control': 'no-store' }); res.end(); return 'sent';
+  await qbo.finishConnect(p.get('code'), p.get('state'), p.get('realmId')); qbi.sync().catch((e) => console.error('QuickBooks first sync', e.message)); res.writeHead(302, { location: '/#/admin/connections', 'cache-control': 'no-store' }); res.end(); return 'sent';
 });
 route('DELETE', '/api/quickbooks', async ({ user }) => { auth.requireRole(user, auth.SUPER); await qbo.disconnect(); return { ok: true }; });
 route('GET', '/api/sharepoint/status', async ({ req, user }) => { auth.requireRole(user, [...auth.MANAGE, 'Estimator']); return q1(req, 'test') === '1' && auth.SUPER.includes(user.role) ? sharepoint.status() : { configured: sharepoint.configured() }; });
@@ -235,7 +235,7 @@ route('GET', '/api/gmail/connect', async ({ user }) => { auth.requireRole(user, 
 route('GET', '/api/gmail/callback', async ({ req, res, user }) => {
   auth.requireRole(user, auth.SUPER); const p = new URL(req.url, 'http://x').searchParams;
   if (p.get('error')) throw bad('Google did not allow the connection (' + p.get('error') + ').');
-  await bd.finishConnect(p.get('code'), p.get('state')); res.writeHead(302, { location: '/#/admin', 'cache-control': 'no-store' }); res.end(); return 'sent';
+  await bd.finishConnect(p.get('code'), p.get('state')); res.writeHead(302, { location: '/#/admin/connections', 'cache-control': 'no-store' }); res.end(); return 'sent';
 });
 route('DELETE', '/api/gmail', async ({ user }) => { auth.requireRole(user, auth.SUPER); await bd.disconnect(); return { ok: true }; });
 route('GET', '/api/regions', async ({ user }) => { estRead(user); return bd.listRegions(); });

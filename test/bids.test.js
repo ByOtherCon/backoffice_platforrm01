@@ -70,7 +70,7 @@ test('connecting Gmail: only the owner, read-only access, a signed state, and th
   const state = u.searchParams.get('state');
   assert.equal((await call('GET', `/api/gmail/callback?code=abc&state=${state}x`, null, owner)).status, 400);         // tampered
   assert.equal((await call('GET', `/api/gmail/callback?code=abc&state=${state}`, null, sub)).status, 403);
-  const ok = await call('GET', `/api/gmail/callback?code=abc&state=${state}`, null, owner); assert.equal(ok.status, 302); assert.equal(ok.headers.get('location'), '/#/admin');
+  const ok = await call('GET', `/api/gmail/callback?code=abc&state=${state}`, null, owner); assert.equal(ok.status, 302); assert.equal(ok.headers.get('location'), '/#/admin/connections');
   const raw = JSON.stringify((await q(`SELECT data FROM integrations WHERE name='gmail'`))[0].data); assert.ok(!raw.includes('RT-SECRET-123')); assert.ok(raw.includes('benny@byother.net'));
   const s = (await call('GET', '/api/bids/status', null, est)).body; assert.deepEqual([s.connected, s.email], [true, 'benny@byother.net']); assert.ok(!JSON.stringify(s).includes('RT-SECRET'));
 });

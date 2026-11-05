@@ -809,19 +809,31 @@ function collapsible(card, open) {
   d.addEventListener('toggle', () => { const cur = adminOpen(); if (d.open) cur.add(title); else cur.delete(title); saveAdminOpen(cur); });
   return d;
 }
-async function adminView() {
-  const parts = [];
-  for (const s of SECTIONS) parts.push(await adminSection(s));
-  if (['Super Admin', 'Sub Admin'].includes(state.user.role)) parts.push(await bidFeedCard());
-  parts.push(await clockSettingsCard());
-  if (['Super Admin', 'Sub Admin'].includes(state.user.role)) parts.push(await overheadCard());
-  parts.push(await aiCard()); if (isSuper()) { parts.push(await sharepointCard()); parts.push(await quickbooksCard()); parts.push(await aiReportCard()); }
-  if (isSuper()) parts.push(await usersSection());
+// Admin is split into four tabs so each one is short, and only the open tab is loaded. The URL is #/admin/<tab>.
+const ADMIN_GROUPS = [
+  ['lists', 'Lists', 'Create vendors, subcontractors, employees, trades and GCs here. Projects pick from these lists. Archive instead of delete once a record has history.'],
+  ['company', 'Company', 'People and access, time clock rules, and company overhead.'],
+  ['connections', 'Connections', 'Gmail bid invitations, SharePoint folders and QuickBooks.'],
+  ['ai', 'AI', 'The AI reading limits, and who has used how much.'],
+];
+async function adminCards(group) {
+  const top = ['Super Admin', 'Sub Admin'].includes(state.user.role), parts = [];
+  if (group === 'lists') for (const s of SECTIONS) parts.push(await adminSection(s));
+  else if (group === 'company') { if (isSuper()) parts.push(await usersSection()); parts.push(await clockSettingsCard()); if (top) parts.push(await overheadCard()); }
+  else if (group === 'connections') { if (top) parts.push(await bidFeedCard()); if (isSuper()) { parts.push(await sharepointCard()); parts.push(await quickbooksCard()); } }
+  else if (group === 'ai') { parts.push(await aiCard()); if (isSuper()) parts.push(await aiReportCard()); }
+  return parts;
+}
+async function adminView(group) {
+  const top = ['Super Admin', 'Sub Admin'].includes(state.user.role);
+  const shown = ADMIN_GROUPS.filter(([g]) => g !== 'connections' || top);   // Connections is for the owner and Sub Admin
+  const cur = shown.find(([g]) => g === group) || shown[0];
+  const parts = await adminCards(cur[0]);
   const open = adminOpen(), folds = parts.map((c) => collapsible(c, open));
-  const setAll = (on) => { const cur = on ? new Set(folds.filter((f) => f.tagName === 'DETAILS').map((f) => f.querySelector('summary').textContent)) : new Set(); saveAdminOpen(cur); folds.forEach((f) => { if (f.tagName === 'DETAILS') f.open = on; }); };
+  const setAll = (on) => { const set = on ? new Set(folds.filter((f) => f.tagName === 'DETAILS').map((f) => f.querySelector('summary').textContent)) : new Set(); saveAdminOpen(set); folds.forEach((f) => { if (f.tagName === 'DETAILS') f.open = on; }); };
   const find = h('input', { type: 'search', placeholder: 'Find a section…', style: 'max-width:16rem', oninput: () => { const t = find.value.trim().toLowerCase(); folds.forEach((f) => { if (f.tagName === 'DETAILS') f.hidden = !!t && !f.dataset.title.includes(t); }); } });
-  return shell('admin', [h('h1', {}, 'Admin'), h('p', { class: 'sub' }, 'Create vendors, suppliers, employees, trades and GCs here. Projects pick from these lists. Archive instead of delete once a record has history.'),
-    h('div', { class: 'row', style: 'margin-bottom:.8rem' }, find, h('button', { class: 'small', onclick: () => setAll(true) }, 'Open all'), h('button', { class: 'small', onclick: () => setAll(false) }, 'Close all')), ...folds]);
+  return shell('admin', [h('h1', {}, 'Admin'), h('div', { class: 'tabs' }, shown.map(([g, label]) => h('a', { class: g === cur[0] ? 'on' : '', href: '#/admin/' + g }, label))), h('p', { class: 'sub' }, cur[2]),
+    folds.length > 1 ? h('div', { class: 'row', style: 'margin-bottom:.8rem' }, find, h('button', { class: 'small', onclick: () => setAll(true) }, 'Open all'), h('button', { class: 'small', onclick: () => setAll(false) }, 'Close all')) : '', ...folds]);
 }
 
 // ------------------------------------------------------------------ reports
@@ -872,7 +884,7 @@ async function render() {
   const [, page = 'dashboard', id, tab] = location.hash.split('/');
   try {
     if (['admin'].includes(page) || (page === 'projects' && !id)) [state.trades, state.gcs] = await Promise.all([api('GET', '/admin/trades'), api('GET', '/admin/gcs')]).catch(() => [state.trades, state.gcs]);
-    const view = page === 'estimating' ? await estimatingView(id, tab) : page === 'messages' ? await messagesView(id) : page === 'admin' ? await adminView() : page === 'receipts' ? await receiptsView() : page === 'compliance' ? await complianceView() : page === 'projects' ? (id ? await projectView(id, tab) : await projectsView()) : page === 'reports' ? await reportsView() : await dashboardView();
+    const view = page === 'estimating' ? await estimatingView(id, tab) : page === 'messages' ? await messagesView(id) : page === 'admin' ? await adminView(id) : page === 'receipts' ? await receiptsView() : page === 'compliance' ? await complianceView() : page === 'projects' ? (id ? await projectView(id, tab) : await projectsView()) : page === 'reports' ? await reportsView() : await dashboardView();
     if (token === rendering) { $app.replaceChildren(view); updateBell(); }
   } catch (e) { if (token === rendering && state.user) $app.replaceChildren(shell(page, h('div', { class: 'err' }, e.message))); }
 }

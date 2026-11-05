@@ -3,7 +3,7 @@
 // with an address needs that token, so a green check cannot be faked by editing the request.
 import crypto from 'node:crypto';
 import { bad, HttpError } from './http.js';
-import { cleanAddr, checkAddr, addrLine, splitAddress } from '../src/lib/workflow.ts';
+import { cleanAddr, checkAddr, addrLine, splitAddress, addrEmpty, sameAddr } from '../src/lib/workflow.ts';
 
 let afetch = (...a) => fetch(...a);
 export const setAddressFetch = (f) => { afetch = f; };   // tests stand in for the Census service
@@ -46,4 +46,22 @@ export function requireVerified(b, token, { florida = false, label = 'Address' }
   const a = cleanAddr(b || {}); const errors = checkAddr(a, { florida, label }); if (errors.length) throw bad(errors[0]);
   if (!tokenValid(a, token)) throw new HttpError(400, `${label}: press Verify so it gets its green check before saving.`);
   return a;
+}
+
+// What a form sends for a stored address: { street, city, state, zip, token }. Returns the database columns for it.
+// An unchanged address that was already checked is kept as it is; anything else needs the green check (the token).
+// A trusted caller that already holds a checked address (an accepted opportunity) passes the option trusted: true (never read from the request).
+// `old` is the stored row (address, city, state, zip, address_verified). An empty address clears the columns unless it is required.
+export function addressColumns(a, { florida = false, label = 'Address', required = false, old = null, trusted = false } = {}) {
+  if (!a || addrEmpty(a)) { if (required) throw bad(`${label} is required. Enter it and press Verify.`); return { address: null, city: null, state: null, zip: null, address_verified: false }; }
+  const c = cleanAddr({ ...a, state: a.state || (florida ? 'FL' : '') });
+  const cur = old ? { street: old.address, city: old.city, state: old.state, zip: old.zip } : null;
+  if (trusted) { const errors = checkAddr(c, { florida, label }); if (errors.length) throw bad(errors[0]); }
+  else if (!(old?.address_verified && cur && sameAddr(c, cur))) requireVerified(c, a.token, { florida, label });
+  return { address: c.street, city: c.city, state: c.state, zip: c.zip, address_verified: true };
+}
+// Old callers send one line ("123 Main St, Orlando, FL 32801"). It is split when it can be, and kept unchecked.
+export function legacyAddressColumns(line) {
+  const s = String(line ?? '').trim(); if (!s) return { address: null, city: null, state: null, zip: null, address_verified: false };
+  const sp = splitAddress(s); return sp ? { address: sp.street, city: sp.city, state: sp.state, zip: sp.zip || null, address_verified: false } : { address: s, city: null, state: null, zip: null, address_verified: false };
 }

@@ -260,6 +260,7 @@ test('awarding builds the project in Job Costing with everything gathered; it ca
   const r = await status(wing, 'Awarded'); assert.equal(r.status, 200);
   const p = (await call('GET', `/api/projects/${r.body.projectId}`, null, owner)).body;
   assert.deepEqual([p.project.name, p.project.gc, p.project.client, p.project.address, p.project.proposalId, p.totals.contract, p.trades.map((t) => t.name)], ['Wingstop - St Cloud', 'CW Hayes Construction', 'Wingstop Restaurants', '1200 13th St, St Cloud, FL 34769', (await get(wing)).proposalId, 157000.5, ['Demolition', 'Framing & Drywall']]);
+  assert.deepEqual(p.project.addr, { street: '1200 13th St', city: 'St Cloud', state: 'FL', zip: '34769', verified: true });   // the lead's green-checked address carries over as separate fields
   const o = (await call('GET', `/api/projects/${r.body.projectId}/origin`, null, owner)).body;
   assert.deepEqual([o.client, o.gc, o.contact, o.email, o.sourceType, o.type, o.estimator, o.submissions.length, o.submissions[0].trades.length, o.files.length > 0, o.notes.length > 3], ['Wingstop Restaurants', 'CW Hayes Construction', 'Dana Hayes', 'dana@cwhayes.example', 'PlanHub', 'Restaurant', 'est', 1, 2, true, true]);
   assert.equal((await call('GET', `/api/projects/${r.body.projectId}/origin`, null, pm)).status, 403);                                                      // a PM sees only assigned projects

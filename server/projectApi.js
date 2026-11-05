@@ -2,6 +2,11 @@ import { q, tx } from './db.js';
 import { bad, money, text, dateStr, httpsUrl, HttpError } from './http.js';
 import { loadInputs, summarize } from './projects.js';
 import { validateTrade } from '../src/lib/costing.ts';
+import { addrLine } from '../src/lib/workflow.ts';
+import { addressColumns, legacyAddressColumns } from './address.js';
+
+// The project's address the way every screen shows it, and as separate fields for the form.
+const addrOf = (p) => ({ addr: { street: p.address ?? '', city: p.city ?? '', state: p.state || 'FL', zip: p.zip ?? '', verified: !!p.address_verified }, address: addrLine({ street: p.address, city: p.city, state: p.state, zip: p.zip }) });
 
 const dbError = (e) => {
   if (e.code === '23505') return new HttpError(409, 'That already exists on this project.');
@@ -15,7 +20,7 @@ export async function listProjects(user, manageAll) {
     : await q('SELECT p.*, g.name AS gc FROM projects p JOIN gcs g ON g.id=p.gc_id JOIN project_members m ON m.project_id=p.id AND m.user_id=$1 ORDER BY p.active DESC, p.name', [user.id]);
   if (!rows.length) return [];
   const loaded = await loadInputs(rows.map((r) => r.id));
-  return rows.map((r) => ({ id: r.id, name: r.name, gc: r.gc, client: r.client, address: r.address, active: r.active, proposalId: r.proposal_id, ...summarize(loaded.get(r.id)).project }));
+  return rows.map((r) => ({ id: r.id, name: r.name, gc: r.gc, client: r.client, ...addrOf(r), active: r.active, proposalId: r.proposal_id, ...summarize(loaded.get(r.id)).project }));
 }
 
 export async function getProject(id) {
@@ -29,7 +34,7 @@ export async function getProject(id) {
   const approved = cos.filter((c) => c.status === 'Approved').reduce((n, c) => n + Math.round(c.amount * 100), 0) / 100;
   const pending = cos.filter((c) => c.status === 'Pending').reduce((n, c) => n + Math.round(c.amount * 100), 0) / 100;
   return {
-    project: { id: p.id, name: p.name, gc: p.gc, gcId: p.gc_id, client: p.client, address: p.address, retainagePct: p.retainage_pct, active: p.active, proposalId: p.proposal_id, refCode: p.ref_code ?? null, folderUrl: p.folder_url ?? null, spPath: p.sp_path ?? null, contractUrl: p.contract_url ?? null, lat: p.lat === null ? null : Number(p.lat), lng: p.lng === null ? null : Number(p.lng), geofenceRequired: p.geofence_required, geofenceMiles: Number(p.geofence_miles) },
+    project: { id: p.id, name: p.name, gc: p.gc, gcId: p.gc_id, client: p.client, ...addrOf(p), retainagePct: p.retainage_pct, active: p.active, proposalId: p.proposal_id, refCode: p.ref_code ?? null, folderUrl: p.folder_url ?? null, spPath: p.sp_path ?? null, contractUrl: p.contract_url ?? null, lat: p.lat === null ? null : Number(p.lat), lng: p.lng === null ? null : Number(p.lng), geofenceRequired: p.geofence_required, geofenceMiles: Number(p.geofence_miles) },
     trades: s.trades, totals: s.project,
     changeOrders: cos.map((c) => ({ id: c.id, number: c.number, description: c.description, projectTradeId: c.project_trade_id, trade: c.trade, status: c.status, approvedDate: c.approved_date, amount: c.amount })),
     coTotals: { approved, pending },
@@ -47,8 +52,11 @@ function parseTrades(list) {
   });
 }
 
-export async function createProject(b, outerTx = null) {
-  const name = text(b.name, 'Project name', { max: 200 }), client = text(b.client, 'Client', { max: 200 }), address = text(b.address, 'Project address', { max: 300 });
+// The address comes as b.addr (street, city, state, ZIP and the green-check token) from the forms. One text line in b.address is still
+// accepted from older callers: it is split up and kept unchecked. { trusted: true } is for code that already holds a checked address.
+export async function createProject(b, outerTx = null, { trusted = false } = {}) {
+  const name = text(b.name, 'Project name', { max: 200 }), client = text(b.client, 'Client', { max: 200 });
+  const ac = b.addr !== undefined ? addressColumns(b.addr, { florida: true, label: 'Project address', required: true, trusted }) : legacyAddressColumns(text(b.address, 'Project address', { max: 300 }));
   if (!b.gcId) throw bad('Choose a GC.');
   const trades = parseTrades(b.trades);
   const retainage = b.retainagePct === undefined ? 10 : Number(b.retainagePct);
@@ -56,9 +64,9 @@ export async function createProject(b, outerTx = null) {
   const contractUrl = httpsUrl(b.contractUrl, 'Contract link');
   try {
     const body = async (t) => {
-      const [p] = await t(`INSERT INTO projects(name,gc_id,client,address,retainage_pct,proposal_id,logged_date,start_date)
-                           VALUES ($1,$2,$3,$4,$5,$6,(now() AT TIME ZONE 'America/New_York')::date,$7) RETURNING id`,
-        [name, b.gcId, client, address, retainage, text(b.proposalId, 'Proposal ID', { max: 40, required: false }) || null, dateStr(b.startDate, 'Start date')]);
+      const [p] = await t(`INSERT INTO projects(name,gc_id,client,address,city,state,zip,address_verified,retainage_pct,proposal_id,logged_date,start_date)
+                           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,(now() AT TIME ZONE 'America/New_York')::date,$11) RETURNING id`,
+        [name, b.gcId, client, ac.address, ac.city, ac.state, ac.zip, ac.address_verified, retainage, text(b.proposalId, 'Proposal ID', { max: 40, required: false }) || null, dateStr(b.startDate, 'Start date')]);
       for (const tr of trades) await t('INSERT INTO project_trades(project_id,trade_id,original_amount) VALUES ($1,$2,$3)', [p.id, tr.tradeId, tr.amount]);
       await t('INSERT INTO project_ntos(project_id, year) VALUES ($1, $2)', [p.id, Number((dateStr(b.startDate, 'Start date') || new Date().toISOString()).slice(0, 4))]);
       if (contractUrl) {
@@ -76,7 +84,11 @@ export async function updateProject(id, b) {
   const add = (c, v) => { vals.push(v); sets.push(`${c}=$${vals.length}`); };
   if (b.name !== undefined) add('name', text(b.name, 'Project name', { max: 200 }));
   if (b.client !== undefined) add('client', text(b.client, 'Client', { max: 200 }));
-  if (b.address !== undefined) add('address', text(b.address, 'Project address', { max: 300 }));
+  if (b.addr !== undefined || b.address !== undefined) {
+    const [old] = await q('SELECT address, city, state, zip, address_verified FROM projects WHERE id=$1', [id]); if (!old) throw new HttpError(404, 'Project not found.');
+    const ac = b.addr !== undefined ? addressColumns(b.addr, { florida: true, label: 'Project address', required: true, old }) : legacyAddressColumns(text(b.address, 'Project address', { max: 300 }));
+    for (const [k, v] of Object.entries(ac)) add(k, v);
+  }
   if (b.gcId !== undefined) add('gc_id', b.gcId);
   if (b.active !== undefined) { if (typeof b.active !== 'boolean') throw bad('Active must be true or false.'); add('active', b.active); }
   if (b.retainagePct !== undefined) { const n = Number(b.retainagePct); if (!(n >= 0 && n <= 100)) throw bad('Retainage must be between 0 and 100.'); add('retainage_pct', n); }

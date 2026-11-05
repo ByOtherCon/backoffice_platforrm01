@@ -275,8 +275,9 @@ export async function transition(user, id, b = {}) {
         if (o.project_id) throw new HttpError(409, 'A project was already created for this award.');
         const tp = await t('SELECT trade_id, amount FROM opportunity_trades WHERE opportunity_id=$1 AND amount > 0', [id]); if (!tp.length) throw bad('The submitted proposal has no priced trades. The project is built from them.');
         let [gc] = await t('SELECT id FROM gcs WHERE lower(name)=lower($1)', [o.gc_name]); if (!gc) [gc] = await t('INSERT INTO gcs(name) VALUES ($1) RETURNING id', [o.gc_name]);
-        const addr = W.addrLine({ street: o.address, city: o.city, state: 'FL', zip: o.zip });
-        const p = await createProject({ name: o.name, gcId: gc.id, client: o.client_name || o.gc_name, address: addr || o.name, proposalId: o.proposal_id, startDate: o.planned_start, trades: tp.map((x) => ({ tradeId: x.trade_id, amount: x.amount })) }, t);
+        const checked = o.address_verified && o.address && o.city && o.zip;   // the lead's address already has its green check: carried over as it is
+        const addrPart = checked ? { addr: { street: o.address, city: o.city, state: 'FL', zip: o.zip } } : { address: W.addrLine({ street: o.address, city: o.city, state: 'FL', zip: o.zip }) || o.name };
+        const p = await createProject({ name: o.name, gcId: gc.id, client: o.client_name || o.gc_name, ...addrPart, proposalId: o.proposal_id, startDate: o.planned_start, trades: tp.map((x) => ({ tradeId: x.trade_id, amount: x.amount })) }, t, { trusted: true });
         await t(`UPDATE projects SET opportunity_id=$2, ref_code=$3 WHERE id=$1`, [p.id, id, o.proposal_id ? 'C' + o.proposal_id.slice(1) : null]); set.project_id = p.id; result = { projectId: p.id, refCode: o.proposal_id ? 'C' + o.proposal_id.slice(1) : null };
         await closeCases(t, id, 'Closed / Awarded', 'Awarded: project created in Job Costing');
         detail = ' Project created in Job Costing with the lead, proposal and submittal details attached.';

@@ -1,6 +1,7 @@
 // Estimating screens: Bid Opportunities, Proposal Tracker, Submittal Tracker, Follow Ups, Insights, and the one opportunity form
 // that every tracker uses. Everything is inserted with textContent (never innerHTML).
 import { h, usd, notice, guard, modal, formModal, field, todayStr, num } from '/ui.js';
+import { addressBlock as makeAddressBlock } from '/address.js';
 let C;
 export const init = (c) => { C = c; };
 const api = (...a) => C.api(...a);
@@ -24,35 +25,7 @@ const summary = (o) => h('div', { class: 'osum' }, h('strong', {}, o.name), o.pr
 const star = () => h('span', { class: 'req' }, ' *');
 const lbl = (t, required) => h('span', {}, t, required ? star() : '');
 
-// Street, city, state, ZIP. It checks itself: when street and city are filled in (or on opening an unchecked address) the address is
-// verified, the fields fold into one line, and a green check shows next to the heading. "Change" reopens the fields.
-function addressBlock({ kind, init, label, readonly = false }) {
-  const f = { street: h('input', { placeholder: '123 Main St', autocomplete: 'off', disabled: readonly || null }), city: h('input', { placeholder: 'City', autocomplete: 'off', disabled: readonly || null }), state: h('input', { maxlength: 2, placeholder: 'FL', style: 'text-transform:uppercase', disabled: readonly || kind !== 'gc' ? true : null }), zip: h('input', { maxlength: 10, inputmode: 'numeric', placeholder: '32801', disabled: readonly || null }) };
-  let token = null, verified = false, method = '', busy = false; const msg = h('div'), box = h('div', { class: 'addr' }), tick = h('span', { style: 'color:var(--green);font-weight:700;margin-left:.45rem' }), head = h('label', {}, label, tick);
-  const read = () => ({ street: f.street.value.trim(), city: f.city.value.trim(), state: (kind === 'gc' ? f.state.value : 'FL').trim().toUpperCase(), zip: f.zip.value.trim() });
-  const line = () => { const v = read(); return [v.street, v.city, [v.state, v.zip].filter(Boolean).join(' ')].filter(Boolean).join(', '); };
-  const empty = () => { const v = read(); return !v.street && !v.city && !v.zip; };
-  function set(a, tok = null) { f.street.value = a?.street || ''; f.city.value = a?.city || ''; f.state.value = kind === 'gc' ? a?.state || '' : 'FL'; f.zip.value = a?.zip || ''; verified = !!(a?.verified && a?.street); token = verified ? tok : null; method = ''; draw(); }
-  async function verify(silent) {
-    if (busy) return; busy = true; notice(msg, '');
-    try {
-      const r = await api('POST', '/address/verify', { ...read(), kind });
-      if (r.verified) { Object.entries(r.address).forEach(([k, v]) => (f[k].value = v)); token = r.token; verified = true; method = r.method; draw(); }
-      else if (r.noMatch) { notice(msg, r.errors[0]); if (r.token) msg.append(h('button', { type: 'button', class: 'small', style: 'margin-top:.3rem', onclick: () => { Object.entries(r.address).forEach(([k, v]) => (f[k].value = v)); token = r.token; verified = true; method = 'format'; draw(); } }, 'Use as entered')); }
-      else if (!silent) notice(msg, (r.errors || ['That address could not be verified.']).join(' '));
-    } catch (e) { if (!silent) notice(msg, e.message); } finally { busy = false; }
-  }
-  function draw() {
-    tick.textContent = verified ? '✓' : ''; tick.title = verified ? (method === 'format' ? 'Address looks complete' : 'Address verified') : '';
-    if (verified) box.replaceChildren(h('div', { class: 'addr-ok' }, h('span', { class: 'tick' }, '✓'), h('span', {}, line()), readonly ? '' : h('button', { type: 'button', class: 'small', onclick: () => { verified = false; token = null; draw(); } }, 'Change')));
-    else box.replaceChildren(h('div', { class: 'form' }, field('Street', f.street, 'wide'), field('City', f.city), field('State', f.state), field('ZIP', f.zip), readonly ? '' : h('div', {}, h('button', { type: 'button', onclick: () => verify(false) }, 'Verify address'))), msg);
-  }
-  const auto = () => { const v = read(); if (!readonly && !verified && v.street && v.city) verify(true); };
-  for (const k of ['street', 'city', 'state', 'zip']) f[k].addEventListener('change', () => { verified = false; token = null; auto(); });
-  set(init); if (!verified) setTimeout(auto, 0);
-  if (readonly && empty()) box.replaceChildren(h('span', { class: 'muted' }, '—'));
-  return { el: box, head, set, empty, ok: () => verified, get: () => ({ ...read(), ...(token ? { token } : {}) }) };
-}
+const addressBlock = (o) => makeAddressBlock(api, o);
 function tradePicker(all, selected, canAdd) {
   const sel = new Set(selected), box = h('div', { class: 'chips' }), list = [...all];
   const draw = () => box.replaceChildren(...list.map((t) => h('button', { type: 'button', class: 'chip' + (sel.has(t.id) ? ' on' : ''), onclick: () => { sel.has(t.id) ? sel.delete(t.id) : sel.add(t.id); draw(); } }, (sel.has(t.id) ? '✓ ' : '+ ') + t.name)),

@@ -1,6 +1,7 @@
 // by Other Desk Platform front end. All data is inserted with textContent (never innerHTML).
 import { h, usd, pct, cls, notice, guard, modal, formModal, field, todayStr, num } from '/ui.js';
 import * as estimating from '/estimating.js';
+import { addressBlock } from '/address.js';
 import { makeClockUi } from '/clockui.js';
 import * as dashboardUi from '/dashboard.js';
 const $app = document.getElementById('app');
@@ -102,9 +103,17 @@ async function projectsView() {
 }
 
 
+// Edit a project's name, client, retainage and address (the same checked address box as everywhere else).
+function editProjectForm(pr) {
+  const f = { name: h('input', { value: pr.name }), client: h('input', { value: pr.client }), ret: h('input', { type: 'number', min: '0', max: '100', step: '0.5', value: pr.retainagePct }) };
+  const addr = addressBlock(api, { kind: 'project', init: pr.addr, label: 'Project address (Florida)' });
+  formModal(`Edit ${pr.name}`, [field('Project name', f.name), field('Client', f.client), field('GC retainage %', f.ret), h('div', { class: 'wide' }, addr.head, addr.el)],
+    async () => { await api('PUT', `/projects/${pr.id}`, { name: f.name.value, client: f.client.value, retainagePct: f.ret.value, ...addr.payload() }); render(); }, 'Save');
+}
 async function newProjectModal() {
   const err = h('div');
-  const f = { name: h('input'), gc: h('select', {}, h('option', { value: '' }, 'Choose GC…'), state.gcs.filter((g) => !g.archived).map((g) => h('option', { value: g.id }, g.name))), client: h('input'), address: h('input'), ret: h('input', { type: 'number', value: '10', min: '0', max: '100', step: '0.5' }), link: h('input', { type: 'url', placeholder: 'https://… (OneDrive link to the signed contract)' }) };
+  const f = { name: h('input'), gc: h('select', {}, h('option', { value: '' }, 'Choose GC…'), state.gcs.filter((g) => !g.archived).map((g) => h('option', { value: g.id }, g.name))), client: h('input'), ret: h('input', { type: 'number', value: '10', min: '0', max: '100', step: '0.5' }), link: h('input', { type: 'url', placeholder: 'https://… (OneDrive link to the signed contract)' }) };
+  const addr = addressBlock(api, { kind: 'project', init: null, label: 'Project address (Florida)' });
   const tradeRows = h('div'); const addRow = () => {
     const sel = h('select', {}, h('option', { value: '' }, 'Trade…'), state.trades.filter((t) => !t.archived).map((t) => h('option', { value: t.id }, t.name)));
     const amt = h('input', { type: 'number', min: '0', step: '0.01', placeholder: 'Contract amount' });
@@ -114,10 +123,10 @@ async function newProjectModal() {
   const bg = modal('New project', h('form', { onsubmit: guard(err, async (e) => {
     e.preventDefault();
     const trades = [...tradeRows.children].map((r) => r._get()).filter((t) => t.tradeId || t.amount);
-    const r = await api('POST', '/projects', { name: f.name.value, gcId: f.gc.value, client: f.client.value, address: f.address.value, retainagePct: f.ret.value, contractUrl: f.link.value, trades });
+    const r = await api('POST', '/projects', { name: f.name.value, gcId: f.gc.value, client: f.client.value, addr: (() => { if (!addr.ok()) throw new Error('Enter the project address and press "Verify address" (green check) first.'); return addr.get(); })(), retainagePct: f.ret.value, contractUrl: f.link.value, trades });
     bg.remove(); location.hash = '#/projects/' + r.id;
   }) }, h('div', { class: 'form' },
-    h('div', {}, h('label', {}, 'Project name'), f.name), h('div', {}, h('label', {}, 'GC'), f.gc), h('div', {}, h('label', {}, 'Client'), f.client), h('div', {}, h('label', {}, 'Project address'), f.address),
+    h('div', {}, h('label', {}, 'Project name'), f.name), h('div', {}, h('label', {}, 'GC'), f.gc), h('div', {}, h('label', {}, 'Client'), f.client), h('div', { class: 'wide' }, addr.head, addr.el),
     h('div', {}, h('label', {}, 'GC retainage %'), f.ret), h('div', { class: 'wide' }, h('label', {}, 'Contract link'), f.link),
     h('div', { class: 'wide' }, h('label', {}, 'Trades and contract amounts'), tradeRows, h('button', { type: 'button', class: 'small', onclick: addRow }, '+ Add trade'))),
     err, h('div', { class: 'row', style: 'margin-top:1rem;justify-content:flex-end' }, h('button', { class: 'primary', type: 'submit' }, 'Create project'))));
@@ -139,7 +148,7 @@ async function projectView(id, tab = 'trades') {
   else if (tab === 'origin') content = await estimating.originCard(id);
   else content = h('div', { class: 'card soon' }, h('h2', {}, TABS.find((t) => t[0] === tab)[1]), h('p', {}, 'Coming in the next build step.'));
   return shell('projects', [
-    h('p', {}, h('a', { href: '#/projects' }, '← All projects')),
+    h('p', {}, h('a', { href: '#/projects' }, '← All projects'), canEdit ? [' ', h('button', { class: 'small', onclick: () => editProjectForm(p.project) }, 'Edit Project')] : ''),
     h('h1', {}, p.project.name, p.project.refCode ? h('span', { class: 'pill Approved', style: 'margin-left:.7rem;font-size:14px', title: 'Contract reference code: use it on every document' }, p.project.refCode) : ''), p.project.folderUrl || canEdit ? h('div', { style: 'margin:.2rem 0 .5rem' }, estimating.folderButtons({ id: p.project.id, name: p.project.name, folderUrl: p.project.folderUrl, spPath: p.project.spPath }, canEdit, 'project', true)) : '', h('p', { class: 'muted' }, `${p.project.gc} · ${p.project.client} · ${p.project.address}`, p.project.contractUrl ? [' · ', h('a', { href: p.project.contractUrl, target: '_blank', rel: 'noopener' }, 'Contract')] : ''),
     h('div', { class: 'grid kpis', style: 'margin-bottom:1rem' },
       h('div', { class: 'kpi' }, h('div', { class: 'l' }, 'Original contract + COs'), h('div', { class: 'v' }, usd(p.totals.contract))),
@@ -820,22 +829,23 @@ const POSITIONS = ['', 'Skilled Labor', 'Carpenter', 'Carpenter Helper', 'Forema
 const SECTIONS = [
   { kind: 'trades', title: 'Trades', one: 'trade', fields: [['name', 'Name', 'text'], ['sort', 'Order', 'number']], archive: 'archived' },
   { kind: 'gcs', title: 'GCs', one: 'GC', fields: [['name', 'Name', 'text']], archive: 'archived' },
-  { kind: 'subcontractors', title: 'Subcontractors (labor, vetted)', one: 'subcontractor', fields: [['name', 'Name', 'text'], ['email', 'Email', 'email'], ['phone', 'Phone', 'text'], ['address', 'Address', 'text']], archive: 'archived' },
-  { kind: 'suppliers', title: 'Vendors (materials, lodging, equipment, purchases)', one: 'vendor', fields: [['name', 'Name', 'text'], ['provider_type', 'Type', ['Materials', 'Hotel / Lodging', 'Equipment', 'Other purchase']], ['credit_limit', 'Credit limit', 'number'], ['email', 'Email', 'email'], ['phone', 'Phone', 'text'], ['address', 'Address', 'text']], archive: 'archived' },
+  { kind: 'subcontractors', title: 'Subcontractors (labor, vetted)', one: 'subcontractor', fields: [['name', 'Name', 'text'], ['email', 'Email', 'email'], ['phone', 'Phone', 'text'], ['address', 'Address', 'address']], archive: 'archived' },
+  { kind: 'suppliers', title: 'Vendors (materials, lodging, equipment, purchases)', one: 'vendor', fields: [['name', 'Name', 'text'], ['provider_type', 'Type', ['Materials', 'Hotel / Lodging', 'Equipment', 'Other purchase']], ['credit_limit', 'Credit limit', 'number'], ['email', 'Email', 'email'], ['phone', 'Phone', 'text'], ['address', 'Address', 'address']], archive: 'archived' },
   { kind: 'employees', title: 'Employees (1099 crew, time clock)', one: 'employee', fields: [['name', 'Name', 'text'], ['position', 'Position', POSITIONS], ['pay_type', 'Pay type', ['hourly', 'daily']], ['hourly_rate', 'Rate ($/hr or $/day)', 'number'], ['phone', 'Phone', 'text'], ['email', 'Email', 'email']], archive: 'active', invert: true, extra: (r, err) => [h('button', { class: 'small', onclick: () => pinForm(r) }, r.has_pin ? 'Reset PIN' : 'Set PIN')] },
 ];
 const visibleFields = (sec) => sec.fields.filter(([k]) => !(sec.kind === 'employees' && ['pay_type', 'hourly_rate'].includes(k) && !isSuper()));
 const tableCols = (sec) => visibleFields(sec).filter(([k]) => !['address', 'credit_limit', 'phone', 'email', 'pay_type'].includes(k) || (sec.kind !== 'employees' && ['phone', 'email', 'credit_limit'].includes(k)));
 function pinForm(emp) { const pin = h('input', { type: 'password', inputmode: 'numeric', maxlength: 8, autocomplete: 'new-password', placeholder: '4 to 8 digits' }); formModal(`Time clock PIN for ${emp.name}`, [field('PIN', pin, 'wide'), h('p', { class: 'muted wide' }, 'The employee uses this on the time clock page. Setting a new PIN also clears any lockout.')], async () => { await api('PUT', `/admin/employees/${emp.id}/pin`, { pin: pin.value }); render(); }, 'Save PIN'); }
 function recordForm(sec, rec, done) {
-  const inputs = Object.fromEntries(visibleFields(sec).map(([k, , t]) => {
+  const addr = visibleFields(sec).some(([, , t]) => t === 'address') ? addressBlock(api, { kind: 'other', init: rec ? { street: rec.address, city: rec.city, state: rec.state, zip: rec.zip, verified: rec.address_verified } : null, label: 'Address (optional)' }) : null;
+  const inputs = Object.fromEntries(visibleFields(sec).filter(([, , t]) => t !== 'address').map(([k, , t]) => {
     const el = Array.isArray(t) ? h('select', {}, t.map((o) => h('option', { value: o }, o || '—'))) : h('input', { type: t === 'number' ? 'number' : t === 'email' ? 'email' : 'text', step: t === 'number' ? '0.01' : null });
     if (rec && rec[k] != null) el.value = rec[k];
     return [k, el];
   }));
   const pin = sec.kind === 'employees' && !rec ? h('input', { type: 'password', inputmode: 'numeric', maxlength: 8, autocomplete: 'new-password', placeholder: '4 to 8 digits (optional now)' }) : null;
-  formModal(rec ? `Edit ${rec.name}` : `Add ${sec.one}`, [...visibleFields(sec).map(([k, l]) => field(l, inputs[k])), pin ? field('Time clock PIN', pin) : ''], async () => {
-    const body = {}; for (const [k, , t] of visibleFields(sec)) { const v = inputs[k].value; if (t === 'number') { if (v !== '') body[k] = Number(v); } else if (v !== '' || rec) body[k] = v; }
+  formModal(rec ? `Edit ${rec.name}` : `Add ${sec.one}`, [...visibleFields(sec).filter(([, , t]) => t !== 'address').map(([k, l]) => field(l, inputs[k])), addr ? h('div', { class: 'wide' }, addr.head, addr.el) : '', pin ? field('Time clock PIN', pin) : ''], async () => {
+    const body = {}; if (addr) Object.assign(body, addr.payload()); for (const [k, , t] of visibleFields(sec).filter(([, , t]) => t !== 'address')) { const v = inputs[k].value; if (t === 'number') { if (v !== '') body[k] = Number(v); } else if (v !== '' || rec) body[k] = v; }
     const saved = await api(rec ? 'PUT' : 'POST', `/admin/${sec.kind}${rec ? '/' + rec.id : ''}`, body);
     if (pin && pin.value) await api('PUT', `/admin/employees/${saved.id}/pin`, { pin: pin.value }); done();
   }, rec ? 'Save' : 'Add');

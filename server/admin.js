@@ -3,6 +3,7 @@ import { bad, money, text, HttpError } from './http.js';
 import { hashPassword, MIN_PASSWORD } from './auth.js';
 import { parseAccess } from './access.js';
 import { WIDGETS } from './dashboard.js';
+import { addressColumns, legacyAddressColumns } from './address.js';
 
 const bool = (v, l) => { if (typeof v !== 'boolean') throw bad(`${l} must be true or false.`); return v; };
 const oneOf = (list) => (v, l) => { if (!list.includes(v)) throw bad(`Choose a valid ${l}.`); return v; };
@@ -10,13 +11,22 @@ const optText = (max) => (v, l) => text(v, l, { max, required: false }) || null;
 export const KINDS = {
   trades: { table: 'trades', order: 'sort, name', cols: { name: (v) => text(v, 'Name', { max: 100 }), sort: (v) => { const n = Number(v); if (!Number.isInteger(n)) throw bad('Sort must be a whole number.'); return n; }, archived: (v) => bool(v, 'Archived') }, required: ['name'] },
   gcs: { table: 'gcs', order: 'name', cols: { name: (v) => text(v, 'Name', { max: 200 }), archived: (v) => bool(v, 'Archived') }, required: ['name'] },
-  subcontractors: { table: 'subcontractors', order: 'name', cols: { name: (v) => text(v, 'Name', { max: 200 }), email: optText(200), phone: optText(50), address: optText(300), archived: (v) => bool(v, 'Archived') }, required: ['name'] },
-  suppliers: { table: 'suppliers', order: 'name', cols: { name: (v) => text(v, 'Name', { max: 200 }), provider_type: oneOf(['Materials', 'Hotel / Lodging', 'Equipment', 'Other purchase']), credit_limit: (v) => money(v, 'Credit limit'), email: optText(200), phone: optText(50), address: optText(300), archived: (v) => bool(v, 'Archived') }, required: ['name'] },
+  subcontractors: { table: 'subcontractors', order: 'name', cols: { name: (v) => text(v, 'Name', { max: 200 }), email: optText(200), phone: optText(50), archived: (v) => bool(v, 'Archived') }, required: ['name'], address: true },
+  suppliers: { table: 'suppliers', order: 'name', cols: { name: (v) => text(v, 'Name', { max: 200 }), provider_type: oneOf(['Materials', 'Hotel / Lodging', 'Equipment', 'Other purchase']), credit_limit: (v) => money(v, 'Credit limit'), email: optText(200), phone: optText(50), archived: (v) => bool(v, 'Archived') }, required: ['name'], address: true },
   employees: { table: 'employees', order: 'name', cols: { name: (v) => text(v, 'Name', { max: 200 }), position: (v) => (v ? oneOf(['Skilled Labor', 'Carpenter', 'Carpenter Helper', 'Foreman', 'Supervisor'])(v, 'position') : null), hourly_rate: (v) => money(v, 'Rate'), pay_type: oneOf(['hourly', 'daily']), phone: optText(50), email: optText(200), active: (v) => bool(v, 'Active') }, required: ['name'] },
 };
-function parse(kind, body, creating) {
+// Vendors and subcontractors carry a street / city / state / ZIP address with its green check (any U.S. state; the address is optional).
+// A form sends it as body.addr; one text line in body.address is still accepted from older callers and is split up, unchecked.
+function addressPart(kind, body, old) {
+  if (!KINDS[kind].address) return {};
+  if (body.addr !== undefined) return addressColumns(body.addr, { florida: false, label: 'Address', old });
+  if (body.address !== undefined) return legacyAddressColumns(text(body.address, 'Address', { max: 300, required: false }));
+  return {};
+}
+function parse(kind, body, creating, old = null) {
   const cfg = KINDS[kind]; const out = {};
   for (const [k, fn] of Object.entries(cfg.cols)) if (body[k] !== undefined) out[k] = fn(body[k], k);
+  Object.assign(out, addressPart(kind, body, old));
   if (creating) for (const r of cfg.required) if (out[r] === undefined) throw bad(`${r} is required.`);
   if (!Object.keys(out).length) throw bad('Nothing to save.');
   return out;
@@ -36,7 +46,8 @@ export async function create(kind, body) {
   try { return strip((await q(`INSERT INTO ${KINDS[kind].table} (${keys.join(',')}) VALUES (${keys.map((_, i) => '$' + (i + 1)).join(',')}) RETURNING *`, keys.map((k) => v[k])))[0]); } catch (e) { throw dbError(e); }
 }
 export async function update(kind, id, body) {
-  const v = parse(kind, body, false), keys = Object.keys(v);
+  const old = KINDS[kind].address && (body.addr !== undefined) ? (await q(`SELECT address, city, state, zip, address_verified FROM ${KINDS[kind].table} WHERE id=$1`, [id]))[0] ?? null : null;
+  const v = parse(kind, body, false, old), keys = Object.keys(v);
   try {
     const r = await q(`UPDATE ${KINDS[kind].table} SET ${keys.map((k, i) => `${k}=$${i + 2}`).join(',')} WHERE id=$1 RETURNING *`, [id, ...keys.map((k) => v[k])]);
     if (!r.length) throw new HttpError(404, 'Not found.');

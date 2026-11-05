@@ -176,7 +176,12 @@ const estRead = (u) => { auth.requireRole(u, [...auth.MANAGE, 'Estimator']); ret
 const estWrite = (u) => { auth.requireRole(u, es.EST_ROLES); return u; };
 route('GET', '/api/estimating/options', async ({ user }) => { estRead(user); return es.options(); });
 route('GET', '/api/gcs/known', async ({ user }) => { estRead(user); return es.knownGcs(); });
-route('POST', '/api/address/verify', async ({ user, body }) => { estRead(user); return verifyAddress(body, { florida: body.kind !== 'gc', label: body.kind === 'gc' ? 'GC address' : 'Project address' }); });
+// Every address box in the app (projects, vendors, subcontractors, the estimating form) checks itself here. Any signed-in office user may.
+route('POST', '/api/address/verify', async ({ user, body }) => {
+  if (!user) throw new HttpError(401, 'Sign in required.'); if (user.role === 'Employee') throw new HttpError(403, 'Not allowed.');
+  const kind = ['gc', 'project', 'other'].includes(body.kind) ? body.kind : 'project'; const label = { gc: 'GC address', project: 'Project address', other: 'Address' }[kind];
+  return verifyAddress(body, { florida: kind === 'project', label });
+});
 route('GET', '/api/opportunities', async ({ req, user }) => { estRead(user); return es.list({ tab: q1(req, 'tab'), search: q1(req, 'q'), showAll: q1(req, 'all') === '1', filter: q1(req, 'filter'), scope: q1(req, 'scope'), userId: user.id }); });
 route('POST', '/api/opportunities', async ({ user, body }) => es.create(estWrite(user), body));
 route('POST', '/api/opportunities/import', async ({ user, body }) => es.importLeads(estWrite(user), body));

@@ -68,7 +68,7 @@ export async function rebuildLabor(t, employeeId, anyDate) {
 export async function clockHome(employeeId) {
   const [emp] = await q('SELECT id, name, pay_type, hourly_rate FROM employees WHERE id=$1', [employeeId]);
   const [open] = await q(`SELECT te.*, p.name AS project, t.name AS trade FROM time_entries te JOIN projects p ON p.id=te.project_id LEFT JOIN project_trades pt ON pt.id=te.primary_trade_id LEFT JOIN trades t ON t.id=pt.trade_id WHERE te.employee_id=$1 AND te.status='open'`, [employeeId]);
-  const projects = await q(`SELECT p.id, p.name, p.address, p.geofence_required FROM projects p WHERE p.active ORDER BY p.name`);
+  const projects = await q(`SELECT p.id, p.name, p.address, p.city, p.state, p.zip, p.geofence_required FROM projects p WHERE p.active ORDER BY p.name`);
   const trades = projects.length ? await q(`SELECT pt.id, pt.project_id, t.name FROM project_trades pt JOIN trades t ON t.id=pt.trade_id WHERE pt.project_id = ANY($1::uuid[]) ORDER BY t.sort, t.name`, [projects.map((p) => p.id)]) : [];
   const ws = weekStart(easternDate(new Date()));
   const week = await q(`SELECT te.id, te.work_date, te.total_hours, te.status, p.name AS project FROM time_entries te JOIN projects p ON p.id=te.project_id WHERE te.employee_id=$1 AND te.work_date >= $2 ORDER BY te.clock_in DESC`, [employeeId, ws]);
@@ -77,7 +77,7 @@ export async function clockHome(employeeId) {
   const wp = weekPay({ payType: emp.pay_type, rate: Number(emp.hourly_rate) }, payCfg(s), done);
   return {
     employee: { id: emp.id, name: emp.name }, open: open ? { id: open.id, project: open.project, trade: open.trade, projectId: open.project_id, since: open.clock_in, primaryTradeId: open.primary_trade_id } : null,
-    projects: projects.map((p) => ({ id: p.id, name: p.name, address: p.address, trades: trades.filter((t) => t.project_id === p.id).map((t) => ({ id: t.id, name: t.name })) })),
+    projects: projects.map((p) => ({ id: p.id, name: p.name, address: [p.address, p.city, [p.state, p.zip].filter(Boolean).join(' ')].filter(Boolean).join(', '), trades: trades.filter((t) => t.project_id === p.id).map((t) => ({ id: t.id, name: t.name })) })),
     week: week.map((w) => ({ id: w.id, date: w.work_date, hours: Number(w.total_hours), status: w.status, project: w.project })),
     weekTotals: { hours: r2(wp.total), regular: r2(wp.reg), overtime: r2(wp.ot) },
     settings: { lunchMinutes: s.lunchMinutes, lunchAfterHours: s.lunchAfterHours },

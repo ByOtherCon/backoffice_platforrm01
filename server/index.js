@@ -90,7 +90,7 @@ route('GET', '/api/projects', async ({ user }) => { auth.requireRole(user, [...a
 route('GET', '/api/projects/home', async ({ req, user }) => { auth.requireRole(user, [...auth.MANAGE, 'Project Manager']); return projectsHome(user, auth.MANAGE.includes(user.role), q1(req, 'year')); });
 route('POST', '/api/projects', async ({ user, body }) => { manage(user); return pj.createProject(body); });
 route('GET', '/api/projects/:id', async ({ user, params }) => { await auth.requireProject(user, uuid(params.id)); return pj.getProject(params.id); });
-route('POST', '/api/projects/:id/locate', async ({ user, params }) => { manage(user); const g = await pj.locateProject(uuid(params.id), { enable: !!0 }); if (!g) throw new HttpError(422, 'The address could not be found on the map. Check the project address, or enter the coordinates by hand.'); return g; });
+route('POST', '/api/projects/:id/locate', async ({ user, params, body }) => { manage(user); const g = await pj.locateProject(uuid(params.id), { enable: !!body?.enable }); if (!g) throw new HttpError(422, 'The address could not be found on the map. Check the project address, or enter the coordinates by hand.'); return g; });
 route('PUT', '/api/projects/:id', async ({ user, params, body }) => { manage(user); await pj.updateProject(uuid(params.id), body); return { ok: true }; });
 route('POST', '/api/projects/:id/trades', async ({ user, params, body }) => { manage(user); await pj.addTrade(uuid(params.id), body); return { ok: true }; });
 route('PUT', '/api/projects/:id/trades/:tid', async ({ user, params, body }) => { manage(user); await pj.setTradeAmount(uuid(params.id), uuid(params.tid), body); return { ok: true }; });

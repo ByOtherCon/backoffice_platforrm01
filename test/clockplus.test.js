@@ -140,6 +140,7 @@ test('a jobsite is put on the map from its checked address, fenced to 3 miles by
   assert.equal((await call('POST', '/api/clock/in', { projectId: id }, a)).status, 403);   // no location, no clock-in
   assert.equal((await call('POST', '/api/clock/in', { projectId: id, gps: { lat: 28.5400, lng: -81.3790 } }, a)).status, 200);
   await q(`UPDATE projects SET lat=NULL, lng=NULL, geofence_required=false WHERE id=$1`, [id]); const g = await call('POST', `/api/projects/${id}/locate`, {}, office); assert.equal(g.status, 200); assert.equal(g.body.lat, 28.5383);
+  const on = await call('POST', `/api/projects/${id}/locate`, { enable: true }, office); assert.equal(on.status, 200); assert.equal((await call('GET', `/api/projects/${id}`, null, office)).body.project.geofenceRequired, true);   // the Labor tab button turns the fence on too
   assert.equal((await call('POST', `/api/projects/${id}/locate`, {}, pm)).status, 403);
   ad.setAddressFetch(async () => ({ ok: true, json: async () => ({ result: { addressMatches: [] } }) })); assert.equal((await call('POST', `/api/projects/${id}/locate`, {}, office)).status, 422);
 });

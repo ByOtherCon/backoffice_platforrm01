@@ -273,6 +273,11 @@ route('POST', '/api/threads', async ({ user, body }) => ms.createThread(staff(us
 route('GET', '/api/threads/:id', async ({ user, params }) => ms.getThread(staff(user), uuid(params.id)));
 route('POST', '/api/threads/:id/messages', async ({ user, params, body }) => ms.reply(staff(user), uuid(params.id), body));
 route('POST', '/api/threads/:id/members', async ({ user, params, body }) => { await ms.addMember(staff(user), uuid(params.id), body.userId); return { ok: true }; });
+route('GET', '/api/messages/badge', async ({ user }) => ms.badge(staff(user)));
+route('POST', '/api/todos/seen', async ({ user }) => { await ms.markSeen(staff(user)); return { ok: true }; });
+route('GET', '/api/todos/:id/comments', async ({ user, params }) => ms.listComments(staff(user), uuid(params.id)));
+route('POST', '/api/todos/:id/comments', async ({ user, params, body }) => ms.addComment(staff(user), uuid(params.id), body));
+route('POST', '/api/todos/:id/send', async ({ user, params, body }) => ms.sendAsMessage(staff(user), uuid(params.id), body));
 route('GET', '/api/todos', async ({ req, user }) => ms.listTodos(staff(user), { assignedTo: q1(req, 'assignedTo'), status: q1(req, 'status'), threadId: q1(req, 'threadId'), linkedKind: q1(req, 'kind'), linkedId: q1(req, 'id'), all: q1(req, 'all') === '1' }));
 route('POST', '/api/todos', async ({ user, body }) => ms.createTodo(staff(user), body));
 route('PUT', '/api/todos/:id', async ({ user, params, body }) => { await ms.updateTodo(staff(user), uuid(params.id), body); return { ok: true }; });

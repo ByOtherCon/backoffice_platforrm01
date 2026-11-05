@@ -25,7 +25,7 @@ function shell(active, content) {
   return h('div', {},
     h('header', { class: 'top' },
       h('a', { href: '#/dashboard' }, h('img', { class: 'logo', src: '/logo.png', alt: 'ByOther Construction' })),
-      h('nav', {}, nav.map(([id, label]) => h('a', { href: '#/' + id, class: active === id ? 'on' : '' }, label))),
+      h('nav', {}, nav.map(([id, label]) => h('a', { href: '#/' + id, class: active === id ? 'on' : '' }, label, id === 'messages' ? h('span', { class: 'bubble', id: 'msg-bubble', style: 'display:none' }) : ''))),
       h('button', { class: 'small', id: 'bell', onclick: openNotifications, title: 'Notifications' }, 'Alerts'),
       h('span', { class: 'who' }, `${state.user.name || state.user.email} · ${state.user.role}`),
       h('button', { class: 'small', onclick: changePasswordForm, title: 'Change your password' }, 'Password'),
@@ -455,6 +455,17 @@ async function clockSettingsCard() {
 }
 
 
+// The number on the Messages tab: unread messages, plus to-dos that are new to you, due today or overdue.
+async function updateMessagesBadge() {
+  const el = document.getElementById('msg-bubble'); if (!el) return;
+  try {
+    const b = await api('GET', '/messages/badge'); state.badge = b;
+    el.textContent = b.total > 99 ? '99+' : String(b.total); el.style.display = b.total ? 'inline-block' : 'none'; el.classList.toggle('hot', b.overdue > 0);
+    el.title = [b.unread ? `${b.unread} unread message${b.unread === 1 ? '' : 's'}` : '', b.newTodos ? `${b.newTodos} new to-do${b.newTodos === 1 ? '' : 's'}` : '', b.dueToday ? `${b.dueToday} due today` : '', b.overdue ? `${b.overdue} overdue` : ''].filter(Boolean).join(' · ');
+  } catch { el.style.display = 'none'; }
+}
+setInterval(() => { if (state.user) updateMessagesBadge(); }, 60000);
+
 // ------------------------------------------------------------------ alerts bell
 async function updateBell() {
   const el = document.getElementById('bell'); if (!el) return;
@@ -742,7 +753,9 @@ function linkPicker(initial = []) {
 const linkChips = (links) => (links || []).map((l) => h('a', { class: 'pill', style: 'margin-right:.3rem;text-decoration:none', href: l.route || '#', target: l.route && l.route.startsWith('/api') ? '_blank' : null }, l.label));
 async function messagesView(id) {
   const tab = id === 'todos' ? 'todos' : 'conv'; const err = h('div');
-  const tabs = h('div', { class: 'tabs' }, h('a', { class: tab === 'conv' ? 'on' : '', href: '#/messages' }, 'Conversations'), h('a', { class: tab === 'todos' ? 'on' : '', href: '#/messages/todos' }, 'To-do list'));
+  let b = { unread: 0, total: 0 }; try { b = await api('GET', '/messages/badge'); } catch { /* the tabs just show no numbers */ }
+  const bub = (n, hot) => (n ? h('span', { class: 'bubble' + (hot ? ' hot' : ''), style: 'display:inline-block' }, n) : '');
+  const tabs = h('div', { class: 'tabs' }, h('a', { class: tab === 'conv' ? 'on' : '', href: '#/messages' }, 'Conversations', bub(b.unread)), h('a', { class: tab === 'todos' ? 'on' : '', href: '#/messages/todos' }, 'To-Do List', bub(b.total - b.unread, b.overdue > 0)));
   return shell('messages', [h('h1', {}, 'Messages & to-dos'), tabs, err, tab === 'todos' ? await todosPanel(err) : await conversationsPanel(id, err)]);
 }
 async function conversationsPanel(openId, err) {
@@ -764,12 +777,34 @@ async function conversationsPanel(openId, err) {
   }
   return h('div', {}, h('div', { class: 'row', style: 'margin-bottom:.8rem' }, h('button', { class: 'primary', onclick: compose }, '+ New message')), h('div', { style: 'display:grid;grid-template-columns:minmax(220px,300px) 1fr;gap:1rem;align-items:start' }, list, pane));
 }
+const PRIORITY_PILL = { Urgent: 'Rejected', High: 'Pending', Normal: '', Low: '' };
+const priorityPill = (p) => (p && p !== 'Normal' ? h('span', { class: 'pill ' + (PRIORITY_PILL[p] || ''), style: 'margin-right:.4rem' }, p) : '');
 async function todoForm(todo, threadId, done) {
   const dir = await api('GET', '/team/directory');
-  const f = { title: h('input', { value: todo?.title ?? '' }), notes: h('textarea', { rows: 2 }), start: h('input', { type: 'date', value: todo?.startDate ?? '' }), due: h('input', { type: 'date', value: todo?.dueDate ?? '' }), who: h('select', {}, dir.map((u) => h('option', { value: u.id }, u.name || u.email))) };
-  f.notes.value = todo?.notes ?? ''; f.who.value = todo?.assignedToId || state.user.id; const lp = linkPicker([]);
-  formModal(todo ? 'Edit to-do' : 'Add a to-do', [field('What needs doing', f.title, 'wide'), field('Notes', f.notes, 'wide'), field('Start', f.start), field('Due', f.due), field('Assign to', f.who), field('Attach records', lp.el, 'wide')],
-    async () => { const b = { title: f.title.value, notes: f.notes.value, startDate: f.start.value || null, dueDate: f.due.value || null, assignedToId: f.who.value, links: lp.get() }; if (todo) await api('PUT', '/todos/' + todo.id, b); else await api('POST', '/todos', { ...b, threadId }); done(); }, todo ? 'Save' : 'Add to-do');
+  const f = { title: h('input', { value: todo?.title ?? '' }), notes: h('textarea', { rows: 2 }), start: h('input', { type: 'date', value: todo?.startDate ?? todayStr() }), due: h('input', { type: 'date', value: todo?.dueDate ?? '' }), who: h('select', {}, dir.map((u) => h('option', { value: u.id }, u.name || u.email))),
+    pri: h('select', {}, ['Low', 'Normal', 'High', 'Urgent'].map((v) => h('option', { value: v }, v))) };
+  f.notes.value = todo?.notes ?? ''; f.who.value = todo?.assignedToId || state.user.id; f.pri.value = todo?.priority || 'Normal'; const lp = linkPicker([]);
+  formModal(todo ? 'Edit To-Do' : 'Add a To-Do', [field('What needs doing', f.title, 'wide'), field('Notes', f.notes, 'wide'), field('Start', f.start), field('Due', f.due), field('Priority', f.pri), field('Assign to', f.who),
+    h('div', { class: 'wide' }, h('label', {}, 'Attach Records (Optional)'), lp.el, h('p', { class: 'muted', style: 'font-size:12px;margin:.2rem 0 0' }, 'Leave this empty for a general to-do that is not about any one project or record.'))],
+    async () => { const b = { title: f.title.value, notes: f.notes.value, startDate: f.start.value || null, dueDate: f.due.value || null, assignedToId: f.who.value, priority: f.pri.value, links: lp.get() }; if (todo) await api('PUT', '/todos/' + todo.id, b); else await api('POST', '/todos', { ...b, threadId }); done(); }, todo ? 'Save' : 'Add To-Do');
+}
+// One to-do opened: its details, the notes log with comments from different people, and sending it on as a message.
+async function todoDetail(t, done) {
+  const err = h('div'), logBox = h('div'), dir = await api('GET', '/team/directory');
+  const draw = async () => { const rows = await api('GET', `/todos/${t.id}/comments`); logBox.replaceChildren(...(rows.length ? rows.map((c) => h('div', { style: `margin:.35rem 0;padding:.45rem .7rem;border-radius:8px;background:${c.kind === 'System' ? 'transparent' : 'var(--navy-soft)'}` }, h('div', { class: 'muted', style: 'font-size:12px' }, `${c.kind === 'System' ? 'Log' : c.who || 'Someone'} · ${new Date(c.at).toLocaleString()}`), h('div', { style: `white-space:pre-wrap;${c.kind === 'System' ? 'color:var(--muted);font-size:13px' : ''}` }, c.body))) : [h('p', { class: 'muted' }, 'Nothing logged yet.')])); };
+  const text = h('textarea', { rows: 2, placeholder: 'Add a comment…' });
+  const add = guard(err, async () => { if (!text.value.trim()) return; await api('POST', `/todos/${t.id}/comments`, { body: text.value }); text.value = ''; await draw(); });
+  const sendOn = () => {
+    const others = dir.filter((u) => u.id !== state.user.id), boxes = others.map((u) => { const c = h('input', { type: 'checkbox' }); c._id = u.id; return [u, c]; }), note = h('textarea', { rows: 2, placeholder: 'Optional note to go with it' });
+    formModal('Send To-Do As A Message', [field('To', h('div', {}, boxes.map(([u, c]) => h('label', { style: 'display:block;text-transform:none;letter-spacing:0;font-size:15px;font-weight:400;margin:.15rem 0' }, c, ` ${u.name || u.email}${u.title ? ' · ' + u.title : ''}`))), 'wide'), field('Note', note, 'wide')],
+      async () => { const r = await api('POST', `/todos/${t.id}/send`, { userIds: boxes.filter(([, c]) => c.checked).map(([, c]) => c._id), body: note.value }); location.hash = '#/messages/' + r.threadId; done(); }, 'Send');
+  };
+  const bg = modal(t.title, h('div', {}, err,
+    h('div', { class: 'row', style: 'margin-bottom:.4rem' }, priorityPill(t.priority), h('span', { class: 'muted' }, `Assigned to ${t.assignedTo || '—'} · starts ${t.startDate || '—'} · due ${t.dueDate || '—'}${t.overdue ? ' · OVERDUE' : ''} · added by ${t.createdBy}`)),
+    t.notes ? h('p', { style: 'white-space:pre-wrap' }, t.notes) : '', t.links.length ? h('div', { style: 'margin:.3rem 0' }, linkChips(t.links)) : '',
+    h('h3', { style: 'margin:.9rem 0 .2rem' }, 'Notes And Comments'), logBox, text,
+    h('div', { class: 'row', style: 'margin-top:.6rem;justify-content:space-between' }, h('div', { class: 'row' }, h('button', { onclick: () => { bg.remove(); todoForm(t, null, done); } }, 'Edit'), h('button', { onclick: sendOn }, 'Send As Message')), h('button', { class: 'primary', onclick: add }, 'Add Comment'))));
+  draw().catch((e) => notice(err, e.message));
 }
 async function todosPanel(err) {
   const view = state.todoView || { who: 'me', status: 'Open' };
@@ -777,9 +812,10 @@ async function todosPanel(err) {
   const set = (k, v) => { state.todoView = { ...view, [k]: v }; render(); };
   const who = h('select', { onchange: (e) => set('who', e.target.value) }, [['me', 'Mine'], ['all', 'Everyone']].map(([v, l]) => h('option', { value: v }, l))); who.value = view.who;
   const status = h('select', { onchange: (e) => set('status', e.target.value) }, ['Open', 'Done'].map((v) => h('option', { value: v }, v))); status.value = view.status;
-  return h('div', { class: 'card' }, h('div', { class: 'row spread' }, h('div', { class: 'row' }, who, status), h('button', { class: 'primary', onclick: () => todoForm(null, null, render) }, '+ Add to-do')),
-    rows.length ? h('div', { class: 'scroll', style: 'margin-top:.6rem' }, h('table', {}, h('thead', {}, h('tr', {}, ['', 'To-do', 'Attached', 'Assigned to', 'Starts', 'Due', ''].map((t) => h('th', {}, t)))),
-      h('tbody', {}, rows.map((t) => h('tr', {}, h('td', {}, h('input', { type: 'checkbox', checked: t.status === 'Done' ? true : null, onchange: guard(err, async (e) => { await api('PUT', '/todos/' + t.id, { status: e.target.checked ? 'Done' : 'Open' }); render(); }) })), h('td', { style: 'white-space:normal' }, t.title, t.notes ? h('div', { class: 'muted', style: 'font-size:13px' }, t.notes) : ''), h('td', { style: 'white-space:normal' }, linkChips(t.links)), h('td', {}, t.assignedTo || '—'), h('td', {}, t.startDate || '—'),
+  if (view.who === 'me' && view.status === 'Open' && rows.some((t) => t.isNew)) { await api('POST', '/todos/seen', {}).catch(() => {}); }   // opening the list is seeing what is new
+  return h('div', { class: 'card' }, h('div', { class: 'row spread' }, h('div', { class: 'row' }, who, status), h('button', { class: 'primary', onclick: () => todoForm(null, null, render) }, '+ Add To-Do')),
+    rows.length ? h('div', { class: 'scroll', style: 'margin-top:.6rem' }, h('table', {}, h('thead', {}, h('tr', {}, ['', 'To-Do', 'Priority', 'Attached', 'Assigned To', 'Starts', 'Due', ''].map((t) => h('th', {}, t)))),
+      h('tbody', {}, rows.map((t) => h('tr', {}, h('td', {}, h('input', { type: 'checkbox', checked: t.status === 'Done' ? true : null, onchange: guard(err, async (e) => { await api('PUT', '/todos/' + t.id, { status: e.target.checked ? 'Done' : 'Open' }); render(); }) })), h('td', { style: 'white-space:normal' }, h('a', { href: 'javascript:void(0)', style: 'text-decoration:none;color:inherit;font-weight:600', onclick: () => todoDetail(t, render) }, t.title), t.isNew ? h('span', { class: 'pill Pending', style: 'margin-left:.4rem' }, 'New') : '', t.notes ? h('div', { class: 'muted', style: 'font-size:13px' }, t.notes) : ''), h('td', {}, priorityPill(t.priority) || h('span', { class: 'muted' }, 'Normal')), h('td', { style: 'white-space:normal' }, t.links.length ? linkChips(t.links) : h('span', { class: 'muted' }, 'General')), h('td', {}, t.assignedTo || '—'), h('td', {}, t.startDate || '—'),
         h('td', {}, t.dueDate || '—', t.overdue ? h('span', { class: 'pill Expired', style: 'margin-left:.4rem' }, 'Overdue') : ''), h('td', {}, h('button', { class: 'small', onclick: () => todoForm(t, null, render) }, 'Edit'), ' ', h('button', { class: 'small danger', onclick: guard(err, async () => { if (confirm('Delete this to-do?')) { await api('DELETE', '/todos/' + t.id); render(); } }) }, 'Delete'))))))) : h('p', { class: 'muted', style: 'margin-top:.8rem' }, view.status === 'Open' ? 'Nothing open. Add a to-do for yourself or anyone on the team.' : 'Nothing completed yet.'));
 }
 
@@ -959,7 +995,7 @@ async function render() {
   try {
     if (['admin'].includes(page) || (page === 'projects' && !id)) [state.trades, state.gcs] = await Promise.all([api('GET', '/admin/trades'), api('GET', '/admin/gcs')]).catch(() => [state.trades, state.gcs]);
     const view = page === 'estimating' ? await estimatingView(id, tab) : page === 'messages' ? await messagesView(id) : page === 'quickbooks' ? await quickbooksView() : page === 'admin' ? await adminView(id) : page === 'receipts' || (page === 'projects' && id === 'receipts') || (page === 'projects' && !id && !state.user.areas?.includes('projects') && state.user.areas?.includes('costs')) ? await receiptsView() : page === 'compliance' ? await complianceView() : page === 'projects' ? (id ? await projectView(id, tab) : await projectsView()) : page === 'reports' ? await reportsView() : await dashboardView();
-    if (token === rendering) { $app.replaceChildren(view); updateBell(); }
+    if (token === rendering) { $app.replaceChildren(view); updateBell(); updateMessagesBadge(); }
   } catch (e) { if (token === rendering && state.user) $app.replaceChildren(shell(page, h('div', { class: 'err' }, e.message))); }
 }
 addEventListener('hashchange', render);

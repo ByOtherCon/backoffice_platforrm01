@@ -1,6 +1,7 @@
 import { q, tx } from './db.js';
 import { bad, text, dateStr, HttpError } from './http.js';
 import { notifyUser } from './compliance.js';
+import { todayEastern } from '../src/lib/estimating.ts';
 
 export const STAFF = ['Super Admin', 'Sub Admin', 'Exec Assistant', 'Estimator', 'Project Manager'];
 // What a message or to-do can point at. `label` is shown to the user; `route` is where it opens.
@@ -9,7 +10,7 @@ export const LINKABLE = {
   document: { sql: `SELECT name AS label FROM documents WHERE id=$1 AND category <> 'Employee ID'`, route: (id) => `/api/documents/${id}/file` },
   vendor: { sql: 'SELECT name AS label FROM subcontractors WHERE id=$1', route: () => '#/compliance' },
   supplier: { sql: 'SELECT name AS label FROM suppliers WHERE id=$1', route: () => '#/admin' },
-  receipt: { sql: `SELECT s.name || ' ' || si.reference AS label FROM supplier_invoices si JOIN suppliers s ON s.id=si.supplier_id WHERE si.id=$1`, route: () => '#/receipts' },
+  receipt: { sql: `SELECT s.name || ' ' || si.reference AS label FROM supplier_invoices si JOIN suppliers s ON s.id=si.supplier_id WHERE si.id=$1`, route: () => '#/projects/receipts' },
   payment_request: { sql: `SELECT s.name || ' payment ' || pr.amount AS label FROM payment_requests pr JOIN sub_invoices si ON si.id=pr.sub_invoice_id JOIN sub_commitments sc ON sc.id=si.commitment_id JOIN subcontractors s ON s.id=sc.subcontractor_id WHERE pr.id=$1`, route: () => '#/compliance' },
 };
 export const registerLinkable = (kind, spec) => { LINKABLE[kind] = spec; };
@@ -90,7 +91,7 @@ export async function addMember(user, id, userId) {
 
 // ------------------------------------------------------------------ to-dos
 const todoShape = (r, links) => ({ id: r.id, title: r.title, notes: r.notes, startDate: r.start_date, dueDate: r.due_date, status: r.status, createdBy: r.created_by_name, createdById: r.created_by, assignedTo: r.assigned_to_name, assignedToId: r.assigned_to, threadId: r.thread_id, doneAt: r.done_at,
-  overdue: r.status === 'Open' && !!r.due_date && r.due_date < new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date()), links: links.filter((l) => l.ownerId === r.id) });
+  overdue: r.status === 'Open' && !!r.due_date && r.due_date < new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date()), priority: r.priority, isNew: r.status === 'Open' && !!r.assigned_to && r.assigned_to !== r.created_by && !r.seen_at, links: links.filter((l) => l.ownerId === r.id) });
 export async function listTodos(user, { assignedTo, status, threadId, linkedKind, linkedId, all } = {}) {
   const w = [], v = [];
   if (status) { v.push(status); w.push(`t.status=$${v.length}`); }
@@ -98,10 +99,11 @@ export async function listTodos(user, { assignedTo, status, threadId, linkedKind
   if (assignedTo === 'me') { v.push(user.id); w.push(`t.assigned_to=$${v.length}`); } else if (assignedTo) { v.push(assignedTo); w.push(`t.assigned_to=$${v.length}`); }
   if (linkedKind && linkedId) { v.push(linkedKind, linkedId); w.push(`EXISTS (SELECT 1 FROM record_links rl WHERE rl.owner_kind='todo' AND rl.owner_id=t.id AND rl.kind=$${v.length - 1} AND rl.record_id=$${v.length})`); }
   if (!all && !assignedTo && !threadId && !linkedKind) { v.push(user.id); w.push(`(t.assigned_to=$${v.length} OR t.created_by=$${v.length})`); }
-  const rows = await q(`SELECT t.*, c.name AS created_by_name, a.name AS assigned_to_name FROM todos t JOIN app_users c ON c.id=t.created_by LEFT JOIN app_users a ON a.id=t.assigned_to ${w.length ? 'WHERE ' + w.join(' AND ') : ''} ORDER BY (t.status='Done'), t.due_date NULLS LAST, t.created_at DESC LIMIT 500`, v);
+  const rows = await q(`SELECT t.*, c.name AS created_by_name, a.name AS assigned_to_name FROM todos t JOIN app_users c ON c.id=t.created_by LEFT JOIN app_users a ON a.id=t.assigned_to ${w.length ? 'WHERE ' + w.join(' AND ') : ''} ORDER BY (t.status='Done'), CASE t.priority WHEN 'Urgent' THEN 0 WHEN 'High' THEN 1 WHEN 'Normal' THEN 2 ELSE 3 END, t.due_date NULLS LAST, t.created_at DESC LIMIT 500`, v);
   const links = await linksOf('todo', rows.map((r) => r.id));
   return rows.map((r) => todoShape(r, links));
 }
+export const PRIORITIES = ['Low', 'Normal', 'High', 'Urgent'];
 const todoFields = (b, creating) => {
   const v = {};
   if (creating || b.title !== undefined) v.title = text(b.title, 'To-do', { max: 300 });
@@ -109,15 +111,19 @@ const todoFields = (b, creating) => {
   if (b.startDate !== undefined) v.start_date = dateStr(b.startDate, 'Start date');
   if (b.dueDate !== undefined) v.due_date = dateStr(b.dueDate, 'Due date');
   if (b.assignedToId !== undefined) v.assigned_to = b.assignedToId || null;
+  if (b.priority !== undefined) { if (!PRIORITIES.includes(b.priority)) throw bad('Choose Low, Normal, High or Urgent.'); v.priority = b.priority; }
   return v;
 };
 export async function createTodo(user, b) {
   const v = todoFields(b, true); if (v.assigned_to === undefined) v.assigned_to = user.id;
+  // the start date is today unless one is chosen (a to-do already overdue starts on its own due date, which cannot be before the start)
+  if (!v.start_date) { const today = todayEastern(); v.start_date = v.due_date && v.due_date < today ? v.due_date : today; }
   const r = await tx(async (t) => {
     if (v.assigned_to && !(await t('SELECT 1 FROM app_users WHERE id=$1 AND active AND role = ANY($2::text[])', [v.assigned_to, STAFF])).length) throw bad('Choose someone from the team list.');
     if (b.threadId && !(await t('SELECT 1 FROM thread_members WHERE thread_id=$1 AND user_id=$2', [b.threadId, user.id])).length) throw bad('Conversation not found.');
     const links = await resolveLinks(t, b.links);
-    const [row] = await t('INSERT INTO todos(title,notes,start_date,due_date,assigned_to,created_by,thread_id) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id', [v.title, v.notes ?? null, v.start_date ?? null, v.due_date ?? null, v.assigned_to, user.id, b.threadId || null]);
+    const [row] = await t('INSERT INTO todos(title,notes,start_date,due_date,assigned_to,created_by,thread_id,priority,seen_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id', [v.title, v.notes ?? null, v.start_date ?? null, v.due_date ?? null, v.assigned_to, user.id, b.threadId || null, v.priority ?? 'Normal', v.assigned_to === user.id ? new Date() : null]);
+    await note(t, row.id, null, `Added by ${user.name || user.email}${v.assigned_to && v.assigned_to !== user.id ? ' and assigned to ' + ((await t('SELECT name FROM app_users WHERE id=$1', [v.assigned_to]))[0]?.name || 'a teammate') : ''}.`);
     await saveLinks(t, 'todo', row.id, links); return row.id;
   }).catch((e) => { throw e.code === '23514' ? bad('The due date cannot be before the start date.') : e; });
   if (v.assigned_to && v.assigned_to !== user.id) await notifyUser(v.assigned_to, { kind: 'todo', title: `New to-do from ${user.name || user.email}`, body: v.title, link: '#/messages/todos', dedupe: `todo:${r}` });
@@ -129,6 +135,11 @@ export async function updateTodo(user, id, b) {
   const keys = Object.keys(v); if (!keys.length && !b.links) throw bad('Nothing to save.');
   await tx(async (t) => {
     const [cur] = await t('SELECT * FROM todos WHERE id=$1 FOR UPDATE', [id]); if (!cur) throw new HttpError(404, 'To-do not found.');
+    const who = user.name || user.email, nameOf = async (uid) => (uid ? (await t('SELECT name FROM app_users WHERE id=$1', [uid]))[0]?.name || 'a teammate' : 'nobody');
+    if (v.status && v.status !== cur.status) await note(t, id, null, v.status === 'Done' ? `Marked done by ${who}.` : `Reopened by ${who}.`);
+    if (v.assigned_to !== undefined && v.assigned_to !== cur.assigned_to) { await note(t, id, null, `Assigned to ${await nameOf(v.assigned_to)} by ${who}.`); v.seen_at = v.assigned_to === user.id ? new Date() : null; }
+    if (v.priority && v.priority !== cur.priority) await note(t, id, null, `Priority changed from ${cur.priority} to ${v.priority} by ${who}.`);
+    if (v.due_date !== undefined && String(v.due_date ?? '') !== String(cur.due_date ? new Date(cur.due_date).toISOString().slice(0, 10) : '')) await note(t, id, null, `Due date ${v.due_date ? 'set to ' + v.due_date : 'cleared'} by ${who}.`);
     if (v.assigned_to && !(await t('SELECT 1 FROM app_users WHERE id=$1 AND active AND role = ANY($2::text[])', [v.assigned_to, STAFF])).length) throw bad('Choose someone from the team list.');
     if (keys.length) await t(`UPDATE todos SET ${keys.map((k, i) => `${k}=$${i + 2}`).join(',')} WHERE id=$1`, [id, ...keys.map((k) => v[k])]);
     if (b.links) await saveLinks(t, 'todo', id, await resolveLinks(t, b.links));
@@ -147,3 +158,47 @@ export async function forRecord(kind, id) {
   const msgs = await q(`SELECT DISTINCT th.id, th.subject, th.updated_at FROM record_links rl JOIN messages m ON rl.owner_kind='message' AND rl.owner_id=m.id JOIN threads th ON th.id=m.thread_id WHERE rl.kind=$1 AND rl.record_id=$2 ORDER BY th.updated_at DESC LIMIT 20`, [kind, id]);
   return { todos, threads: msgs };
 }
+
+// ------------------------------------------------------------------ to-do notes log, comments, sending, and the alert bubble
+// System lines (who did what) and people's comments share one log on each to-do.
+const note = (t, todoId, userId, body) => t(`INSERT INTO todo_comments(todo_id,user_id,kind,body) VALUES ($1,$2,$3,$4)`, [todoId, userId, userId ? 'Comment' : 'System', body]);
+async function canSee(user, todoId) {
+  const [t] = await q(`SELECT created_by, assigned_to, thread_id FROM todos WHERE id=$1`, [todoId]); if (!t) throw new HttpError(404, 'To-do not found.');
+  if (t.created_by === user.id || t.assigned_to === user.id || ['Super Admin', 'Sub Admin'].includes(user.role)) return t;
+  if (t.thread_id && (await q('SELECT 1 FROM thread_members WHERE thread_id=$1 AND user_id=$2', [t.thread_id, user.id])).length) return t;
+  throw new HttpError(403, 'You can only open to-dos that were assigned to you, that you added, or that came up in a conversation you are in.');
+}
+export async function listComments(user, todoId) {
+  await canSee(user, todoId);
+  const rows = await q(`SELECT c.id, c.kind, c.body, c.created_at, u.name AS who FROM todo_comments c LEFT JOIN app_users u ON u.id=c.user_id WHERE c.todo_id=$1 ORDER BY c.created_at, c.id`, [todoId]);
+  return rows.map((r) => ({ id: r.id, kind: r.kind, body: r.body, at: r.created_at, who: r.who }));
+}
+export async function addComment(user, todoId, b) {
+  const body = text(b.body, 'Comment', { max: 2000 }); const t = await canSee(user, todoId);
+  await tx(async (c) => { await note(c, todoId, user.id, body); });
+  const [row] = await q('SELECT title FROM todos WHERE id=$1', [todoId]);
+  for (const uid of new Set([t.created_by, t.assigned_to].filter((x) => x && x !== user.id))) await notifyUser(uid, { kind: 'todo', title: `${user.name || user.email} commented on a to-do`, body: `${row.title}: ${body.slice(0, 120)}`, link: '#/messages/todos', dedupe: `todocomment:${todoId}:${uid}:${Date.now()}` });
+  return { ok: true };
+}
+// Sends a to-do to other people as a message conversation; the to-do is attached to that conversation.
+export async function sendAsMessage(user, todoId, b) {
+  const t = await canSee(user, todoId); const [todo] = await q('SELECT title, notes, due_date, priority FROM todos WHERE id=$1', [todoId]);
+  const ids = Array.isArray(b.userIds) ? b.userIds.filter((x) => x !== user.id) : []; if (!ids.length) throw bad('Choose who to send it to.');
+  const extra = text(b.body, 'Message', { max: 3000, required: false });
+  const due = todo.due_date ? ` Due ${new Date(todo.due_date).toISOString().slice(0, 10)}.` : '';
+  const body = `${extra ? extra + '\n\n' : ''}To-do: ${todo.title}\nPriority: ${todo.priority}.${due}${todo.notes ? '\n' + todo.notes : ''}`;
+  const th = await createThread(user, { subject: `To-do: ${todo.title}`.slice(0, 200), body, memberIds: ids });
+  await q('UPDATE todos SET thread_id=$2 WHERE id=$1', [todoId, th.id]);
+  const names = (await q('SELECT name FROM app_users WHERE id = ANY($1::uuid[])', [ids])).map((r) => r.name).join(', ');
+  await tx(async (c) => { await note(c, todoId, null, `Sent to ${names} as a message by ${user.name || user.email}.`); });
+  return { threadId: th.id };
+}
+// The bubble on the Messages tab: unread messages, plus to-dos that are new to you, due today or overdue.
+export async function badge(user) {
+  const today = todayEastern();
+  const [m] = await q(`SELECT COALESCE(SUM((SELECT COUNT(*) FROM messages x WHERE x.thread_id=tm.thread_id AND x.sender_id <> $1 AND (tm.last_read_at IS NULL OR x.created_at > tm.last_read_at))),0)::int AS n FROM thread_members tm WHERE tm.user_id=$1`, [user.id]);
+  const [t] = await q(`SELECT count(*) FILTER (WHERE seen_at IS NULL AND created_by <> $1)::int AS fresh, count(*) FILTER (WHERE due_date = $2)::int AS today, count(*) FILTER (WHERE due_date < $2)::int AS overdue,
+                              count(*) FILTER (WHERE (seen_at IS NULL AND created_by <> $1) OR due_date <= $2)::int AS alerts FROM todos WHERE assigned_to=$1 AND status='Open'`, [user.id, today]);
+  return { unread: m.n, newTodos: t.fresh, dueToday: t.today, overdue: t.overdue, total: m.n + t.alerts };
+}
+export const markSeen = (user) => q('UPDATE todos SET seen_at=now() WHERE assigned_to=$1 AND seen_at IS NULL', [user.id]);

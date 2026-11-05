@@ -34,12 +34,14 @@ export async function savePrefs(user, key, value) {
   return value;
 }
 
+// The database clock is UTC, a day ahead of Florida in the evening, so SQL asks for the Eastern date explicitly.
+const ET_TODAY = "(now() AT TIME ZONE 'America/New_York')::date";
 async function series() {
-  const m = (col) => `to_char(${col},'YYYY-MM')`, since = `date_trunc('month', current_date) - interval '11 months'`;
+  const m = (col) => `to_char(${col},'YYYY-MM')`, since = `date_trunc('month', ${ET_TODAY}) - interval '11 months'`;
   const [rev, sub, sup, lab] = await Promise.all([
     q(`SELECT ${m('invoice_date')} AS m, SUM(amount)::float AS v FROM client_invoices WHERE invoice_date >= ${since} GROUP BY 1`),
-    q(`SELECT ${m('COALESCE(invoice_date, current_date)')} AS m, SUM(amount)::float AS v FROM sub_invoices WHERE COALESCE(invoice_date, current_date) >= ${since} GROUP BY 1`),
-    q(`SELECT ${m('COALESCE(si.invoice_date, current_date)')} AS m, SUM(sa.amount)::float AS v FROM supplier_allocations sa JOIN supplier_invoices si ON si.id=sa.supplier_invoice_id WHERE sa.project_id IS NOT NULL AND COALESCE(si.invoice_date, current_date) >= ${since} GROUP BY 1`),
+    q(`SELECT ${m(`COALESCE(invoice_date, ${ET_TODAY})`)} AS m, SUM(amount)::float AS v FROM sub_invoices WHERE COALESCE(invoice_date, ${ET_TODAY}) >= ${since} GROUP BY 1`),
+    q(`SELECT ${m(`COALESCE(si.invoice_date, ${ET_TODAY})`)} AS m, SUM(sa.amount)::float AS v FROM supplier_allocations sa JOIN supplier_invoices si ON si.id=sa.supplier_invoice_id WHERE sa.project_id IS NOT NULL AND COALESCE(si.invoice_date, ${ET_TODAY}) >= ${since} GROUP BY 1`),
     q(`SELECT ${m('work_date')} AS m, SUM(COALESCE(pay, hours*rate))::float AS v FROM labor_entries WHERE work_date >= ${since} GROUP BY 1`)]);
   const today = todayEastern(), cur = monthKey(today), months = Array.from({ length: 12 }, (_, i) => addMonths(cur, i - 11));
   const get = (rows, k) => rows.find((r) => r.m === k)?.v ?? 0;
@@ -56,7 +58,7 @@ export async function widgetData(user, { period = 'month' } = {}) {
   const ok = new Set(allowedWidgets(user.role)), out = { role: user.role, widgets: [...ok] }, today = todayEastern(), cur = monthKey(today), year = Number(today.slice(0, 4)), mgr = MANAGE.includes(user.role);
   const jobs = [];
   if (ok.has('estimating')) jobs.push((async () => { const l = await es.list({ tab: 'proposals' }); const i = await es.insights(); out.estimating = { ...l.stats, winRate: i.overall.winRate, pipelineOpen: i.pipeline.open, pipelineValue: i.pipeline.value, expectedAwards: i.pipeline.expected, enough: i.enough }; })());
-  if (ok.has('presence')) jobs.push((async () => { const [act, wk] = await Promise.all([tc.activeNow(), q(`SELECT COALESCE(SUM(total_hours),0)::float AS hours FROM time_entries WHERE status='complete' AND work_date >= date_trunc('week', current_date)`)]); out.presence = { active: act.map((a) => ({ employee: a.employee, project: a.project, trade: a.trade, since: a.clock_in, late: a.late_in })), weekHours: wk[0].hours }; })());
+  if (ok.has('presence')) jobs.push((async () => { const [act, wk] = await Promise.all([tc.activeNow(), q(`SELECT COALESCE(SUM(total_hours),0)::float AS hours FROM time_entries WHERE status='complete' AND work_date >= date_trunc('week', ${ET_TODAY})`)]); out.presence = { active: act.map((a) => ({ employee: a.employee, project: a.project, trade: a.trade, since: a.clock_in, late: a.late_in })), weekHours: wk[0].hours }; })());
   if (ok.has('costing') || ok.has('projects')) jobs.push((async () => { const [d, ps] = await Promise.all([portfolio(user, mgr), listProjects(user, mgr)]); if (ok.has('costing')) out.costing = d;
     out.projects = ps.filter((p) => p.active).sort((a, b) => b.contract - a.contract).slice(0, 12).map((p) => ({ id: p.id, name: p.name, gc: p.gc, contract: p.contract, billed: p.billed, currentlyDue: p.currentlyDue, projectedProfit: p.projectedProfit, marginPct: p.marginPct })); })());
   if (ok.has('chart') || ok.has('forecast')) jobs.push((async () => {

@@ -7,6 +7,7 @@ const { pool, q } = await import('../server/db.js');
 const { server } = await import('../server/index.js');
 const { hashPassword } = await import('../server/auth.js');
 const cp = await import('../server/compliance.js');
+const { todayEastern, shift } = await import('../src/lib/estimating.ts');
 
 let base, owner, sub, asst, pm, pid, demo, vendorId, bill, com;
 before(async () => {
@@ -150,7 +151,7 @@ test('notices to owner: 45-day deadline, validation, year view with rollover, re
   assert.equal((await call('PUT', `/api/projects/${pid}/nto`, { documentUrl: 'http://x.example' }, asst)).status, 400);
   assert.equal((await call('PUT', `/api/projects/${pid}/nto`, { firstFurnished: '2026-02-30' }, asst)).status, 400);
   // reminder when the deadline is close, then a rollover into the next year while still unsent
-  const rel = (n) => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date(Date.now() + n * 864e5));   // dates relative to the real (Eastern) today, like the app
+  const rel = (n) => shift(todayEastern(), n);   // calendar days from the Eastern today, like the app (never n x 24 hours: a clock change would move the day)
   await call('PUT', `/api/projects/${pid}/nto`, { firstFurnished: rel(-41) }, asst);   // 45-day deadline is 4 days away
   assert.ok((await cp.scanNtos(rel(0))) >= 3);
   assert.ok((await call('GET', '/api/notifications', null, owner)).body.some((x) => /Notice to Owner due in 4 days/.test(x.title)));

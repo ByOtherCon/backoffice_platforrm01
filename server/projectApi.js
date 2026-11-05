@@ -57,7 +57,7 @@ export async function createProject(b, outerTx = null) {
   try {
     const body = async (t) => {
       const [p] = await t(`INSERT INTO projects(name,gc_id,client,address,retainage_pct,proposal_id,logged_date,start_date)
-                           VALUES ($1,$2,$3,$4,$5,$6,current_date,$7) RETURNING id`,
+                           VALUES ($1,$2,$3,$4,$5,$6,(now() AT TIME ZONE 'America/New_York')::date,$7) RETURNING id`,
         [name, b.gcId, client, address, retainage, text(b.proposalId, 'Proposal ID', { max: 40, required: false }) || null, dateStr(b.startDate, 'Start date')]);
       for (const tr of trades) await t('INSERT INTO project_trades(project_id,trade_id,original_amount) VALUES ($1,$2,$3)', [p.id, tr.tradeId, tr.amount]);
       await t('INSERT INTO project_ntos(project_id, year) VALUES ($1, $2)', [p.id, Number((dateStr(b.startDate, 'Start date') || new Date().toISOString()).slice(0, 4))]);

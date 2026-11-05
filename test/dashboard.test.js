@@ -5,9 +5,16 @@ process.env.DATABASE_URL ||= 'postgres://bo_test:bo_test_pw@localhost/byother_te
 const { pool, q } = await import('../server/db.js');
 const { server } = await import('../server/index.js');
 const { hashPassword } = await import('../server/auth.js');
+const { todayEastern, shift } = await import('../src/lib/estimating.ts');
+const { addMonths } = await import('../src/lib/forecast.ts');
 
 let base, owner, sub, asst, est, pm, field, pid, pid2, ptA;
-const ago = (days) => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date(Date.now() - days * 864e5));   // Eastern, like the app
+// Billing history is pinned to calendar months (never "N days ago", which lands in a different month on the 1st-4th of a month).
+const CUR = todayEastern().slice(0, 7), mid = (back) => `${addMonths(CUR, -back)}-15`, FIRST_PREV = `${addMonths(CUR, -1)}-01`;
+const I3_DUE = ago31() >= FIRST_PREV ? ago31() : FIRST_PREV;   // the 90k invoice is about a month past due; a due date cannot precede its invoice date
+const bucketOf = (due) => { const d = Math.round((Date.parse(todayEastern()) - Date.parse(due)) / 864e5); return d <= 0 ? 'Not due' : d <= 30 ? '1-30 days' : d <= 60 ? '31-60 days' : '61+ days'; };
+function ago31() { return shift(todayEastern(), -31); }
+const ago = (days) => shift(todayEastern(), -days);   // calendar days before the Eastern today, like the app (never days x 24 hours: a clock change would move the day)
 before(async () => {
   await pool.query('DROP SCHEMA public CASCADE; CREATE SCHEMA public;'); await applyAll(pool);
   const h = await hashPassword('correct horse battery');
@@ -34,8 +41,13 @@ test('setup: two projects, billing history, costs, a clocked-in employee', async
   const e = (await call('POST', '/api/admin/employees', { name: 'Alex', hourly_rate: 20 }, owner)).body; await call('PUT', `/api/admin/employees/${e.id}/pin`, { pin: '4821' }, owner);
   const r = await fetch(base + '/api/clock/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ employeeId: e.id, pin: '4821' }) }); field = r.headers.get('set-cookie').split(';')[0];
   assert.equal((await call('POST', '/api/clock/in', { projectId: pid, projectTradeId: ptA }, field)).status, 200);
-  // billing history: 3 completed months at 30k/60k/90k plus this month 10k; the 90k invoice is 31 days past due and unpaid
-  for (const [n, d, due, amt] of [['I1', 95, null, 30000], ['I2', 65, null, 60000], ['I3', 35, ago(31), 90000], ['I4', 0, null, 10000]]) await q(`INSERT INTO client_invoices(project_id,project_trade_id,number,invoice_date,due_date,amount,retainage_held) VALUES ($1,$2,$3,$4,$5,$6,0)`, [pid, ptA, n, ago(d), due, amt]);
+  // billing history: 3 completed months at 30k/60k/90k plus this month 10k; the 90k invoice is about a month past due and unpaid
+  for (const [n, date, due, amt] of [['I1', mid(3), null, 30000], ['I2', mid(2), null, 60000], ['I3', FIRST_PREV, I3_DUE, 90000], ['I4', ago(0), null, 10000]]) await q(`INSERT INTO client_invoices(project_id,project_trade_id,number,invoice_date,due_date,amount,retainage_held) VALUES ($1,$2,$3,$4,$5,$6,0)`, [pid, ptA, n, date, due, amt]);
+});
+
+test('dates the database stamps are Eastern, like the rest of the app (not the UTC date, which is a day ahead in the evening)', async () => {
+  const [p] = await q(`SELECT logged_date::text AS d FROM projects WHERE id=$1`, [pid]); assert.equal(p.d, todayEastern());
+  const rows = await q(`SELECT to_char(date_trunc('month', (now() AT TIME ZONE 'America/New_York')::date), 'YYYY-MM') AS m`); assert.equal(rows[0].m, todayEastern().slice(0, 7));
 });
 
 test('what each role sees', async () => {
@@ -53,7 +65,7 @@ test('macro costing, time clock presence, aging, payables, compliance', async ()
   const d = (await call('GET', '/api/dashboard/widgets', null, owner)).body;
   assert.equal(d.costing.activeProjects, 2); assert.equal(d.costing.contract, 150000); assert.equal(d.costing.billed, 190000);
   assert.deepEqual(d.presence.active.map((a) => [a.employee, a.project, a.trade]), [['Alex', 'Project A', 'Demolition']]);
-  assert.deepEqual(d.receivables.find((r) => r.bucket === '31-60 days'), { bucket: '31-60 days', amount: 90000 }); assert.equal(d.receivables.find((r) => r.bucket === 'No due date').amount, 100000);
+  assert.deepEqual(d.receivables.find((r) => r.bucket === bucketOf(I3_DUE)), { bucket: bucketOf(I3_DUE), amount: 90000 }); assert.equal(d.receivables.find((r) => r.bucket === 'No due date').amount, 100000);
   assert.equal(d.payables.total, 10000); assert.deepEqual(d.payables.top.map((t) => t.name), ['Atlas', 'Supply Co']);
   assert.deepEqual(d.compliance.vendorsBlocked, ['Atlas']); assert.equal(d.compliance.ntoNeeded, 2);
   assert.deepEqual(d.projects.map((p) => p.name), ['Project A', 'Project B (not PMs)']);

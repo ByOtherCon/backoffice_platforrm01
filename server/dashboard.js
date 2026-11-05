@@ -9,11 +9,20 @@ import * as oh from './overheadApi.js';
 import { listTodos } from './messaging.js';
 import { monthKey, addMonths, projectPeriod, quarterMonths, yearMonths } from '../src/lib/forecast.ts';
 import { todayEastern } from '../src/lib/estimating.ts';
+import { areasFor, lentAreas, hasLentManage, WIDGET_AREA } from './access.js';
 
 export const WIDGETS = ['estimating', 'presence', 'costing', 'chart', 'receivables', 'payables', 'projects', 'forecast', 'compliance', 'overhead', 'todos'];
 const r2 = (n) => Math.round(n * 100) / 100;
 const can = { estimating: [...MANAGE, 'Estimator'], presence: [...MANAGE, 'Project Manager'], costing: [...MANAGE, 'Project Manager'], chart: MANAGE, receivables: MANAGE, payables: MANAGE, projects: [...MANAGE, 'Project Manager'], forecast: MANAGE, compliance: MANAGE, overhead: APPROVERS, todos: [...MANAGE, 'Estimator', 'Project Manager'] };
-export const allowedWidgets = (role) => WIDGETS.filter((w) => can[w].includes(role));
+export const WIDGET_LABELS = { estimating: 'Estimating', presence: 'Time clock: who is in', costing: 'Costing at a glance', chart: 'Billed vs. cost', receivables: 'Owed to us (aging)', payables: 'We owe', projects: 'Projects', forecast: 'Forecast', compliance: 'Compliance & approvals', overhead: 'Company overhead', todos: 'My to-dos' };
+export const widgetList = () => WIDGETS.map((id) => ({ id, label: WIDGET_LABELS[id], area: WIDGET_AREA[id] }));
+// Cards a person can have: their role's cards for the areas they have, plus cards for an area lent to them; then only the ones the owner ticked, if they ticked some.
+export function allowedWidgets(user) {
+  const areas = areasFor(user), lent = lentAreas(user);
+  let list = WIDGETS.filter((w) => { const a = WIDGET_AREA[w], byRole = can[w].includes(user.role); return a ? areas.includes(a) && (byRole || lent.includes(a)) : byRole || lent.length > 0; });
+  if (Array.isArray(user.access?.widgets)) list = list.filter((w) => user.access.widgets.includes(w));
+  return list;
+}
 
 export async function getPrefs(user, key) { const [r] = await q('SELECT value FROM user_prefs WHERE user_id=$1 AND key=$2', [user.id, key]); return r?.value ?? null; }
 export async function savePrefs(user, key, value) {
@@ -24,7 +33,7 @@ export async function savePrefs(user, key, value) {
   }
   if (JSON.stringify(value ?? null).length > 20000) throw bad('That layout is too large.');
   if (key === 'dashboard') {
-    const ok = allowedWidgets(user.role);
+    const ok = allowedWidgets(user);
     if (!Array.isArray(value?.widgets) || value.widgets.length > 20 || value.widgets.some((w) => typeof w.id !== 'string' || !ok.includes(w.id) || typeof w.visible !== 'boolean')) throw bad('Choose widgets you have access to.');
     if (new Set(value.widgets.map((w) => w.id)).size !== value.widgets.length) throw bad('Each widget can appear once.');
     if (value.period && !['month', 'quarter', 'year'].includes(value.period)) throw bad('Choose month, quarter or year.');
@@ -55,7 +64,7 @@ function aging(rows, today) {
 }
 
 export async function widgetData(user, { period = 'month' } = {}) {
-  const ok = new Set(allowedWidgets(user.role)), out = { role: user.role, widgets: [...ok] }, today = todayEastern(), cur = monthKey(today), year = Number(today.slice(0, 4)), mgr = MANAGE.includes(user.role);
+  const ok = new Set(allowedWidgets(user)), out = { role: user.role, widgets: [...ok] }, today = todayEastern(), cur = monthKey(today), year = Number(today.slice(0, 4)), mgr = MANAGE.includes(user.role) || hasLentManage(user);
   const jobs = [];
   if (ok.has('estimating')) jobs.push((async () => { const l = await es.list({ tab: 'proposals' }); const i = await es.insights(); out.estimating = { ...l.stats, winRate: i.overall.winRate, pipelineOpen: i.pipeline.open, pipelineValue: i.pipeline.value, expectedAwards: i.pipeline.expected, enough: i.enough }; })());
   if (ok.has('presence')) jobs.push((async () => { const [act, wk] = await Promise.all([tc.activeNow(), q(`SELECT COALESCE(SUM(total_hours),0)::float AS hours FROM time_entries WHERE status='complete' AND work_date >= date_trunc('week', ${ET_TODAY})`)]); out.presence = { active: act.map((a) => ({ employee: a.employee, project: a.project, trade: a.trade, since: a.clock_in, late: a.late_in })), weekHours: wk[0].hours }; })());

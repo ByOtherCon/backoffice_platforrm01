@@ -1,6 +1,8 @@
 import { q } from './db.js';
 import { bad, money, text, HttpError } from './http.js';
 import { hashPassword, MIN_PASSWORD } from './auth.js';
+import { parseAccess } from './access.js';
+import { WIDGETS } from './dashboard.js';
 
 const bool = (v, l) => { if (typeof v !== 'boolean') throw bad(`${l} must be true or false.`); return v; };
 const oneOf = (list) => (v, l) => { if (!list.includes(v)) throw bad(`Choose a valid ${l}.`); return v; };
@@ -48,14 +50,15 @@ export async function remove(kind, id) {
 // ---- users (Admin only) ----
 export const ROLES = ['Super Admin', 'Sub Admin', 'Exec Assistant', 'Estimator', 'Project Manager', 'Employee'];
 const ASSIGNABLE = ROLES.filter((r) => r !== 'Super Admin'); // there is exactly one Super Admin, set when the system is seeded
-export const listUsers = () => q('SELECT id,email,name,title,phone,role,active,employee_id FROM app_users ORDER BY email');
+export const listUsers = () => q('SELECT id,email,name,title,phone,role,active,employee_id,access FROM app_users ORDER BY email');
 export async function createUser(b) {
   const email = text(b.email, 'Email', { max: 200 }).toLowerCase();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw bad('Enter a valid email.');
   if (!ASSIGNABLE.includes(b.role)) throw bad('Choose a valid role. There is only one Super Admin.');
   if (String(b.password || '').length < MIN_PASSWORD) throw bad(`Password must be at least ${MIN_PASSWORD} characters.`);
   try {
-    const [u] = await q('INSERT INTO app_users(email,name,title,phone,role,password_hash) VALUES ($1,$2,$3,$6,$4,$5) RETURNING id,email,name,title,phone,role,active', [email, text(b.name, 'Name', { required: false }), text(b.title, 'Title', { max: 80, required: false }) || null, b.role, await hashPassword(b.password), text(b.phone, 'Phone', { max: 40, required: false }) || null]);
+    const [u] = await q('INSERT INTO app_users(email,name,title,phone,role,password_hash) VALUES ($1,$2,$3,$6,$4,$5) RETURNING id,email,name,title,phone,role,active,access', [email, text(b.name, 'Name', { required: false }), text(b.title, 'Title', { max: 80, required: false }) || null, b.role, await hashPassword(b.password), text(b.phone, 'Phone', { max: 40, required: false }) || null]);
+    if (b.access !== undefined) { const ac = parseAccess(b.access, WIDGETS); if (ac) { await q('UPDATE app_users SET access=$2 WHERE id=$1', [u.id, ac]); u.access = ac; } }
     return u;
   } catch (e) { throw dbError(e); }
 }
@@ -69,10 +72,11 @@ export async function updateUser(id, b, actingId) {
   if (!cur) throw new HttpError(404, 'Not found.');
   if (b.role !== undefined) { if (!ASSIGNABLE.includes(b.role)) throw bad('Choose a valid role. There is only one Super Admin.'); add('role', b.role); }
   if (b.active !== undefined) { bool(b.active, 'Active'); add('active', b.active); }
+  if (b.access !== undefined) { if (cur.role === 'Super Admin') throw bad('The owner always has access to everything.'); add('access', parseAccess(b.access, WIDGETS)); }
   if (b.password !== undefined) { if (String(b.password).length < MIN_PASSWORD) throw bad(`Password must be at least ${MIN_PASSWORD} characters.`); add('password_hash', await hashPassword(b.password)); }
   if (!sets.length) throw bad('Nothing to save.');
   if (cur.role === 'Super Admin' && (b.active === false || b.role !== undefined)) throw bad('The Super Admin cannot be demoted or deactivated.');
-  const r = await q(`UPDATE app_users SET ${sets.join(',')} WHERE id=$1 RETURNING id,email,name,title,phone,role,active`, vals);
+  const r = await q(`UPDATE app_users SET ${sets.join(',')} WHERE id=$1 RETURNING id,email,name,title,phone,role,active,access`, vals);
   if (!r.length) throw new HttpError(404, 'Not found.');
   if (b.active === false || b.password !== undefined) await q('DELETE FROM sessions WHERE user_id=$1', [id]);
   return r[0];

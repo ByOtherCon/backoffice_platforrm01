@@ -18,8 +18,10 @@ async function api(method, path, body) {
 
 // ------------------------------------------------------------------ shell
 function shell(active, content) {
-  const nav = [['dashboard', 'Dashboard']]; if (isManager() || state.user.role === 'Estimator') nav.push(['estimating', 'Estimating']); nav.push(['projects', 'Projects'], ['messages', 'Messages'], ['reports', 'Reports']);
-  if (isManager()) nav.push(['receipts', 'Receipts'], ['compliance', 'Compliance'], ['admin', 'Admin']);
+  const areas = state.user.areas || [], has = (a) => areas.includes(a), nav = [['dashboard', 'Dashboard']];
+  if (has('estimating')) nav.push(['estimating', 'Estimating']); if (has('projects')) nav.push(['projects', 'Projects']); nav.push(['messages', 'Messages']); if (has('reports')) nav.push(['reports', 'Reports']);
+  if (has('billing')) nav.push(['quickbooks', 'QuickBooks']); if (has('costs')) nav.push(['receipts', 'Receipts']); if (has('compliance')) nav.push(['compliance', 'Compliance']);
+  if (isSuper() || state.user.role === 'Sub Admin' || has('lists')) nav.push(['admin', 'Admin']);
   return h('div', {},
     h('header', { class: 'top' },
       h('a', { href: '#/dashboard' }, h('img', { class: 'logo', src: '/logo.png', alt: 'ByOther Construction' })),
@@ -294,7 +296,7 @@ async function billingTab(p, canEdit, reload) {
     h('div', { class: 'row', style: 'gap:2rem;margin-top:1.2rem;align-items:center' }, pie(slices), h('div', { style: 'min-width:260px' }, h('h2', {}, 'Where the contract stands'), legend(slices))));
 
   let qbSug = []; if (canEdit) { try { qbSug = await api('GET', `${base}/qb-suggestions`); } catch { /* QuickBooks is not connected, or this person may not match invoices */ } }
-  const qbCard = qbSug.length ? h('div', { class: 'card' }, h('div', { class: 'row spread' }, h('h2', {}, `QuickBooks invoices that may belong here (${qbSug.length})`), h('a', { class: 'small', href: '#/admin/connections', style: 'text-decoration:none' }, 'Open the QuickBooks tab')),
+  const qbCard = qbSug.length ? h('div', { class: 'card' }, h('div', { class: 'row spread' }, h('h2', {}, `QuickBooks invoices that may belong here (${qbSug.length})`), h('a', { class: 'small', href: '#/quickbooks', style: 'text-decoration:none' }, 'Open the QuickBooks page')),
     h('p', { class: 'muted', style: 'margin-top:0' }, 'Waiting for someone to confirm. Nothing is billed until they are imported.'),
     h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, ['Invoice', 'Date', 'QuickBooks customer', 'Total', 'Why it matches'].map((t, i) => h('th', { class: i === 3 ? 'n' : '' }, t)))),
       h('tbody', {}, qbSug.map((x) => h('tr', {}, h('td', {}, x.number || ''), h('td', {}, x.date || ''), h('td', {}, x.customer || ''), h('td', { class: 'n' }, usd(x.total)), h('td', {}, x.why || '', x.message ? h('div', { class: 'muted', style: 'font-size:12px' }, x.message) : ''))))))) : '';
@@ -668,6 +670,14 @@ async function qboReview(inv) {
       await api('POST', `/quickbooks/invoices/${inv.id}/import`, { projectId: proj.value, lines, retainageHeld: ret.value }); render();
     }, 'Import');
 }
+// The invoice-matching page: for anyone given that area, without going through Admin.
+async function quickbooksView() {
+  const s = await api('GET', '/quickbooks/review'), err = h('div'); const live = s.connected && s.connectedEnvironment === s.environment;
+  let body;
+  if (!live) body = h('div', { class: 'card' }, h('p', { class: s.connected ? 'err' : 'muted' }, s.connected ? 'QuickBooks was connected for a different environment than the server now uses. The owner needs to disconnect and connect again in Admin.' : 'QuickBooks is not connected yet. The owner connects it once in Admin → Connections.'), isSuper() ? h('a', { href: '#/admin/connections' }, 'Open the QuickBooks connection') : '');
+  else { const rows = await api('GET', '/quickbooks/invoices?status=' + qbFilter + (qbSearch ? '&search=' + encodeURIComponent(qbSearch) : '')); body = h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin-top:0' }, `Company: ${s.company || '—'}${s.connectedEnvironment === 'sandbox' ? ' (sandbox test company, not the real books)' : ''}`), err, qboInvoices(s, rows, err)); }
+  return shell('quickbooks', [h('h1', {}, 'QuickBooks'), h('p', { class: 'sub' }, 'Invoices from QuickBooks waiting to be matched to a project and its trades. Confident matches log themselves; the rest are here for you.'), body]);
+}
 async function sharepointCard() {
   const s = await api('GET', '/sharepoint/status?test=1'), err = h('div');
   return h('div', { class: 'card' }, h('div', { class: 'row spread' }, h('h2', {}, 'SharePoint (shared project folders)'), s.configured ? h('button', { class: 'small', onclick: () => render() }, 'Test connection') : ''), err,
@@ -810,22 +820,38 @@ async function adminSection(sec) {
         h('button', { class: 'small danger', onclick: guard(err, async () => { if (confirm(`Delete ${r.name}?`)) { await api('DELETE', `/admin/${sec.kind}/${r.id}`); render(); } }) }, 'Delete'))))))) : h('p', { class: 'muted' }, `No ${sec.title.toLowerCase()} yet.`));
 }
 const ROLE_LIST = ['Sub Admin', 'Exec Assistant', 'Estimator', 'Project Manager']; // Super Admin is the owner only
+// Which parts of the system a person can use, and which dashboard cards they see. Untouched = what their role gives.
+function accessEditor(u, roleSel, opt) {
+  const box = (id, label, on) => { const c = h('input', { type: 'checkbox', value: id }); c.checked = on; return { id, c, el: h('label', { style: 'display:flex;gap:.5rem;align-items:center;margin:.15rem 0;text-transform:none;letter-spacing:0;font-weight:400;font-size:14px' }, c, label) }; };
+  const roleAreas = () => opt.roleAreas[roleSel.value] || [];
+  const customA = h('input', { type: 'checkbox' }), customW = h('input', { type: 'checkbox' }); customA.checked = !!u?.access?.areas; customW.checked = !!u?.access?.widgets;
+  const areas = opt.areas.map((a) => box(a.id, a.label, (u?.access?.areas ?? roleAreas()).includes(a.id))), widgets = opt.widgets.map((w) => box(w.id, w.label, (u?.access?.widgets ?? opt.widgets.map((x) => x.id)).includes(w.id)));
+  const sync = () => { areas.forEach((a) => { a.c.disabled = !customA.checked; if (!customA.checked) a.c.checked = roleAreas().includes(a.id); }); widgets.forEach((w) => { w.c.disabled = !customW.checked; if (!customW.checked) w.c.checked = true; }); };
+  roleSel.addEventListener('change', sync); customA.onchange = sync; customW.onchange = sync; sync();
+  const el = h('div', { class: 'wide', style: 'border-top:1px solid var(--line);margin-top:.5rem;padding-top:.6rem' },
+    h('label', {}, 'Where this person can work'),
+    h('label', { style: 'display:flex;gap:.5rem;align-items:center;text-transform:none;letter-spacing:0;font-weight:400;font-size:14px' }, customA, 'Choose by hand (otherwise the access level above decides)'), h('div', { style: 'margin:.3rem 0 .8rem 1.4rem' }, areas.map((a) => a.el)),
+    h('label', {}, 'What shows on their dashboard'),
+    h('label', { style: 'display:flex;gap:.5rem;align-items:center;text-transform:none;letter-spacing:0;font-weight:400;font-size:14px' }, customW, 'Choose the cards by hand (otherwise everything their access allows)'), h('div', { style: 'margin:.3rem 0 0 1.4rem' }, widgets.map((w) => w.el)),
+    h('p', { class: 'muted', style: 'font-size:12px;margin-top:.5rem' }, 'Giving an area the access level does not normally have lets that person work in it as an office assistant would. Approving payments and the owner settings are never included.'));
+  return { el, get: () => (customA.checked || customW.checked ? { areas: customA.checked ? areas.filter((a) => a.c.checked).map((a) => a.id) : null, widgets: customW.checked ? widgets.filter((w) => w.c.checked).map((w) => w.id) : null } : null) };
+}
 async function usersSection() {
-  const rows = await api('GET', '/admin/users'); const err = h('div');
+  const rows = await api('GET', '/admin/users'); const err = h('div'); const opt = await api('GET', '/access/options');
   const userForm = (u) => {
     const f = { email: h('input', { type: 'email', value: u?.email ?? '', disabled: !!u }), name: h('input', { value: u?.name ?? '' }), title: h('input', { value: u?.title ?? '', placeholder: 'Estimator, Exec Assistant…' }), phone: h('input', { type: 'tel', value: u?.phone ?? '', placeholder: 'Used in follow-up emails' }), role: h('select', {}, ROLE_LIST.map((r) => h('option', { value: r }, r))), pw: h('input', { type: 'password', autocomplete: 'new-password', placeholder: u ? 'Leave blank to keep' : 'Min 10 characters' }) };
     if (u) f.role.value = u.role;
-    const owner = u?.role === 'Super Admin';
-    formModal(u ? `Edit ${u.email}` : 'Add user', [field('Company email', f.email), field('Name', f.name), field('Title', f.title), field('Phone', f.phone), ...(owner ? [h('p', { class: 'muted' }, 'This is the owner account. Its access level stays Super Admin. Change your password with the Password button at the top.')] : [field('Access level', f.role), field(u ? 'New password' : 'Password', f.pw)])], async () => {
-      if (u) { const body = { name: f.name.value, title: f.title.value, phone: f.phone.value }; if (!owner) { body.role = f.role.value; if (f.pw.value) body.password = f.pw.value; } await api('PUT', '/admin/users/' + u.id, body); }
-      else await api('POST', '/admin/users', { email: f.email.value, name: f.name.value, title: f.title.value, phone: f.phone.value, role: f.role.value, password: f.pw.value });
+    const owner = u?.role === 'Super Admin'; const acc = owner ? null : accessEditor(u, f.role, opt);
+    formModal(u ? `Edit ${u.email}` : 'Add user', [field('Company email', f.email), field('Name', f.name), field('Title', f.title), field('Phone', f.phone), ...(owner ? [h('p', { class: 'muted' }, 'This is the owner account. Its access level stays Super Admin. Change your password with the Password button at the top.')] : [field('Access level', f.role), field(u ? 'New password' : 'Password', f.pw)]), ...(acc ? [acc.el] : [])], async () => {
+      if (u) { const body = { name: f.name.value, title: f.title.value, phone: f.phone.value }; if (!owner) { body.role = f.role.value; body.access = acc.get(); if (f.pw.value) body.password = f.pw.value; } await api('PUT', '/admin/users/' + u.id, body); }
+      else await api('POST', '/admin/users', { email: f.email.value, name: f.name.value, title: f.title.value, phone: f.phone.value, role: f.role.value, password: f.pw.value, access: acc.get() });
       render();
     }, u ? 'Save' : 'Add user');
   };
   return h('div', { class: 'card' }, h('div', { class: 'row spread' }, h('h2', {}, 'Users & access'), h('button', { class: 'primary', onclick: () => userForm(null) }, '+ Add user')), err,
     h('p', { class: 'muted' }, 'Super Admin: owner only. Sub Admin and Exec Assistant manage records and money. Estimators work the estimating funnel. Project Managers see assigned projects.'),
-    h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, ['Email', 'Name', 'Title', 'Access', 'Active'].map((t) => h('th', {}, t)), h('th'))),
-      h('tbody', {}, rows.map((u) => h('tr', { class: u.active ? '' : 'muted' }, h('td', {}, u.email), h('td', {}, u.name), h('td', {}, u.title || ''), h('td', {}, u.role), h('td', {}, u.active ? 'Yes' : 'No'),
+    h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, ['Email', 'Name', 'Title', 'Access', 'Areas', 'Active'].map((t) => h('th', {}, t)), h('th'))),
+      h('tbody', {}, rows.map((u) => h('tr', { class: u.active ? '' : 'muted' }, h('td', {}, u.email), h('td', {}, u.name), h('td', {}, u.title || ''), h('td', {}, u.role), h('td', { class: 'muted', style: 'font-size:13px' }, u.role === 'Super Admin' ? 'Everything' : u.access ? [u.access.areas ? `${u.access.areas.length} chosen` : 'Role default', u.access.widgets ? ` · ${u.access.widgets.length} dashboard cards` : ''] : 'Role default'), h('td', {}, u.active ? 'Yes' : 'No'),
         h('td', {}, u.role === 'Super Admin' ? [h('button', { class: 'small', onclick: () => userForm(u) }, 'Edit'), ' ', h('span', { class: 'muted' }, 'Owner')] : [h('button', { class: 'small', onclick: () => userForm(u) }, 'Edit'), ' ', h('button', { class: 'small', onclick: guard(err, async () => { await api('PUT', '/admin/users/' + u.id, { active: !u.active }); render(); }) }, u.active ? 'Deactivate' : 'Activate')])))))));
 }
 // Every Admin section folds away under its own title. Which ones are open is remembered in this browser only.
@@ -914,7 +940,7 @@ async function render() {
   const [, page = 'dashboard', id, tab] = location.hash.split('/');
   try {
     if (['admin'].includes(page) || (page === 'projects' && !id)) [state.trades, state.gcs] = await Promise.all([api('GET', '/admin/trades'), api('GET', '/admin/gcs')]).catch(() => [state.trades, state.gcs]);
-    const view = page === 'estimating' ? await estimatingView(id, tab) : page === 'messages' ? await messagesView(id) : page === 'admin' ? await adminView(id) : page === 'receipts' ? await receiptsView() : page === 'compliance' ? await complianceView() : page === 'projects' ? (id ? await projectView(id, tab) : await projectsView()) : page === 'reports' ? await reportsView() : await dashboardView();
+    const view = page === 'estimating' ? await estimatingView(id, tab) : page === 'messages' ? await messagesView(id) : page === 'quickbooks' ? await quickbooksView() : page === 'admin' ? await adminView(id) : page === 'receipts' ? await receiptsView() : page === 'compliance' ? await complianceView() : page === 'projects' ? (id ? await projectView(id, tab) : await projectsView()) : page === 'reports' ? await reportsView() : await dashboardView();
     if (token === rendering) { $app.replaceChildren(view); updateBell(); }
   } catch (e) { if (token === rendering && state.user) $app.replaceChildren(shell(page, h('div', { class: 'err' }, e.message))); }
 }

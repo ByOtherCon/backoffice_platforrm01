@@ -30,6 +30,7 @@ import * as pw from './passwords.js';
 import * as ct from './contracts.js';
 import * as qbo from './quickbooks.js';
 import * as qbi from './qbImport.js';
+import * as acc from './access.js';
 import { bootstrapOwner } from './bootstrap.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
@@ -46,7 +47,8 @@ route('POST', '/api/login', async ({ body, res }) => {
   return 'sent';
 });
 route('POST', '/api/logout', async ({ user, res }) => { if (user) await auth.logout(user.token); send(res, 200, { ok: true }, { 'set-cookie': auth.clearCookie(SECURE) }); return 'sent'; });
-route('GET', '/api/me', async ({ user }) => { if (!user) throw new HttpError(401, 'Sign in required.'); return { user: { id: user.id, email: user.email, name: user.name, role: user.role } }; });
+route('GET', '/api/me', async ({ user }) => { if (!user) throw new HttpError(401, 'Sign in required.'); return { user: { id: user.id, email: user.email, name: user.name, role: user.role, areas: acc.areasFor(user) } }; });
+route('GET', '/api/access/options', async ({ user }) => { auth.requireRole(user, auth.SUPER); return acc.options(db.widgetList()); });
 
 route('POST', '/api/me/password', async ({ user, body }) => { if (!user) throw new HttpError(401, 'Sign in required.'); return pw.changeOwn(user, body.current, body.next); });
 route('POST', '/api/password/forgot', async ({ body }) => pw.requestReset(body.email));
@@ -167,6 +169,8 @@ route('GET', '/api/opportunities/:id/folder-files', async ({ user, params }) => 
 route('POST', '/api/opportunities/:id/folder', async ({ user, params }) => { estWrite(user); return folders.ensureOpportunityFolder(uuid(params.id)); });
 route('POST', '/api/projects/:id/folder', async ({ user, params }) => { manage(user); return folders.ensureProjectFolder(uuid(params.id)); });
 route('GET', '/api/quickbooks/status', async ({ user }) => { auth.requireRole(user, auth.SUPER); return { ...(await qbo.status()), lastSync: await qbi.lastSync(), counts: await qbi.counts(), settings: await qbi.getSettings() }; });
+// What the invoice-matching page needs to know, for anyone with that area (no keys, no connection controls).
+route('GET', '/api/quickbooks/review', async ({ user }) => { manage(user); const st = await qbo.status(); return { configured: st.configured, connected: st.connected, company: st.company, environment: st.environment, connectedEnvironment: st.connectedEnvironment, lastSync: await qbi.lastSync(), counts: await qbi.counts(), settings: await qbi.getSettings() }; });
 route('GET', '/api/quickbooks/invoices', async ({ req, user }) => { manage(user); return qbi.list(q1(req, 'status') || 'New', q1(req, 'search') || ''); });
 route('GET', '/api/quickbooks/settings', async ({ user }) => { manage(user); return qbi.getSettings(); });
 route('PUT', '/api/quickbooks/settings', async ({ user, body }) => { manage(user); return qbi.saveSettings(body); });
@@ -315,7 +319,7 @@ export const server = http.createServer(async (req, res) => {
     if (!hit.raw && req.method !== 'GET' && !String(req.headers['content-type'] || '').startsWith('application/json') && req.headers['content-length'] !== '0' && req.headers['content-length'] !== undefined) throw new HttpError(415, 'Send JSON.');
     const m = url.pathname.match(hit.re);
     const params = Object.fromEntries(hit.names.map((n, i) => [n, m[i + 1]]));
-    const user = await auth.userFromRequest(req);
+    const user = acc.gate(await auth.userFromRequest(req), url.pathname, req.method);   // an area switched off is refused here; a lent area acts with the lent role
     const body = req.method === 'GET' || req.method === 'DELETE' || hit.raw ? {} : await readJson(req);
     const result = await hit.handler({ req, res, user, params, body });
     if (result !== 'sent') send(res, 200, result);

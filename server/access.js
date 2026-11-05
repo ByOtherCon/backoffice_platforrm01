@@ -39,7 +39,7 @@ export const hasLentManage = (user) => lentAreas(user).some((a) => ['projects', 
 const RULES = [
   [/^\/api\/(opportunities|opportunity-files|followups|outbox|bids|regions|estimating|takeoff)(\/|$)/, 'estimating'],
   [/^\/api\/settings\/estimating$/, 'estimating'],
-  [/^\/api\/quickbooks\/(invoices|sync|settings|review)(\/|$)/, 'billing'],
+  [/^\/api\/quickbooks\/(invoices|costs|sync|settings|review)(\/|$)/, 'billing'],
   [/^\/api\/projects\/[^/]+\/qb-suggestions$/, 'billing'],
   [/^\/api\/projects\/[^/]+\/nto$/, 'compliance'],
   [/^\/api\/(projects|contract-runs|contract-lines|invoice-schedule|trade-options|supplier-invoices)(\/|$)/, 'projects'],

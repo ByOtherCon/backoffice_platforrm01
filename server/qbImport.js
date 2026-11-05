@@ -22,7 +22,7 @@ export async function saveSettings(b) {
 const date = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(v || '') ? v : null);
 const lit = (iso) => String(iso).replace(/[^0-9T:.+\-Z]/g, '');   // only ever our own timestamp goes into a query
 
-async function pages(entity, since, startDate) {
+export async function pages(entity, since, startDate) {
   const out = []; const conds = [`TxnDate >= '${lit(startDate)}'`]; if (since) conds.push(`MetaData.LastUpdatedTime >= '${lit(since)}'`); const where = ' where ' + conds.join(' and ');
   for (let start = 1; start < 5000; start += 100) {
     let r; try { r = await QB.query(`select * from ${entity}${where} orderby MetaData.LastUpdatedTime startposition ${start} maxresults 100`); } catch (e) { throw e instanceof HttpError ? new HttpError(e.status, `Reading ${entity}s: ${e.message}`) : e; }

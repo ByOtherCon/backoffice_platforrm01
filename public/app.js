@@ -774,12 +774,83 @@ async function timeclockView() {
   const home = await api('GET', '/me/clock/home'); const ui = makeClockUi({ api, base: '/me/clock', reload: () => render() });
   return shell('timeclock', [h('h1', {}, 'Time Clock'), h('p', { class: 'sub' }, `${home.employee.name}: clock in to a project and trade. Your hours post to that project's labor.`), h('div', { style: 'max-width:560px' }, ...ui.body(home))]);
 }
+let qbTab = 'invoices', qbCostFilter = 'New', qbCostSearch = '', qbHiddenSearch = '';
 async function quickbooksView() {
   const s = await api('GET', '/quickbooks/review'), err = h('div'); const live = s.connected && s.connectedEnvironment === s.environment;
   let body;
+  const tabs = h('div', { class: 'tabs' }, [['invoices', 'Invoices'], ['costs', 'Costs'], ['hidden', 'Hidden']].map(([k, l]) => h('a', { class: qbTab === k ? 'on' : '', href: '#/quickbooks', onclick: (e) => { e.preventDefault(); qbTab = k; render(); } }, l)));
   if (!live) body = h('div', { class: 'card' }, h('p', { class: s.connected ? 'err' : 'muted' }, s.connected ? 'QuickBooks was connected for a different environment than the server now uses. The owner needs to disconnect and connect again in Admin.' : 'QuickBooks is not connected yet. The owner connects it once in Admin → Connections.'), isSuper() ? h('a', { href: '#/admin/connections' }, 'Open the QuickBooks connection') : '');
-  else { const rows = await api('GET', '/quickbooks/invoices?status=' + qbFilter + (qbSearch ? '&search=' + encodeURIComponent(qbSearch) : '')); body = h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin-top:0' }, `Company: ${s.company || '—'}${s.connectedEnvironment === 'sandbox' ? ' (sandbox test company, not the real books)' : ''}`), err, qboInvoices(s, rows, err)); }
-  return shell('quickbooks', [h('h1', {}, 'QuickBooks'), h('p', { class: 'sub' }, 'Invoices from QuickBooks waiting to be matched to a project and its trades. Confident matches log themselves; the rest are here for you.'), body]);
+  else {
+    const head = h('p', { class: 'muted', style: 'margin-top:0' }, `Company: ${s.company || '—'}${s.connectedEnvironment === 'sandbox' ? ' (sandbox test company, not the real books)' : ''}`);
+    if (qbTab === 'costs') body = h('div', { class: 'card' }, head, err, await qboCosts(err));
+    else if (qbTab === 'hidden') body = h('div', { class: 'card' }, head, err, await qboHidden(err));
+    else { const rows = await api('GET', '/quickbooks/invoices?status=' + qbFilter + (qbSearch ? '&search=' + encodeURIComponent(qbSearch) : '')); body = h('div', { class: 'card' }, head, err, qboInvoices(s, rows, err)); }
+  }
+  const sub = { invoices: 'Invoices from QuickBooks waiting to be matched to a project and its trades. Confident matches log themselves; the rest are here for you.', costs: 'Bills, checks, expenses and card charges from QuickBooks. Choose where each one goes: a trade, the whole project, or company overhead.', hidden: 'Vendors and transactions you hid because they are not project costs (taxes, insurance, payroll). Search them, and bring any back.' }[qbTab];
+  return shell('quickbooks', [h('h1', {}, 'QuickBooks'), tabs, h('p', { class: 'sub' }, sub), body]);
+}
+// Costs from QuickBooks: each one is reviewed, then imported as a vendor invoice (or hidden when it is not a project cost).
+async function qboCosts(err) {
+  const [rows, st] = await Promise.all([api('GET', '/quickbooks/costs?status=' + qbCostFilter + (qbCostSearch ? '&search=' + encodeURIComponent(qbCostSearch) : '')), api('GET', '/quickbooks/costs/status')]);
+  const counts = st.counts || {}, last = st.lastSync;
+  const sync = h('button', { class: 'primary', onclick: guard(err, async () => { notice(err, 'Reading QuickBooks…', 'ok'); const r = await api('POST', '/quickbooks/costs/sync', {}); notice(err, `Done. ${r.added} new cost${r.added === 1 ? '' : 's'}${r.hidden ? `, ${r.hidden} hidden by what you taught it` : ''}${r.autoPaid ? `, ${r.autoPaid} payment${r.autoPaid === 1 ? '' : 's'} added` : ''}${r.changed ? `, ${r.changed} changed in QuickBooks` : ''}.`, 'ok'); render(); }) }, 'Sync Costs From QuickBooks');
+  const pick = h('select', { onchange: () => { qbCostFilter = pick.value; render(); } }, ['New', 'Changed', 'Imported', 'Ignored', 'All'].map((k) => h('option', { value: k }, k + (counts[k] ? ` (${counts[k]})` : '')))); pick.value = qbCostFilter;
+  const find = h('input', { type: 'search', placeholder: 'Search vendor, number, memo or account…', value: qbCostSearch, style: 'min-width:22rem', onkeydown: (e) => { if (e.key === 'Enter') { qbCostSearch = find.value; render(); } } });
+  const hideAsk = (c) => { const bg = modal(`Hide ${c.vendor || 'this one'}?`, h('div', {}, h('p', {}, 'Use this for things that are not job costs, like taxes, insurance or loan payments. Hidden items leave this list and can be found again on the Hidden tab.'),
+    h('div', { class: 'row', style: 'flex-wrap:wrap;gap:.5rem;margin-top:.8rem' }, h('button', { class: 'primary', onclick: guard(err, async () => { const r = await api('POST', `/quickbooks/costs/${c.id}/hide`, { learn: true }); bg.remove(); notice(err, `Hid ${r.hidden} from ${c.vendor || 'this vendor'}. Future ones from them are hidden automatically.`, 'ok'); render(); }) }, `Hide All From ${c.vendor || 'This Vendor'}, Now And Later`),
+      h('button', { onclick: guard(err, async () => { await api('POST', `/quickbooks/costs/${c.id}/hide`, { learn: false }); bg.remove(); render(); }) }, 'Hide Just This One')))); };
+  const table = rows.length ? h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, ['Date', 'Type', 'Vendor', 'What', 'Total', 'Goes To', 'Status'].map((t, i) => h('th', { class: i === 4 ? 'n' : '' }, t)), h('th'))),
+    h('tbody', {}, rows.map((c) => h('tr', {}, h('td', {}, c.date || ''), h('td', {}, c.kind, c.number ? h('div', { class: 'muted', style: 'font-size:12px' }, '#' + c.number) : ''),
+      h('td', { style: 'white-space:normal' }, c.vendor || '—', c.isSubcontractor ? h('div', { class: 'muted', style: 'font-size:12px' }, 'Subcontractor: enter on the project Costs tab') : c.looksNonProject && c.status === 'New' ? h('div', { class: 'muted', style: 'font-size:12px' }, 'Looks like a non-project cost') : ''),
+      h('td', { style: 'white-space:normal;max-width:22rem' }, (c.lines || []).map((l) => l.description || l.item || l.account).filter(Boolean).slice(0, 2).join('; ') || c.memo || c.account || '', c.account ? h('div', { class: 'muted', style: 'font-size:12px' }, c.account) : ''),
+      h('td', { class: 'n' }, usd(c.total), c.kind === 'Bill' && c.balance != null && c.balance < c.total ? h('div', { class: 'muted', style: 'font-size:12px' }, c.balance === 0 ? 'paid' : `${usd(c.total - c.balance)} paid`) : ''),
+      h('td', {}, c.suggestedProject ? h('span', { class: 'muted', title: c.suggestedBy || '' }, c.suggestedProject) : c.suggestedOverhead ? h('span', { class: 'muted', title: c.suggestedBy || '' }, 'Overhead: ' + c.suggestedOverhead) : h('span', { class: 'muted' }, 'Not decided')),
+      h('td', {}, h('span', { class: 'pill ' + (c.status === 'Imported' ? 'Approved' : c.status === 'Changed' ? 'Rejected' : c.status === 'Ignored' ? '' : 'Pending'), title: c.message || '' }, c.status), c.message ? h('div', { class: c.status === 'New' ? 'err' : 'muted', style: 'font-size:12px;white-space:normal;max-width:16rem' }, c.message) : ''),
+      h('td', { style: 'white-space:nowrap' }, c.status === 'New' ? [h('button', { class: 'small primary', onclick: () => qboCostReview(c) }, 'Review And Import'), ' ', h('button', { class: 'small', onclick: () => hideAsk(c) }, 'Hide'), ' ', h('button', { class: 'small', onclick: guard(err, async () => { await api('POST', `/quickbooks/costs/${c.id}/ignore`, {}); render(); }) }, 'Ignore')]
+        : c.status === 'Ignored' ? [h('button', { class: 'small', onclick: guard(err, async () => { await api('POST', `/quickbooks/costs/${c.id}/restore`, {}); render(); }) }, 'Restore'), ' ', h('button', { class: 'small', onclick: () => hideAsk(c) }, 'Hide')] : c.invoiceId ? h('a', { href: '#/projects/receipts' }, 'Open In Receipts') : ''))))))
+    : h('p', { class: 'muted' }, qbCostSearch ? 'No cost matches that search.' : qbCostFilter === 'New' ? 'Nothing waiting. Press Sync Costs From QuickBooks to look for new bills, checks and expenses.' : 'Nothing here.');
+  return h('div', {}, h('div', { class: 'row spread' }, h('h3', { style: 'margin:0' }, 'Costs From QuickBooks'), h('div', { class: 'row' }, pick, sync)),
+    h('p', { class: 'muted', style: 'font-size:13px' }, (last ? `Last read ${new Date(last.at).toLocaleString()} (${last.seen} looked at). ` : 'Not read yet. ') + 'It also checks by itself every hour, from the same start date as invoices. QuickBooks does not share the bank-feed list of transactions waiting for review, only what is already recorded as a bill, check, expense or card charge.'),
+    h('div', { class: 'row', style: 'margin-bottom:.6rem' }, find, h('button', { class: 'small', onclick: () => { qbCostSearch = find.value; render(); } }, 'Search'), qbCostSearch ? h('button', { class: 'small', onclick: () => { qbCostSearch = ''; render(); } }, 'Clear') : ''), table);
+}
+// The hidden list: vendors that are always hidden (with what they hid), and every hidden transaction. Both are searchable.
+async function qboHidden(err) {
+  const r = await api('GET', '/quickbooks/costs/hidden' + (qbHiddenSearch ? '?search=' + encodeURIComponent(qbHiddenSearch) : ''));
+  const find = h('input', { type: 'search', placeholder: 'Search vendor, memo or number…', value: qbHiddenSearch, style: 'min-width:22rem', onkeydown: (e) => { if (e.key === 'Enter') { qbHiddenSearch = find.value; render(); } } });
+  const vendors = r.vendors.length ? h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Vendor'), h('th', { class: 'n' }, 'Hidden'), h('th', { class: 'n' }, 'Amount'), h('th'))),
+    h('tbody', {}, r.vendors.map((v) => h('tr', {}, h('td', {}, v.vendor || '—'), h('td', { class: 'n' }, v.hidden), h('td', { class: 'n' }, usd(v.amount)), h('td', {}, h('button', { class: 'small', onclick: guard(err, async () => { if (confirm(`Stop hiding ${v.vendor}? Its ${v.hidden} hidden item${v.hidden === 1 ? '' : 's'} come back to the Costs list.`)) { await api('DELETE', `/quickbooks/costs/rules/${v.id}`); render(); } }) }, 'Stop Hiding Vendor'))))))) : h('p', { class: 'muted' }, qbHiddenSearch ? 'No hidden vendor matches.' : 'No vendors are hidden for good yet.');
+  const items = r.items.length ? h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, ['Date', 'Type', 'Vendor', 'What'].map((t) => h('th', {}, t)), h('th', { class: 'n' }, 'Total'), h('th'))),
+    h('tbody', {}, r.items.map((c) => h('tr', {}, h('td', {}, c.date || ''), h('td', {}, c.kind), h('td', {}, c.vendor || '—'), h('td', { style: 'white-space:normal' }, c.memo || c.account || ''), h('td', { class: 'n' }, usd(c.total)), h('td', {}, h('button', { class: 'small', onclick: guard(err, async () => { await api('POST', `/quickbooks/costs/${c.id}/unhide`, {}); render(); }) }, 'Unhide'))))))) : h('p', { class: 'muted' }, qbHiddenSearch ? 'No hidden item matches.' : 'Nothing is hidden.');
+  return h('div', {}, h('div', { class: 'row', style: 'margin-bottom:.6rem' }, find, h('button', { class: 'small', onclick: () => { qbHiddenSearch = find.value; render(); } }, 'Search'), qbHiddenSearch ? h('button', { class: 'small', onclick: () => { qbHiddenSearch = ''; render(); } }, 'Clear') : ''),
+    h('h3', { style: 'margin:.6rem 0 .3rem' }, 'Vendors Always Hidden'), vendors, h('h3', { style: 'margin:1rem 0 .3rem' }, 'Hidden Transactions'), items);
+}
+// Where one QuickBooks cost goes: a project (each line to a trade or the whole project), or company overhead.
+async function qboCostReview(c) {
+  const projects = await api('GET', '/projects'), err = h('div'), body = h('div');
+  const mode = h('select', {}, h('option', { value: 'project' }, 'A Project'), h('option', { value: 'overhead' }, 'Company Overhead')); mode.value = c.suggestedProjectId || !c.suggestedOverhead ? 'project' : 'overhead';
+  const proj = h('select', {}, h('option', { value: '' }, 'Choose the project…'), projects.filter((p) => p.active).map((p) => h('option', { value: p.id }, `${p.name} (${p.gc})`))); proj.value = c.suggestedProjectId || '';
+  const cat = h('select', {}, ['Tools', 'Insurance', 'Vehicles & fuel', 'Office', 'Software', 'Other'].map((k) => h('option', { value: k }, k))); cat.value = c.suggestedOverhead || 'Other';
+  const sup = h('select', {}), remember = h('input', { type: 'checkbox' }); remember.checked = true; let sels = [];
+  const draw = async () => {
+    const isOver = mode.value === 'overhead'; pw.parentElement.style.display = isOver ? 'none' : ''; cw.parentElement.style.display = isOver ? '' : 'none';
+    const r = await api('GET', `/quickbooks/costs/${c.id}/prepare${!isOver && proj.value ? '?projectId=' + proj.value : ''}`);
+    sup.replaceChildren(h('option', { value: '' }, `New vendor: ${c.vendor || 'type a name'}`), r.suppliers.map((x) => h('option', { value: x.id }, x.name))); if (!sup.dataset.set) { sup.value = r.supplierGuess || ''; sup.dataset.set = '1'; }
+    sels = [];
+    const rowsEl = c.lines.map((l, i) => { let el; if (isOver) el = h('span', { class: 'muted' }, 'Overhead: ' + cat.value); else if (!r.project) el = h('span', { class: 'muted' }, 'Choose the project first'); else { const s = h('select', {}, h('option', { value: '' }, 'Whole project'), r.project.trades.map((t) => h('option', { value: t.id }, t.name))); s.value = r.guess[i] || ''; sels[i] = s; el = s; }
+      return h('tr', {}, h('td', {}, l.description || l.item || l.account || 'Line ' + (i + 1), l.account ? h('div', { class: 'muted', style: 'font-size:12px' }, l.account) : ''), h('td', { class: 'n' }, usd(l.amount)), h('td', {}, el)); });
+    const extra = Math.round((c.total - c.lines.reduce((n, l) => n + l.amount, 0)) * 100) / 100;
+    body.replaceChildren(h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'On The QuickBooks Entry'), h('th', { class: 'n' }, 'Amount'), h('th', {}, 'Goes To'))), h('tbody', {}, rowsEl))), extra > 0 ? h('p', { class: 'muted', style: 'font-size:13px' }, `${usd(extra)} of tax or fees is added across the lines.`) : '');
+  };
+  const pw = h('div', {}, proj), cw = h('div', {}, cat);
+  mode.onchange = guard(err, draw); proj.onchange = guard(err, draw); cat.onchange = guard(err, draw);
+  formModal(`QuickBooks ${c.kind.toLowerCase()} ${c.number ? '#' + c.number : ''} · ${c.vendor || ''} · ${usd(c.total)} · ${c.date || ''}`, [h('p', { class: 'muted wide' }, `${c.account ? 'Paid from / account: ' + c.account + ' · ' : ''}${c.suggestedBy ? 'Suggested from ' + c.suggestedBy : ''}${c.kind === 'Bill' ? ' · A bill is recorded unpaid; payments made in QuickBooks are added automatically.' : ' · Recorded as paid on the date written.'}`),
+    field('Goes To', mode), h('div', {}, h('label', {}, 'Project'), pw), h('div', {}, h('label', {}, 'Overhead Category'), cw), field('Vendor In Job Costing', sup), h('div', { class: 'wide' }, body),
+    h('label', { class: 'wide', style: 'display:flex;gap:.5rem;align-items:center;text-transform:none;letter-spacing:0;font-weight:400' }, remember, 'Remember this vendor (its Job Costing vendor and where its costs go) for next time'), err],
+    async () => {
+      const lines = c.lines.map((l, i) => ({ index: i, projectTradeId: sels[i]?.value || null }));
+      await api('POST', `/quickbooks/costs/${c.id}/import`, { mode: mode.value, projectId: proj.value || null, overheadCategory: cat.value, lines, supplierId: sup.value || null, supplierName: sup.value ? undefined : c.vendor, remember: remember.checked }); render();
+    }, 'Import');
+  draw().catch((e) => notice(err, e.message));
 }
 async function sharepointCard() {
   const s = await api('GET', '/sharepoint/status?test=1'), err = h('div');

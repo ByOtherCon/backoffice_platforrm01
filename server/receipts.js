@@ -30,7 +30,8 @@ export async function parseUpload(user, bytes, filename) {
   } catch (e) { if (!(e instanceof HttpError)) throw e; out.aiError = e.message; }
   return out;
 }
-export async function createReceipt(user, b) {
+// `outer`: an open transaction to run inside (the QuickBooks cost import does its other writes in the same one).
+export async function createReceipt(user, b, outer = null) {
   if (!Array.isArray(b.lines) || !b.lines.length) throw bad('Add at least one line.');
   const lines = b.lines.map((l) => {
     const amount = money(l.amount, 'Line amount'); if (!(amount > 0)) throw bad('Each line must be more than zero.');
@@ -44,7 +45,7 @@ export async function createReceipt(user, b) {
   const alloc = lines.map((l, i) => ({ ...l, amount: toDollars(toCents(l.amount) + taxShare[i]) }));
   const total = toDollars(alloc.reduce((n, a) => n + toCents(a.amount), 0));
   if (b.total !== undefined && b.total !== null && b.total !== '' && Math.abs(money(b.total, 'Total') - total) > 0.01) throw bad(`The lines plus tax come to ${total.toFixed(2)}, not ${Number(b.total).toFixed(2)}.`);
-  return tx(async (t) => {
+  return (outer ? (fn) => fn(outer) : tx)(async (t) => {
     let supplierId = b.supplierId;
     if (!supplierId) {
       const name = text(b.supplierName, 'Supplier', { max: 200 });
@@ -58,10 +59,10 @@ export async function createReceipt(user, b) {
     const ref = text(b.reference, 'Receipt / invoice #', { max: 80, required: false }) || `NO-NUMBER-${crypto.randomUUID().slice(0, 8)}`;
     if (b.documentId && !(await t('SELECT 1 FROM documents WHERE id=$1', [b.documentId])).length) throw bad('Document not found.');
     let inv;
-    try { [inv] = await t('INSERT INTO supplier_invoices(supplier_id,reference,invoice_date,total,tax,document_id,source) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id', [supplierId, ref, date, total, tax, b.documentId || null, b.source === 'AI' ? 'AI' : 'Manual']); }
+    try { [inv] = await t('INSERT INTO supplier_invoices(supplier_id,reference,invoice_date,total,tax,document_id,source,qb_bill_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id', [supplierId, ref, date, total, tax, b.documentId || null, ['AI', 'QuickBooks'].includes(b.source) ? b.source : 'Manual', b.qbRef || null]); }
     catch (e) { throw e.code === '23505' ? new HttpError(409, 'That supplier already has an invoice with this number.') : e; }
     for (const a of alloc) await t('INSERT INTO supplier_allocations(supplier_invoice_id,project_id,project_trade_id,overhead_category,amount,description,item_kind) VALUES ($1,$2,$3,$4,$5,$6,$7)', [inv.id, a.projectId, a.projectTradeId, a.overhead, a.amount, a.description, a.kind]);
-    if (b.paid) await t('INSERT INTO supplier_payments(supplier_invoice_id,paid_date,amount) VALUES ($1,$2,$3)', [inv.id, dateStr(b.paidDate, 'Paid date') || date, total]);
+    if (b.paid) await t('INSERT INTO supplier_payments(supplier_invoice_id,paid_date,amount) VALUES ($1,$2,$3)', [inv.id, dateStr(b.paidDate, 'Paid date') || date, b.paidAmount != null ? Math.min(total, money(b.paidAmount, 'Paid amount')) : total]);
     for (const pid of new Set(alloc.map((a) => a.projectId).filter(Boolean))) await assertValid(t, pid);
     return { id: inv.id, total };
   });

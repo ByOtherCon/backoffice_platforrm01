@@ -63,5 +63,32 @@ export function spreadPayment(amount: number, weights: number[]): number[] {
   const total = weights.reduce((a, b) => a + b, 0), c = toCents(amount); let left = c;
   return weights.map((w, i) => { const part = i === weights.length - 1 ? left : Math.round(c * w / (total || 1)); left -= part; return toDollars(part); });
 }
+// ---- costs (bills, checks, expenses, card charges)
+export interface QbCostLine { description: string; account: string; item: string; amount: number; customerId: string | null; customerName: string | null }
+// Expense lines in order. A line with no amount is skipped; a credit (negative) line is kept so it can be refused with a reason.
+export function readCostLines(raw: any[]): QbCostLine[] {
+  const out: QbCostLine[] = [];
+  for (const l of raw || []) {
+    if (l.DetailType !== 'AccountBasedExpenseLineDetail' && l.DetailType !== 'ItemBasedExpenseLineDetail') continue; if (!Number.isFinite(Number(l.Amount))) continue;
+    const d = l.AccountBasedExpenseLineDetail || l.ItemBasedExpenseLineDetail || {};
+    out.push({ description: String(l.Description || '').slice(0, 300), account: String(d.AccountRef?.name || '').slice(0, 120), item: String(d.ItemRef?.name || '').slice(0, 120), amount: Math.round(Number(l.Amount) * 100) / 100, customerId: d.CustomerRef?.value ? String(d.CustomerRef.value) : null, customerName: d.CustomerRef?.name ? String(d.CustomerRef.name).slice(0, 200) : null });
+  }
+  return out;
+}
+// A vendor is remembered by its QuickBooks id (or, with no id, by its name).
+export const vendorKey = (id: string | null | undefined, name: string | null | undefined) => (id ? 'id:' + id : 'name:' + norm(name || ''));
+export const OVERHEAD_CATEGORIES = ['Tools', 'Insurance', 'Vehicles & fuel', 'Office', 'Software', 'Other'];
+// A first guess at a company-overhead category from the account and vendor names; null when nothing fits.
+export function guessOverhead(account: string | null, vendor: string | null): string | null {
+  const t = norm(`${account || ''} ${vendor || ''}`);
+  if (/\b(insurance|geico|progressive|state farm|liability|workers comp)\b/.test(t)) return 'Insurance';
+  if (/\b(fuel|gas|gasoline|shell|wawa|racetrac|sunoco|auto|vehicle|truck|tolls?|sunpass)\b/.test(t)) return 'Vehicles & fuel';
+  if (/\b(software|subscription|saas|quickbooks|microsoft|google workspace|adobe|zoom)\b/.test(t)) return 'Software';
+  if (/\b(office|staples|postage|printing|phone|internet|utilities)\b/.test(t)) return 'Office';
+  if (/\b(tools?|equipment rental|harbor freight)\b/.test(t)) return 'Tools';
+  return null;
+}
+// Vendors that are almost never a project cost: taxes, payroll, insurance, loans, banks. Only a hint; nothing is hidden by it.
+export const looksNonProject = (vendor: string | null, account: string | null = '') => /\b(irs|eftps|internal revenue|department of revenue|dept of revenue|payroll|gusto|adp|paychex|insurance|geico|progressive|state farm|loan|interest|bank|owner|draw|transfer|credit card payment|sales tax|income tax)\b/.test(norm(`${vendor || ''} ${account || ''}`));
 export { matchTrade };
 export type { TradeRef };

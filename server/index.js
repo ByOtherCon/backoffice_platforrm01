@@ -31,6 +31,7 @@ import * as ct from './contracts.js';
 import * as pd from './projectDraft.js';
 import * as cod from './changeOrderDoc.js';
 import { projectsHome } from './projectsHome.js';
+import * as qbc from './qbCosts.js';
 import * as qbo from './quickbooks.js';
 import * as qbi from './qbImport.js';
 import * as acc from './access.js';
@@ -215,6 +216,18 @@ route('PUT', '/api/quickbooks/invoices/:id/project', async ({ user, params, body
 route('POST', '/api/quickbooks/invoices/:id/import', async ({ user, params, body }) => { manage(user); return qbi.importInvoice(uuid(params.id), body); });
 route('POST', '/api/quickbooks/invoices/:id/ignore', async ({ user, params }) => { manage(user); await qbi.ignore(uuid(params.id), true); return { ok: true }; });
 route('POST', '/api/quickbooks/invoices/:id/restore', async ({ user, params }) => { manage(user); await qbi.ignore(uuid(params.id), false); return { ok: true }; });
+// QuickBooks costs (bills, checks, expenses, card charges): reviewed, then imported as vendor invoices; non-project vendors can be hidden.
+route('GET', '/api/quickbooks/costs', async ({ req, user }) => { manage(user); return qbc.list(q1(req, 'status') || 'New', q1(req, 'search') || ''); });
+route('GET', '/api/quickbooks/costs/status', async ({ user }) => { manage(user); return { lastSync: await qbc.lastSync(), counts: await qbc.counts() }; });
+route('POST', '/api/quickbooks/costs/sync', async ({ user }) => { manage(user); return qbc.sync(); });
+route('GET', '/api/quickbooks/costs/hidden', async ({ req, user }) => { manage(user); return qbc.hiddenList(q1(req, 'search') || ''); });
+route('DELETE', '/api/quickbooks/costs/rules/:id', async ({ user, params }) => { manage(user); return qbc.removeRule(uuid(params.id)); });
+route('GET', '/api/quickbooks/costs/:id/prepare', async ({ req, user, params }) => { manage(user); const p = q1(req, 'projectId'); return qbc.prepare(uuid(params.id), p ? uuid(p) : null); });
+route('POST', '/api/quickbooks/costs/:id/import', async ({ user, params, body }) => { manage(user); return qbc.importCost(user, uuid(params.id), body); });
+route('POST', '/api/quickbooks/costs/:id/hide', async ({ user, params, body }) => { manage(user); return qbc.hide(uuid(params.id), { learn: !!body.learn }); });
+route('POST', '/api/quickbooks/costs/:id/unhide', async ({ user, params }) => { manage(user); await qbc.unhide(uuid(params.id)); return { ok: true }; });
+route('POST', '/api/quickbooks/costs/:id/ignore', async ({ user, params }) => { manage(user); await qbc.ignore(uuid(params.id), true); return { ok: true }; });
+route('POST', '/api/quickbooks/costs/:id/restore', async ({ user, params }) => { manage(user); await qbc.ignore(uuid(params.id), false); return { ok: true }; });
 route('GET', '/api/quickbooks/connect', async ({ user }) => { auth.requireRole(user, auth.SUPER); return { url: qbo.connectUrl(user) }; });
 route('GET', '/api/quickbooks/callback', async ({ req, res, user }) => {
   auth.requireRole(user, auth.SUPER); const p = new URL(req.url, 'http://x').searchParams;
@@ -380,7 +393,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const port = Number(process.env.PORT) || 3000;
   if (!process.env.DATABASE_URL) { console.error('DATABASE_URL is not set.'); process.exit(1); }
   bootstrapOwner().then((r) => console.log(r.created ? `Created the owner login for ${r.email}. Remove ADMIN_PASSWORD from the host settings now.` : r.reason.startsWith('Set ') ? r.reason : 'Owner login already set up.')).catch((e) => console.error('bootstrap failed', e.message));
-  server.listen(port, () => { console.log(`by Other Desk Platform on port ${port}`); bd.startScheduler(); setTimeout(() => folders.syncGcs(), 20000); setInterval(() => folders.syncGcs(), 3600000); setInterval(() => { qbo.status().then((st) => st.connected && st.connectedEnvironment === st.environment ? qbi.sync() : null).catch((e) => console.error('QuickBooks sync', e.message)); }, 3600000); setInterval(() => fu.closeDueCases().catch((e) => console.error('follow-up sweep', e.message)), 3600000); });
+  server.listen(port, () => { console.log(`by Other Desk Platform on port ${port}`); bd.startScheduler(); setTimeout(() => folders.syncGcs(), 20000); setInterval(() => folders.syncGcs(), 3600000); setInterval(() => { qbo.status().then((st) => st.connected && st.connectedEnvironment === st.environment ? qbi.sync().then(() => qbc.sync()) : null).catch((e) => console.error('QuickBooks sync', e.message)); }, 3600000); setInterval(() => fu.closeDueCases().catch((e) => console.error('follow-up sweep', e.message)), 3600000); });
   const watch = () => cp.scan().then(() => cp.scanNtos()).then(() => cp.sendQueued()).catch((e) => console.error('compliance scan failed', e.message));
   setTimeout(watch, 15_000); setInterval(watch, 6 * 3600_000);
 }

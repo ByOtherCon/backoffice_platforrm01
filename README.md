@@ -86,3 +86,15 @@ On a project, the **Contract** tab takes the signed subcontract or work order (P
 - A **tentative invoice schedule** is drafted from what the contract states (deposit, milestones, final payment), "monthly progress billing" when that is how it bills, and a retainage release line. Rows can be edited, skipped or added. Invoiced rows are locked. QuickBooks invoices are matched to these rows later.
 - Uploading a revised contract replaces the first one; invoiced schedule rows are kept.
 - Contract reads show up in Admin's AI usage as "Contracts and work orders".
+
+## QuickBooks invoices
+
+Admin → QuickBooks. Connect once (Intuit developer app keys on Render, then **Connect QuickBooks**). **Sync from QuickBooks** (also automatic every hour and right after connecting) reads invoices and payments into a review list. Nothing reaches Job Costing until someone presses **Review and import**.
+
+- A project is suggested from the contract code (C… or P…) in the invoice number, memo or customer, then from the customer/job name (for example `Sachse Construction:Mall at Millenia`), then from a customer already matched before. Unmatched invoices can be matched by hand or ignored.
+- Each invoice line is matched to the project's trades (adjustable). One QuickBooks invoice that covers several trades becomes one billing row per trade. A negative "retainage" line becomes retainage held, split in proportion; with none, the project's default retainage applies. A box lets you override it.
+- Payments already received come in with the invoice, split across its trade rows in proportion. Payments that arrive later on an imported invoice are added automatically.
+- Imported invoices are never rewritten. If the total changes in QuickBooks afterwards the invoice is flagged **Changed** for a person to look at.
+- The usual billing rules still apply: an invoice that would pass the trade's contract, or a payment above the invoice, is refused and nothing is saved.
+- An invoice that exactly matches a tentative line of the contract's invoice schedule marks that line Invoiced.
+- Sandbox keys (`QBO_ENVIRONMENT=sandbox`) read a test company. For real books use the production keys and remove that setting, then disconnect and connect again.

@@ -589,8 +589,9 @@ async function aiCard() {
 }
 
 // Super Admin: is the shared SharePoint folder connection working?
+let qbFilter = 'New';
 async function quickbooksCard() {
-  const s = await api('GET', '/quickbooks/status'), err = h('div'); const here = location.origin + '/api/quickbooks/callback';
+  const s = await api('GET', '/quickbooks/status'), err = h('div'); const live = s.connected && s.connectedEnvironment === s.environment; const rows = live ? await api('GET', '/quickbooks/invoices?status=' + qbFilter) : []; const here = location.origin + '/api/quickbooks/callback';
   const copy = (text) => h('button', { class: 'small', onclick: guard(err, async () => { await navigator.clipboard.writeText(text); notice(err, 'Copied. Paste it into the Intuit developer site exactly as it is.', 'ok'); }) }, 'Copy');
   return h('div', { class: 'card' }, h('h2', {}, 'QuickBooks (invoices and expenses)'), err,
     h('p', { class: 'muted' }, 'Set up once at developer.intuit.com: create an app for "QuickBooks Online and Payments" with the accounting scope, and add the redirect address below to its Redirect URIs. Then add the app\'s Client ID and Client Secret on Render as QBO_CLIENT_ID and QBO_CLIENT_SECRET.'),
@@ -600,9 +601,42 @@ async function quickbooksCard() {
     !s.configured ? h('p', { class: 'muted' }, 'Keys not added yet: ' + s.needs.join(', ') + '.')
       : s.connected ? h('div', {}, h('p', { class: 'ok' }, `Connected to ${s.company || 'company ' + s.realmId} (${s.connectedEnvironment === 'sandbox' ? 'sandbox test company, not your real books' : 'live company'}). Connected ${new Date(s.connectedAt).toLocaleString()}.`),
           s.connectedEnvironment !== s.environment ? h('p', { class: 'err' }, `The server is set to ${s.environment} but this connection is ${s.connectedEnvironment}. Disconnect and connect again.`) : '',
-          h('div', { class: 'row' }, h('button', { onclick: guard(err, async () => { if (confirm('Disconnect QuickBooks? Anything already imported stays.')) { await api('DELETE', '/quickbooks'); render(); } }) }, 'Disconnect')))
+          h('div', { class: 'row' }, h('button', { onclick: guard(err, async () => { if (confirm('Disconnect QuickBooks? Anything already imported stays.')) { await api('DELETE', '/quickbooks'); render(); } }) }, 'Disconnect')),
+          live ? qboInvoices(s, rows, err) : '')
       : h('div', {}, h('p', { class: 'muted' }, `Keys found (${s.environment === 'sandbox' ? 'sandbox test keys' : 'live keys'}). Press Connect, sign in to QuickBooks and choose the company.`),
           h('div', { class: 'row' }, h('button', { class: 'primary', onclick: guard(err, async () => { location.href = (await api('GET', '/quickbooks/connect')).url; }) }, 'Connect QuickBooks'))));
+}
+// QuickBooks invoices waiting for review, and the review screen. Importing only happens when a person presses Import.
+function qboInvoices(s, rows, err) {
+  const counts = s.counts || {}, last = s.lastSync;
+  const sync = h('button', { class: 'primary', onclick: guard(err, async () => { notice(err, 'Reading QuickBooks…', 'ok'); const r = await api('POST', '/quickbooks/sync', {}); notice(err, `Done. ${r.added} new invoice${r.added === 1 ? '' : 's'}, ${r.autoPaid} payment${r.autoPaid === 1 ? '' : 's'} added to imported invoices${r.changed ? ', ' + r.changed + ' changed in QuickBooks' : ''}.`, 'ok'); render(); }) }, 'Sync from QuickBooks');
+  const pick = h('select', { onchange: () => { qbFilter = pick.value; render(); } }, ['New', 'Changed', 'Imported', 'Ignored', 'All'].map((k) => h('option', { value: k }, k + (counts[k] ? ` (${counts[k]})` : '')))); pick.value = qbFilter;
+  const usd0 = (n) => usd(n);
+  const table = rows.length ? h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, ['Invoice', 'Date', 'QuickBooks customer', 'Total', 'Project', 'Status'].map((t, i) => h('th', { class: i === 3 ? 'n' : '' }, t)), h('th'))),
+    h('tbody', {}, rows.map((r) => h('tr', {}, h('td', {}, r.number || r.qbId), h('td', {}, r.date || ''), h('td', {}, r.customer || ''), h('td', { class: 'n' }, usd0(r.total)),
+      h('td', {}, r.project || (r.suggestedProjectId ? h('span', { class: 'muted', title: r.suggestedBy || '' }, 'Suggested (' + (r.suggestedBy || 'match') + ')') : h('span', { class: 'muted' }, 'Not matched'))),
+      h('td', {}, h('span', { class: 'pill ' + (r.status === 'Imported' ? 'Approved' : r.status === 'Changed' ? 'Rejected' : r.status === 'Ignored' ? '' : 'Pending'), title: r.message || '' }, r.status), r.status === 'Changed' ? h('div', { class: 'muted', style: 'font-size:12px;max-width:18rem' }, r.message) : ''),
+      h('td', {}, r.status === 'New' ? [h('button', { class: 'small primary', onclick: () => qboReview(r) }, 'Review and import'), ' ', h('button', { class: 'small', onclick: guard(err, async () => { await api('POST', `/quickbooks/invoices/${r.id}/ignore`, {}); render(); }) }, 'Ignore')]
+        : r.status === 'Ignored' ? h('button', { class: 'small', onclick: guard(err, async () => { await api('POST', `/quickbooks/invoices/${r.id}/restore`, {}); render(); }) }, 'Restore') : ''))))))
+    : h('p', { class: 'muted' }, qbFilter === 'New' ? 'Nothing waiting. Press Sync from QuickBooks to look for new invoices.' : 'Nothing here.');
+  return h('div', { style: 'margin-top:1.2rem;border-top:1px solid var(--line);padding-top:1rem' }, h('div', { class: 'row spread' }, h('h3', { style: 'margin:0' }, 'Invoices from QuickBooks'), h('div', { class: 'row' }, pick, sync)),
+    h('p', { class: 'muted', style: 'font-size:13px' }, (last ? `Last read ${new Date(last.at).toLocaleString()} (${last.invoicesSeen} invoices looked at). ` : 'Not read yet. ') + 'It also checks by itself every hour. Nothing reaches Job Costing until you press Import.'), table);
+}
+async function qboReview(inv) {
+  const projects = await api('GET', '/projects'); const err = h('div'), body = h('div');
+  const proj = h('select', {}, h('option', { value: '' }, 'Choose the project…'), projects.map((p) => h('option', { value: p.id }, `${p.name} (${p.gc})`))); proj.value = inv.projectId || inv.suggestedProjectId || '';
+  const ret = num(''), trades = {}; let info = null;
+  const draw = async () => {
+    trades.sel = []; if (!proj.value) { body.replaceChildren(h('p', { class: 'muted' }, 'Choose the project to match the lines to its trades.')); return; }
+    const r = await api('GET', `/quickbooks/invoices/${inv.id}/prepare?projectId=${proj.value}`); info = r.project;
+    body.replaceChildren(h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'On the QuickBooks invoice'), h('th', { class: 'n' }, 'Amount'), h('th', {}, 'Trade on this project'))),
+      h('tbody', {}, inv.lines.map((l, i) => { if (l.retainage) return h('tr', {}, h('td', {}, l.description || l.itemName), h('td', { class: 'n' }, usd(l.amount)), h('td', { class: 'muted' }, 'Retainage held back')); const sel = h('select', { class: r.guess[i] ? '' : 'needs' }, h('option', { value: '' }, 'Choose trade…'), info.trades.map((t) => h('option', { value: t.id }, t.name))); sel.value = r.guess[i] || ''; trades.sel[i] = sel; return h('tr', {}, h('td', {}, l.description || l.itemName || 'Line ' + (i + 1)), h('td', { class: 'n' }, usd(l.amount)), h('td', {}, sel)); })))),
+      h('p', { class: 'muted', style: 'font-size:13px' }, info.trades.length ? `Retainage: leave the box blank to use the invoice's own retainage line, or this project's ${info.retainagePct}%.` : 'This project has no trades yet. Add them (or apply the contract) first.'));
+  };
+  proj.onchange = guard(err, draw); draw().catch((e) => notice(err, e.message));
+  const pays = inv.payments.length ? h('p', { class: 'muted wide' }, `Payments already received in QuickBooks: ${inv.payments.map((p) => `${usd(p.amount)} on ${p.date}`).join(', ')}. They are added with the invoice.`) : '';
+  formModal(`QuickBooks invoice ${inv.number || inv.qbId} · ${usd(inv.total)} · ${inv.date || ''}`, [h('p', { class: 'muted wide' }, `Customer in QuickBooks: ${inv.customer || '—'}${inv.suggestedBy ? ' · suggested from ' + inv.suggestedBy : ''}`), field('Project', proj, 'wide'), h('div', { class: 'wide' }, body), field('Retainage held (optional)', ret), pays, err],
+    async () => { const lines = (trades.sel || []).map((s, i) => (s ? { index: i, projectTradeId: s.value || null } : null)).filter(Boolean); await api('POST', `/quickbooks/invoices/${inv.id}/import`, { projectId: proj.value, lines, retainageHeld: ret.value }); render(); }, 'Import');
 }
 async function sharepointCard() {
   const s = await api('GET', '/sharepoint/status?test=1'), err = h('div');

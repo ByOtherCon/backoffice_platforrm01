@@ -29,6 +29,7 @@ import * as bd from './bids.js';
 import * as pw from './passwords.js';
 import * as ct from './contracts.js';
 import * as qbo from './quickbooks.js';
+import * as qbi from './qbImport.js';
 import { bootstrapOwner } from './bootstrap.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
@@ -165,12 +166,19 @@ route('PUT', '/api/opportunities/:id', async ({ user, params, body }) => { await
 route('GET', '/api/opportunities/:id/folder-files', async ({ user, params }) => { estRead(user); return folders.folderFiles(uuid(params.id)); });
 route('POST', '/api/opportunities/:id/folder', async ({ user, params }) => { estWrite(user); return folders.ensureOpportunityFolder(uuid(params.id)); });
 route('POST', '/api/projects/:id/folder', async ({ user, params }) => { manage(user); return folders.ensureProjectFolder(uuid(params.id)); });
-route('GET', '/api/quickbooks/status', async ({ user }) => { auth.requireRole(user, auth.SUPER); return qbo.status(); });
+route('GET', '/api/quickbooks/status', async ({ user }) => { auth.requireRole(user, auth.SUPER); return { ...(await qbo.status()), lastSync: await qbi.lastSync(), counts: await qbi.counts() }; });
+route('GET', '/api/quickbooks/invoices', async ({ req, user }) => { manage(user); return qbi.list(q1(req, 'status') || 'New'); });
+route('POST', '/api/quickbooks/sync', async ({ user }) => { manage(user); return qbi.sync(); });
+route('GET', '/api/quickbooks/invoices/:id/prepare', async ({ req, user, params }) => { manage(user); return qbi.guessTrades(uuid(params.id), uuid(q1(req, 'projectId') || '')); });
+route('PUT', '/api/quickbooks/invoices/:id/project', async ({ user, params, body }) => { manage(user); await qbi.setProject(uuid(params.id), body.projectId ? uuid(body.projectId) : null); return { ok: true }; });
+route('POST', '/api/quickbooks/invoices/:id/import', async ({ user, params, body }) => { manage(user); return qbi.importInvoice(uuid(params.id), body); });
+route('POST', '/api/quickbooks/invoices/:id/ignore', async ({ user, params }) => { manage(user); await qbi.ignore(uuid(params.id), true); return { ok: true }; });
+route('POST', '/api/quickbooks/invoices/:id/restore', async ({ user, params }) => { manage(user); await qbi.ignore(uuid(params.id), false); return { ok: true }; });
 route('GET', '/api/quickbooks/connect', async ({ user }) => { auth.requireRole(user, auth.SUPER); return { url: qbo.connectUrl(user) }; });
 route('GET', '/api/quickbooks/callback', async ({ req, res, user }) => {
   auth.requireRole(user, auth.SUPER); const p = new URL(req.url, 'http://x').searchParams;
   if (p.get('error')) throw bad('Intuit did not allow the connection (' + p.get('error') + ').');
-  await qbo.finishConnect(p.get('code'), p.get('state'), p.get('realmId')); res.writeHead(302, { location: '/#/admin', 'cache-control': 'no-store' }); res.end(); return 'sent';
+  await qbo.finishConnect(p.get('code'), p.get('state'), p.get('realmId')); qbi.sync().catch((e) => console.error('QuickBooks first sync', e.message)); res.writeHead(302, { location: '/#/admin', 'cache-control': 'no-store' }); res.end(); return 'sent';
 });
 route('DELETE', '/api/quickbooks', async ({ user }) => { auth.requireRole(user, auth.SUPER); await qbo.disconnect(); return { ok: true }; });
 route('GET', '/api/sharepoint/status', async ({ req, user }) => { auth.requireRole(user, [...auth.MANAGE, 'Estimator']); return q1(req, 'test') === '1' && auth.SUPER.includes(user.role) ? sharepoint.status() : { configured: sharepoint.configured() }; });
@@ -318,7 +326,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const port = Number(process.env.PORT) || 3000;
   if (!process.env.DATABASE_URL) { console.error('DATABASE_URL is not set.'); process.exit(1); }
   bootstrapOwner().then((r) => console.log(r.created ? `Created the owner login for ${r.email}. Remove ADMIN_PASSWORD from the host settings now.` : r.reason.startsWith('Set ') ? r.reason : 'Owner login already set up.')).catch((e) => console.error('bootstrap failed', e.message));
-  server.listen(port, () => { console.log(`byOther Project Desk on port ${port}`); bd.startScheduler(); setTimeout(() => folders.syncGcs(), 20000); setInterval(() => folders.syncGcs(), 3600000); setInterval(() => fu.closeDueCases().catch((e) => console.error('follow-up sweep', e.message)), 3600000); });
+  server.listen(port, () => { console.log(`byOther Project Desk on port ${port}`); bd.startScheduler(); setTimeout(() => folders.syncGcs(), 20000); setInterval(() => folders.syncGcs(), 3600000); setInterval(() => { qbo.status().then((st) => st.connected && st.connectedEnvironment === st.environment ? qbi.sync() : null).catch((e) => console.error('QuickBooks sync', e.message)); }, 3600000); setInterval(() => fu.closeDueCases().catch((e) => console.error('follow-up sweep', e.message)), 3600000); });
   const watch = () => cp.scan().then(() => cp.scanNtos()).then(() => cp.sendQueued()).catch((e) => console.error('compliance scan failed', e.message));
   setTimeout(watch, 15_000); setInterval(watch, 6 * 3600_000);
 }

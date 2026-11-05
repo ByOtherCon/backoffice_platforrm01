@@ -589,6 +589,16 @@ async function aiCard() {
 }
 
 // Super Admin: is the shared SharePoint folder connection working?
+async function quickbooksCard() {
+  const s = await api('GET', '/quickbooks/status'), err = h('div'); const here = location.origin + '/api/quickbooks/callback';
+  const copy = (text) => h('button', { class: 'small', onclick: guard(err, async () => { await navigator.clipboard.writeText(text); notice(err, 'Copied. Paste it into the Intuit developer site exactly as it is.', 'ok'); }) }, 'Copy');
+  return h('div', { class: 'card' }, h('h2', {}, 'QuickBooks (invoices and expenses)'), err,
+    h('p', { class: 'muted' }, 'Set up once at developer.intuit.com: create an app for "QuickBooks Online and Payments" with the accounting scope, and add the redirect address below to its Redirect URIs. Then add the app\'s Client ID and Client Secret on Render as QBO_CLIENT_ID and QBO_CLIENT_SECRET.'),
+    s.redirectUri ? h('div', {}, h('label', {}, 'Redirect address to give Intuit'), h('div', { class: 'row' }, h('input', { readonly: true, value: s.redirectUri, style: 'flex:1;min-width:20rem', onfocus: (e) => e.target.select() }), copy(s.redirectUri)),
+      s.redirectUri !== here ? h('p', { class: 'err' }, `This page is open at ${location.origin}, but the server will use ${new URL(s.redirectUri).origin}. Intuit must get the address you actually sign in with. If they differ, set PUBLIC_URL on Render to ${location.origin} and redeploy, then reload this page.`) : h('p', { class: 'ok' }, 'This matches the address you are using now.'))
+      : h('p', { class: 'err' }, s.problem || 'The server does not know its own address.'),
+    h('p', { class: s.configured ? 'ok' : 'muted' }, s.configured ? `Keys found (${s.environment}). The Connect button comes with the next update.` : 'Keys not added yet: ' + s.needs.join(', ') + '.'));
+}
 async function sharepointCard() {
   const s = await api('GET', '/sharepoint/status?test=1'), err = h('div');
   return h('div', { class: 'card' }, h('div', { class: 'row spread' }, h('h2', {}, 'SharePoint (shared project folders)'), s.configured ? h('button', { class: 'small', onclick: () => render() }, 'Test connection') : ''), err,
@@ -755,7 +765,7 @@ async function adminView() {
   if (['Super Admin', 'Sub Admin'].includes(state.user.role)) parts.push(await bidFeedCard());
   parts.push(await clockSettingsCard());
   if (['Super Admin', 'Sub Admin'].includes(state.user.role)) parts.push(await overheadCard());
-  parts.push(await aiCard()); if (isSuper()) { parts.push(await sharepointCard()); parts.push(await aiReportCard()); }
+  parts.push(await aiCard()); if (isSuper()) { parts.push(await sharepointCard()); parts.push(await quickbooksCard()); parts.push(await aiReportCard()); }
   if (isSuper()) parts.push(await usersSection());
   return shell('admin', [h('h1', {}, 'Admin'), h('p', { class: 'sub' }, 'Create vendors, suppliers, employees, trades and GCs here. Projects pick from these lists. Archive instead of delete once a record has history.'), ...parts]);
 }

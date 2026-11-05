@@ -28,6 +28,7 @@ import * as tk from './takeoff.js';
 import * as bd from './bids.js';
 import * as pw from './passwords.js';
 import * as ct from './contracts.js';
+import * as qbo from './quickbooks.js';
 import { bootstrapOwner } from './bootstrap.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
@@ -164,6 +165,7 @@ route('PUT', '/api/opportunities/:id', async ({ user, params, body }) => { await
 route('GET', '/api/opportunities/:id/folder-files', async ({ user, params }) => { estRead(user); return folders.folderFiles(uuid(params.id)); });
 route('POST', '/api/opportunities/:id/folder', async ({ user, params }) => { estWrite(user); return folders.ensureOpportunityFolder(uuid(params.id)); });
 route('POST', '/api/projects/:id/folder', async ({ user, params }) => { manage(user); return folders.ensureProjectFolder(uuid(params.id)); });
+route('GET', '/api/quickbooks/status', async ({ user }) => { auth.requireRole(user, auth.SUPER); return qbo.status(); });
 route('GET', '/api/sharepoint/status', async ({ req, user }) => { auth.requireRole(user, [...auth.MANAGE, 'Estimator']); return q1(req, 'test') === '1' && auth.SUPER.includes(user.role) ? sharepoint.status() : { configured: sharepoint.configured() }; });
 route('POST', '/api/opportunities/:id/status', async ({ user, params, body }) => es.transition(estWrite(user), uuid(params.id), body));
 route('POST', '/api/opportunities/:id/notes', async ({ user, params, body }) => { await es.addUserNote(estWrite(user), uuid(params.id), body.body); return { ok: true }; });

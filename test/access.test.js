@@ -56,12 +56,12 @@ test('the owner cannot be restricted, and bad choices are refused', async () => 
 });
 test('dashboard cards follow the areas and the cards the owner chose; money cards are not lent to a project manager', async () => {
   const ws = (u) => dash.allowedWidgets(u).sort();
-  assert.ok(ws({ role: 'Exec Assistant' }).includes('receivables')); assert.deepEqual(ws({ role: 'Estimator' }), ['estimating', 'todos']); assert.ok(!ws({ role: 'Project Manager' }).includes('receivables'));
-  assert.deepEqual(ws({ role: 'Exec Assistant', access: { widgets: ['todos', 'estimating'] } }), ['estimating', 'todos']);
+  assert.ok(ws({ role: 'Exec Assistant' }).includes('receivables')); assert.deepEqual(ws({ role: 'Estimator' }), ['estimating', 'messages', 'todos']); assert.ok(!ws({ role: 'Project Manager' }).includes('receivables'));
+  assert.deepEqual(ws({ role: 'Exec Assistant', access: { widgets: ['todos', 'estimating'] } }), ['estimating', 'messages', 'todos']);   // to-dos and messages are always there
   assert.ok(ws({ role: 'Estimator', access: { areas: ['estimating', 'projects'] } }).includes('receivables'));   // a lent area brings its cards
   assert.ok(!ws({ role: 'Exec Assistant', access: { areas: ['estimating'] } }).includes('costing'));            // an area off removes its cards
   await setAccess('sub', { areas: ['projects', 'estimating'], widgets: ['costing', 'estimating'] });
-  const d = (await call('GET', '/api/dashboard/widgets', null, sub)).body; assert.deepEqual(d.widgets.sort(), ['costing', 'estimating']);
+  const d = (await call('GET', '/api/dashboard/widgets', null, sub)).body; assert.deepEqual(d.widgets.sort(), ['costing', 'estimating', 'messages', 'todos']);
   assert.equal((await call('PUT', '/api/prefs/dashboard', { widgets: [{ id: 'receivables', visible: true }] }, sub)).status, 400);   // cannot pick a card they were not given
 });
 test('area switches never touch pages with no area (messages, to-dos, clock, password)', async () => {

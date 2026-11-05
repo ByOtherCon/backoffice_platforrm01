@@ -115,3 +115,7 @@ Admin → QuickBooks. Connect once (Intuit developer app keys on Render, then **
 ## To-dos and alerts
 
 To-dos default to today as the start date, have priority levels (Low, Normal, High, Urgent) and can be general (no attached record). Each to-do has a notes log that writes itself (who added, assigned, changed priority or due date, finished) plus comments from anyone who can open it, and can be sent to other people as a message. The number on the Messages tab counts unread messages plus to-dos that are new to you, due today or overdue.
+
+## Dashboard
+
+Everyone lands on the dashboard after signing in. It is a grid of widgets (like phone widgets): each card can be **Small, Medium, Large or Full Width** and shows **Compact, Standard or Full** detail. A card never gets narrower than its content needs (the Projects table widens as it shows more columns). **Edit Dashboard** lets each person drag or arrow cards into order, resize them, remove them, and add them back from the tray; it saves as you go and is personal. A person only gets cards for the areas they have (Admin → Company → Users & access), each job role starts with its own layout, and **Reset To My Job's Layout** returns to it. The **My To-Dos** and **Messages** cards can be moved and resized but never removed.

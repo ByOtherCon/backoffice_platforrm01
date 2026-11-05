@@ -20,7 +20,7 @@ export const ROLE_AREAS = {
   Estimator: ['estimating', 'reports'], 'Project Manager': ['projects', 'reports'], Employee: [],
 };
 // What the dashboard cards belong to. A card with no area is for everyone (their own to-dos).
-export const WIDGET_AREA = { estimating: 'estimating', presence: 'projects', costing: 'projects', chart: 'projects', forecast: 'projects', receivables: 'projects', payables: 'projects', projects: 'projects', compliance: 'compliance', overhead: 'costs', todos: null };
+export const WIDGET_AREA = { estimating: 'estimating', presence: 'projects', costing: 'projects', chart: 'projects', forecast: 'projects', receivables: 'projects', payables: 'projects', projects: 'projects', compliance: 'compliance', overhead: 'costs', todos: null, messages: null };
 
 const known = (list) => (Array.isArray(list) ? list.filter((a) => AREA_IDS.includes(a)) : null);
 // The areas this person can use right now.

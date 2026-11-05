@@ -51,12 +51,12 @@ test('dates the database stamps are Eastern, like the rest of the app (not the U
 });
 
 test('what each role sees', async () => {
-  const keys = async (c) => Object.keys((await call('GET', '/api/dashboard/widgets', null, c)).body).filter((k) => !['role', 'widgets', 'period', 'all', 'prefs'].includes(k)).sort();
+  const keys = async (c) => Object.keys((await call('GET', '/api/dashboard/widgets', null, c)).body).filter((k) => !['role', 'widgets', 'period', 'all', 'prefs', 'defaults', 'locked'].includes(k)).sort();
   assert.equal((await call('GET', '/api/dashboard/widgets', null, field)).status, 403); assert.equal((await call('GET', '/api/dashboard/widgets')).status, 401);
-  assert.deepEqual(await keys(est), ['estimating', 'todos']);                                                                        // estimators: estimating and their own to-dos, no money
-  assert.deepEqual(await keys(pm), ['costing', 'presence', 'projects', 'todos']);
+  assert.deepEqual(await keys(est), ['estimating', 'messages', 'todos']);                                                                        // estimators: estimating and their own to-dos, no money
+  assert.deepEqual(await keys(pm), ['costing', 'messages', 'presence', 'projects', 'todos']);
   assert.deepEqual((await call('GET', '/api/dashboard/widgets', null, asst)).body.widgets.includes('overhead'), false);              // overhead is for approvers
-  const full = await keys(sub); for (const k of ['chart', 'costing', 'compliance', 'estimating', 'forecast', 'overhead', 'payables', 'presence', 'projects', 'receivables', 'todos']) assert.ok(full.includes(k) || k === 'chart', k);
+  const full = await keys(sub); for (const k of ['chart', 'costing', 'compliance', 'estimating', 'forecast', 'overhead', 'payables', 'presence', 'projects', 'receivables', 'todos', 'messages']) assert.ok(full.includes(k) || k === 'chart', k);
   assert.ok((await call('GET', '/api/dashboard/widgets', null, owner)).body.widgets.includes('overhead'));
   const p = (await call('GET', '/api/dashboard/widgets', null, pm)).body; assert.deepEqual(p.projects.map((x) => x.name), ['Project A']); assert.equal(p.costing.activeProjects, 1);   // only the PM's own project
 });
@@ -88,11 +88,28 @@ test('forecast stays silent without history', async () => {
 test('saved layouts: per user, validated against the widgets that person may use', async () => {
   const layout = { widgets: [{ id: 'todos', visible: true }, { id: 'costing', visible: false }, { id: 'chart', visible: true }], period: 'quarter' };
   assert.equal((await call('PUT', '/api/prefs/dashboard', layout, sub)).status, 200);
-  assert.deepEqual((await call('GET', '/api/prefs/dashboard', null, sub)).body, layout); assert.deepEqual((await call('GET', '/api/prefs/dashboard', null, owner)).body, {});
+  assert.deepEqual((await call('GET', '/api/prefs/dashboard', null, sub)).body, { ...layout, widgets: [...layout.widgets, { id: 'messages', visible: true }] }); assert.deepEqual((await call('GET', '/api/prefs/dashboard', null, owner)).body, {});   // messages was not listed, so it is added: it can never be left out
   assert.equal((await call('GET', '/api/dashboard/widgets', null, sub)).body.prefs.period, 'quarter');
   assert.equal((await call('PUT', '/api/prefs/dashboard', { widgets: [{ id: 'costing', visible: true }] }, est)).status, 400);       // estimator may not pin a money widget
   assert.equal((await call('PUT', '/api/prefs/dashboard', { widgets: [{ id: 'todos', visible: true }, { id: 'todos', visible: true }] }, est)).status, 400);
   assert.equal((await call('PUT', '/api/prefs/dashboard', { widgets: [{ id: 'todos', visible: 'yes' }] }, est)).status, 400);
   assert.equal((await call('PUT', '/api/prefs/dashboard', { widgets: [{ id: 'todos', visible: true }], period: 'decade' }, est)).status, 400);
   assert.equal((await call('PUT', '/api/prefs/secrets', {}, est)).status, 404); assert.equal((await call('PUT', '/api/prefs/dashboard', layout, field)).status, 401);
+});
+
+test('widgets have a size and a level of detail; the to-do list and messages can move but never be removed; each job has a starting layout', async () => {
+  const put = (b, who) => call('PUT', '/api/prefs/dashboard', b, who);
+  const ok = await put({ widgets: [{ id: 'projects', visible: true, size: 'XL', detail: 'full' }, { id: 'todos', visible: false, size: 'S', detail: 'compact' }, { id: 'messages', visible: true, size: 'L' }, { id: 'costing', visible: false }] }, sub); assert.equal(ok.status, 200);
+  const saved = (await call('GET', '/api/prefs/dashboard', null, sub)).body.widgets; assert.deepEqual(saved.find((w) => w.id === 'projects'), { id: 'projects', visible: true, size: 'XL', detail: 'full' });
+  assert.deepEqual(saved.find((w) => w.id === 'todos'), { id: 'todos', visible: true, size: 'S', detail: 'compact' });   // asked to hide it: it stays, but keeps the size
+  assert.equal((await put({ widgets: [{ id: 'projects', visible: true, size: 'HUGE' }] }, sub)).status, 400); assert.equal((await put({ widgets: [{ id: 'projects', visible: true, detail: 'everything' }] }, sub)).status, 400);
+  assert.equal((await put({ widgets: [{ id: 'estimating', visible: true }] }, est)).status, 200); assert.deepEqual((await call('GET', '/api/prefs/dashboard', null, est)).body.widgets.map((w) => w.id).sort(), ['estimating', 'messages', 'todos']);
+  const d = (await call('GET', '/api/dashboard/widgets', null, est)).body; assert.deepEqual(d.locked.sort(), ['messages', 'todos']);
+  const start = (c) => call('GET', '/api/dashboard/widgets', null, c).then((r) => r.body.defaults); const e = await start(pm); assert.equal(e[0].id, 'projects'); assert.deepEqual([e[0].size, e[0].visible], ['XL', true]);   // a project manager starts with the projects table, full width
+  assert.deepEqual((await start(est)).map((w) => w.id), ['estimating', 'todos', 'messages']); const o = await start(owner); assert.ok(o.find((w) => w.id === 'overhead' && !w.visible));   // cards a role may have but does not start with are waiting in the tray
+  assert.ok((await start(est)).every((w) => w.visible));
+});
+test('the messages card carries unread conversations', async () => {
+  await q('DELETE FROM threads'); await call('POST', '/api/threads', { subject: 'Hello there', body: 'Ping about the job', memberIds: [(await q(`SELECT id FROM app_users WHERE email='est@x.net'`))[0].id] }, owner);
+  const m = (await call('GET', '/api/dashboard/widgets', null, est)).body.messages; assert.equal(m.unread, 1); assert.deepEqual([m.items[0].subject, m.items[0].unread, m.items[0].preview], ['Hello there', 1, 'Ping about the job']);
 });

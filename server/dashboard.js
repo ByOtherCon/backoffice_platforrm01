@@ -6,22 +6,42 @@ import * as es from './estimating.js';
 import * as tc from './timeclock.js';
 import * as cp from './compliance.js';
 import * as oh from './overheadApi.js';
-import { listTodos } from './messaging.js';
+import { listTodos, listThreads } from './messaging.js';
 import { monthKey, addMonths, projectPeriod, quarterMonths, yearMonths } from '../src/lib/forecast.ts';
 import { todayEastern } from '../src/lib/estimating.ts';
 import { areasFor, lentAreas, hasLentManage, WIDGET_AREA } from './access.js';
 
-export const WIDGETS = ['estimating', 'presence', 'costing', 'chart', 'receivables', 'payables', 'projects', 'forecast', 'compliance', 'overhead', 'todos'];
+export const WIDGETS = ['estimating', 'presence', 'costing', 'chart', 'receivables', 'payables', 'projects', 'forecast', 'compliance', 'overhead', 'todos', 'messages'];
+// The to-do list and messages can be moved and resized but never taken off the dashboard.
+export const LOCKED = ['todos', 'messages'];
+export const SIZES = ['S', 'M', 'L', 'XL'];
+export const DETAILS = ['compact', 'standard', 'full'];
 const r2 = (n) => Math.round(n * 100) / 100;
-const can = { estimating: [...MANAGE, 'Estimator'], presence: [...MANAGE, 'Project Manager'], costing: [...MANAGE, 'Project Manager'], chart: MANAGE, receivables: MANAGE, payables: MANAGE, projects: [...MANAGE, 'Project Manager'], forecast: MANAGE, compliance: MANAGE, overhead: APPROVERS, todos: [...MANAGE, 'Estimator', 'Project Manager'] };
-export const WIDGET_LABELS = { estimating: 'Estimating', presence: 'Time clock: who is in', costing: 'Costing at a glance', chart: 'Billed vs. cost', receivables: 'Owed to us (aging)', payables: 'We owe', projects: 'Projects', forecast: 'Forecast', compliance: 'Compliance & approvals', overhead: 'Company overhead', todos: 'My to-dos' };
-export const widgetList = () => WIDGETS.map((id) => ({ id, label: WIDGET_LABELS[id], area: WIDGET_AREA[id] }));
+const can = { estimating: [...MANAGE, 'Estimator'], presence: [...MANAGE, 'Project Manager'], costing: [...MANAGE, 'Project Manager'], chart: MANAGE, receivables: MANAGE, payables: MANAGE, projects: [...MANAGE, 'Project Manager'], forecast: MANAGE, compliance: MANAGE, overhead: APPROVERS, todos: [...MANAGE, 'Estimator', 'Project Manager'], messages: [...MANAGE, 'Estimator', 'Project Manager'] };
+export const WIDGET_LABELS = { estimating: 'Estimating', presence: 'Time clock: who is in', costing: 'Costing at a glance', chart: 'Billed vs. cost', receivables: 'Owed to us (aging)', payables: 'We owe', projects: 'Projects', forecast: 'Forecast', compliance: 'Compliance & approvals', overhead: 'Company overhead', todos: 'My to-dos', messages: 'Messages' };
+export const widgetList = () => WIDGETS.map((id) => ({ id, label: WIDGET_LABELS[id], area: WIDGET_AREA[id], locked: LOCKED.includes(id) }));
 // Cards a person can have: their role's cards for the areas they have, plus cards for an area lent to them; then only the ones the owner ticked, if they ticked some.
 export function allowedWidgets(user) {
   const areas = areasFor(user), lent = lentAreas(user);
   let list = WIDGETS.filter((w) => { const a = WIDGET_AREA[w], byRole = can[w].includes(user.role); return a ? areas.includes(a) && (byRole || lent.includes(a)) : byRole || lent.length > 0; });
   if (Array.isArray(user.access?.widgets)) list = list.filter((w) => user.access.widgets.includes(w));
+  for (const w of LOCKED) if (can[w].includes(user.role) && !list.includes(w)) list.push(w);   // never removable, whatever was ticked
   return list;
+}
+// Where a person starts, by job: a size and a level of detail for each card. Cards they may have but are not listed here start hidden.
+const START = {
+  'Super Admin': [['costing', 'L'], ['messages', 'M'], ['todos', 'M'], ['projects', 'XL'], ['chart', 'L'], ['receivables', 'S'], ['payables', 'S'], ['forecast', 'M'], ['compliance', 'M'], ['estimating', 'M'], ['presence', 'S', 'compact']],
+  'Exec Assistant': [['todos', 'M'], ['messages', 'M'], ['projects', 'XL'], ['receivables', 'M'], ['payables', 'M'], ['compliance', 'L'], ['presence', 'S', 'compact'], ['costing', 'M', 'compact']],
+  Estimator: [['estimating', 'L'], ['todos', 'M'], ['messages', 'M']],
+  'Project Manager': [['projects', 'XL'], ['presence', 'M'], ['costing', 'M', 'compact'], ['todos', 'M'], ['messages', 'M']],
+};
+START['Sub Admin'] = START['Super Admin'];
+export function defaultLayout(user) {
+  const ok = allowedWidgets(user), base = (START[user.role] ?? []).filter(([id]) => ok.includes(id));
+  const out = base.map(([id, size, detail]) => ({ id, visible: true, size, detail: detail || 'standard' }));
+  for (const id of LOCKED) if (ok.includes(id) && !out.some((w) => w.id === id)) out.unshift({ id, visible: true, size: 'M', detail: 'standard' });
+  for (const id of ok) if (!out.some((w) => w.id === id)) out.push({ id, visible: false, size: 'M', detail: 'standard' });
+  return out;
 }
 
 export async function getPrefs(user, key) { const [r] = await q('SELECT value FROM user_prefs WHERE user_id=$1 AND key=$2', [user.id, key]); return r?.value ?? null; }
@@ -34,10 +54,12 @@ export async function savePrefs(user, key, value) {
   if (JSON.stringify(value ?? null).length > 20000) throw bad('That layout is too large.');
   if (key === 'dashboard') {
     const ok = allowedWidgets(user);
-    if (!Array.isArray(value?.widgets) || value.widgets.length > 20 || value.widgets.some((w) => typeof w.id !== 'string' || !ok.includes(w.id) || typeof w.visible !== 'boolean')) throw bad('Choose widgets you have access to.');
+    if (!Array.isArray(value?.widgets) || value.widgets.length > 30 || value.widgets.some((w) => typeof w.id !== 'string' || !ok.includes(w.id) || typeof w.visible !== 'boolean' || (w.size !== undefined && !SIZES.includes(w.size)) || (w.detail !== undefined && !DETAILS.includes(w.detail)))) throw bad('Choose widgets you have access to.');
     if (new Set(value.widgets.map((w) => w.id)).size !== value.widgets.length) throw bad('Each widget can appear once.');
     if (value.period && !['month', 'quarter', 'year'].includes(value.period)) throw bad('Choose month, quarter or year.');
-    value = { widgets: value.widgets.map(({ id, visible }) => ({ id, visible })), period: value.period || 'month' };
+    const widgets = value.widgets.map(({ id, visible, size, detail }) => ({ id, visible, ...(size ? { size } : {}), ...(detail ? { detail } : {}) }));
+    for (const id of LOCKED) { const w = widgets.find((x) => x.id === id); if (w) w.visible = true; else if (ok.includes(id)) widgets.push({ id, visible: true }); }   // moved or resized, never removed
+    value = { widgets, period: value.period || 'month' };
   }
   await q('INSERT INTO user_prefs(user_id,key,value) VALUES ($1,$2,$3) ON CONFLICT (user_id,key) DO UPDATE SET value=$3, updated_at=now()', [user.id, key, value]);
   return value;
@@ -69,7 +91,7 @@ export async function widgetData(user, { period = 'month' } = {}) {
   if (ok.has('estimating')) jobs.push((async () => { const l = await es.list({ tab: 'proposals' }); const i = await es.insights(); out.estimating = { ...l.stats, winRate: i.overall.winRate, pipelineOpen: i.pipeline.open, pipelineValue: i.pipeline.value, expectedAwards: i.pipeline.expected, enough: i.enough }; })());
   if (ok.has('presence')) jobs.push((async () => { const [act, wk] = await Promise.all([tc.activeNow(), q(`SELECT COALESCE(SUM(total_hours),0)::float AS hours FROM time_entries WHERE status='complete' AND work_date >= date_trunc('week', ${ET_TODAY})`)]); out.presence = { active: act.map((a) => ({ employee: a.employee, project: a.project, trade: a.trade, since: a.clock_in, late: a.late_in })), weekHours: wk[0].hours }; })());
   if (ok.has('costing') || ok.has('projects')) jobs.push((async () => { const [d, ps] = await Promise.all([portfolio(user, mgr), listProjects(user, mgr)]); if (ok.has('costing')) out.costing = d;
-    out.projects = ps.filter((p) => p.active).sort((a, b) => b.contract - a.contract).slice(0, 12).map((p) => ({ id: p.id, name: p.name, gc: p.gc, contract: p.contract, billed: p.billed, currentlyDue: p.currentlyDue, projectedProfit: p.projectedProfit, marginPct: p.marginPct })); })());
+    out.projects = ps.filter((p) => p.active).sort((a, b) => b.contract - a.contract).slice(0, 60).map((p) => ({ id: p.id, name: p.name, gc: p.gc, contract: p.contract, billed: p.billed, currentlyDue: p.currentlyDue, projectedProfit: p.projectedProfit, marginPct: p.marginPct })); })());
   if (ok.has('chart') || ok.has('forecast')) jobs.push((async () => {
     const s = await series(); out.series = s;
     if (ok.has('forecast')) { const hist = s.map((x) => ({ month: x.month, revenue: x.revenue })); const qn = Math.floor((Number(cur.slice(5)) - 1) / 3) + 1;
@@ -82,11 +104,12 @@ export async function widgetData(user, { period = 'month' } = {}) {
       q(`SELECT s.name, SUM(si.amount - COALESCE((SELECT SUM(amount) FROM sub_payments WHERE sub_invoice_id=si.id),0))::float AS owed FROM sub_invoices si JOIN sub_commitments sc ON sc.id=si.commitment_id JOIN subcontractors s ON s.id=sc.subcontractor_id GROUP BY s.name`),
       q(`SELECT s.name, SUM(si.total - COALESCE((SELECT SUM(amount) FROM supplier_payments WHERE supplier_invoice_id=si.id),0))::float AS owed FROM supplier_invoices si JOIN suppliers s ON s.id=si.supplier_id GROUP BY s.name`)]);
       const all = [...subs.map((r) => ({ ...r, kind: 'Vendor' })), ...sups.map((r) => ({ ...r, kind: 'Supplier' }))].filter((r) => r.owed > 0.001).sort((a, b) => b.owed - a.owed);
-      out.payables = { total: r2(all.reduce((n, r) => n + r.owed, 0)), top: all.slice(0, 6).map((r) => ({ name: r.name, kind: r.kind, owed: r2(r.owed) })) }; }
+      out.payables = { total: r2(all.reduce((n, r) => n + r.owed, 0)), top: all.slice(0, 15).map((r) => ({ name: r.name, kind: r.kind, owed: r2(r.owed) })) }; }
   })());
   if (ok.has('compliance')) jobs.push((async () => { const [v, a, n] = await Promise.all([cp.vendorCompliance(), q(`SELECT COUNT(*) FILTER (WHERE status='Requested')::int AS requested, COUNT(*) FILTER (WHERE status='Approved')::int AS approved FROM payment_requests`), cp.listNtos(year)]);
     const live = v.filter((x) => !x.archived && x.activeProjects.length); out.compliance = { vendorsBlocked: live.filter((x) => !x.canPay).map((x) => x.name), vendorsExpiring: live.filter((x) => x.status === 'Expiring').map((x) => ({ name: x.name, daysLeft: x.daysLeft })), approvalsWaiting: a[0].requested, readyToPay: a[0].approved, ntoNeeded: n.filter((x) => x.status === 'Needed').length, ntoOverdue: n.filter((x) => x.overdue).length }; })());
   if (ok.has('overhead')) jobs.push((async () => { const o = await oh.overview(user); out.overhead = { total: o.allocation.total, basis: o.basis, lines: o.allocation.lines, profitAfterOverhead: r2(o.allocation.byProject.reduce((n, p) => n + p.profitAfterOverhead, 0)), actualSpendThisYear: o.actualSpendThisYear }; })());
-  if (ok.has('todos')) jobs.push((async () => { out.todos = (await listTodos(user, { assignedTo: 'me', status: 'Open' })).slice(0, 10); })());
-  await Promise.all(jobs); out.period = period; return out;
+  if (ok.has('todos')) jobs.push((async () => { out.todos = (await listTodos(user, { assignedTo: 'me', status: 'Open' })).slice(0, 25); })());
+  if (ok.has('messages')) jobs.push((async () => { const th = await listThreads(user.id); out.messages = { unread: th.reduce((n, t) => n + t.unread, 0), items: th.slice(0, 10).map((t) => ({ id: t.id, subject: t.subject, from: t.last_from, preview: String(t.last_body || '').slice(0, 160), unread: t.unread, at: t.updated_at })) }; })());
+  await Promise.all(jobs); out.period = period; out.defaults = defaultLayout(user); out.locked = LOCKED.filter((id) => ok.has(id)); return out;
 }

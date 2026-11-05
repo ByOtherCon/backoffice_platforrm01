@@ -764,6 +764,17 @@ async function usersSection() {
       h('tbody', {}, rows.map((u) => h('tr', { class: u.active ? '' : 'muted' }, h('td', {}, u.email), h('td', {}, u.name), h('td', {}, u.title || ''), h('td', {}, u.role), h('td', {}, u.active ? 'Yes' : 'No'),
         h('td', {}, u.role === 'Super Admin' ? [h('button', { class: 'small', onclick: () => userForm(u) }, 'Edit'), ' ', h('span', { class: 'muted' }, 'Owner')] : [h('button', { class: 'small', onclick: () => userForm(u) }, 'Edit'), ' ', h('button', { class: 'small', onclick: guard(err, async () => { await api('PUT', '/admin/users/' + u.id, { active: !u.active }); render(); }) }, u.active ? 'Deactivate' : 'Activate')])))))));
 }
+// Every Admin section folds away under its own title. Which ones are open is remembered in this browser only.
+const ADMIN_OPEN_KEY = 'byother.admin.open';
+const adminOpen = () => { try { return new Set(JSON.parse(localStorage.getItem(ADMIN_OPEN_KEY) || '[]')); } catch { return new Set(); } };
+const saveAdminOpen = (set) => { try { localStorage.setItem(ADMIN_OPEN_KEY, JSON.stringify([...set])); } catch { /* private window: it just will not be remembered */ } };
+function collapsible(card, open) {
+  const heading = card.querySelector && card.querySelector('h2'); if (!heading) return card;
+  const title = heading.textContent.trim(); heading.style.display = 'none';   // the fold's own title replaces it
+  const d = h('details', { class: 'adm', 'data-title': title.toLowerCase() }, h('summary', {}, title), card); d.open = open.has(title);
+  d.addEventListener('toggle', () => { const cur = adminOpen(); if (d.open) cur.add(title); else cur.delete(title); saveAdminOpen(cur); });
+  return d;
+}
 async function adminView() {
   const parts = [];
   for (const s of SECTIONS) parts.push(await adminSection(s));
@@ -772,7 +783,11 @@ async function adminView() {
   if (['Super Admin', 'Sub Admin'].includes(state.user.role)) parts.push(await overheadCard());
   parts.push(await aiCard()); if (isSuper()) { parts.push(await sharepointCard()); parts.push(await quickbooksCard()); parts.push(await aiReportCard()); }
   if (isSuper()) parts.push(await usersSection());
-  return shell('admin', [h('h1', {}, 'Admin'), h('p', { class: 'sub' }, 'Create vendors, suppliers, employees, trades and GCs here. Projects pick from these lists. Archive instead of delete once a record has history.'), ...parts]);
+  const open = adminOpen(), folds = parts.map((c) => collapsible(c, open));
+  const setAll = (on) => { const cur = on ? new Set(folds.filter((f) => f.tagName === 'DETAILS').map((f) => f.querySelector('summary').textContent)) : new Set(); saveAdminOpen(cur); folds.forEach((f) => { if (f.tagName === 'DETAILS') f.open = on; }); };
+  const find = h('input', { type: 'search', placeholder: 'Find a section…', style: 'max-width:16rem', oninput: () => { const t = find.value.trim().toLowerCase(); folds.forEach((f) => { if (f.tagName === 'DETAILS') f.hidden = !!t && !f.dataset.title.includes(t); }); } });
+  return shell('admin', [h('h1', {}, 'Admin'), h('p', { class: 'sub' }, 'Create vendors, suppliers, employees, trades and GCs here. Projects pick from these lists. Archive instead of delete once a record has history.'),
+    h('div', { class: 'row', style: 'margin-bottom:.8rem' }, find, h('button', { class: 'small', onclick: () => setAll(true) }, 'Open all'), h('button', { class: 'small', onclick: () => setAll(false) }, 'Close all')), ...folds]);
 }
 
 // ------------------------------------------------------------------ reports

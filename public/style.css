@@ -94,3 +94,13 @@ tr.tone-green>td{background:#f1faf4}tr.tone-yellow>td{background:#fffaee}tr.tone
 .addr label,.oform label{text-transform:uppercase}
 
 select.needs,input.needs{border-color:#d98a80;background:#fdf6f5}
+
+details.adm{margin-bottom:.7rem}
+details.adm>summary{cursor:pointer;list-style:none;display:flex;justify-content:space-between;align-items:center;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:.8rem 1.1rem;font-weight:700;font-size:1.05rem;color:var(--navy)}
+details.adm>summary::-webkit-details-marker{display:none}
+details.adm>summary::after{content:"\25B8";color:var(--muted);transition:transform .15s}
+details.adm[open]>summary::after{transform:rotate(90deg)}
+details.adm[open]>summary{border-bottom-left-radius:0;border-bottom-right-radius:0;border-bottom-color:transparent}
+details.adm>.card{margin-bottom:0;border-top-left-radius:0;border-top-right-radius:0;border-top:0}
+details.adm[hidden]{display:none}
+details.adm>.card{padding-top:.5rem}

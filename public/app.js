@@ -2,6 +2,7 @@
 import { h, usd, pct, cls, notice, guard, modal, formModal, field, todayStr, num } from '/ui.js';
 import * as estimating from '/estimating.js';
 import { addressBlock } from '/address.js';
+import { pickFromSharePoint } from '/spPicker.js';
 import { makeClockUi } from '/clockui.js';
 import * as dashboardUi from '/dashboard.js';
 const $app = document.getElementById('app');
@@ -111,24 +112,43 @@ function editProjectForm(pr) {
     async () => { await api('PUT', `/projects/${pr.id}`, { name: f.name.value, client: f.client.value, retainagePct: f.ret.value, ...addr.payload() }); render(); }, 'Save');
 }
 async function newProjectModal() {
-  const err = h('div');
-  const f = { name: h('input'), gc: h('select', {}, h('option', { value: '' }, 'Choose GC…'), state.gcs.filter((g) => !g.archived).map((g) => h('option', { value: g.id }, g.name))), client: h('input'), ret: h('input', { type: 'number', value: '10', min: '0', max: '100', step: '0.5' }), link: h('input', { type: 'url', placeholder: 'https://… (OneDrive link to the signed contract)' }) };
+  const err = h('div'), note = h('div');
+  const f = { name: h('input'), gc: h('select', {}, h('option', { value: '' }, 'Choose GC…'), state.gcs.filter((g) => !g.archived).map((g) => h('option', { value: g.id }, g.name))), client: h('input'), ret: h('input', { type: 'number', value: '10', min: '0', max: '100', step: '0.5' }) };
   const addr = addressBlock(api, { kind: 'project', init: null, label: 'Project address (Florida)' });
-  const tradeRows = h('div'); const addRow = () => {
-    const sel = h('select', {}, h('option', { value: '' }, 'Trade…'), state.trades.filter((t) => !t.archived).map((t) => h('option', { value: t.id }, t.name)));
-    const amt = h('input', { type: 'number', min: '0', step: '0.01', placeholder: 'Contract amount' });
-    const row = h('div', { class: 'trade-row' }, sel, amt, h('button', { class: 'small', type: 'button', onclick: () => row.remove() }, 'Remove')); row._get = () => ({ tradeId: sel.value, amount: amt.value }); tradeRows.append(row);
+  const tradeRows = h('div'); const addRow = (tradeId = '', amount = '', hint = '') => {
+    const sel = h('select', { class: tradeId || !hint ? '' : 'needs' }, h('option', { value: '' }, 'Trade…'), state.trades.filter((t) => !t.archived).map((t) => h('option', { value: t.id }, t.name)));
+    const amt = h('input', { type: 'number', min: '0', step: '0.01', placeholder: 'Contract amount', value: amount });
+    sel.value = tradeId; const row = h('div', { class: 'trade-row' }, sel, amt, hint ? h('span', { class: 'muted', style: 'font-size:12px;align-self:center' }, hint) : '', h('button', { class: 'small', type: 'button', onclick: () => row.remove() }, 'Remove')); row._get = () => ({ tradeId: sel.value, amount: amt.value }); tradeRows.append(row);
   };
   addRow();
+  // Start from a document: the AI reads a proposal or signed contract and fills this form in. Nothing is saved until Create.
+  let doc = null;   // { file } for an upload from this computer, or { itemId, name } for a SharePoint file; kind is Proposal / Contract / Work order
+  const docBox = h('div'), pick = h('input', { type: 'file', accept: '.pdf,.png,.jpg,.jpeg', style: 'display:none' });
+  const drawDoc = () => docBox.replaceChildren(doc ? h('div', { class: 'row', style: 'gap:.5rem' }, h('span', {}, '📄 ' + doc.name), h('span', { class: 'muted' }, `(kept as the project's ${doc.kind.toLowerCase()} file)`), h('button', { type: 'button', class: 'small', onclick: () => { doc = null; drawDoc(); } }, 'Remove')) : '');
+  const fill = (d, source) => {
+    doc = { ...source, kind: ['Proposal', 'Contract', 'Work order'].includes(d.documentType) ? d.documentType : 'Contract' }; drawDoc();
+    if (d.name) f.name.value = d.name; if (d.gcId) f.gc.value = d.gcId; if (d.client) f.client.value = d.client; if (d.retainagePct != null) f.ret.value = d.retainagePct;
+    addr.set(d.addr && d.addr.street ? { ...d.addr, verified: false } : null); if (d.addr?.street && d.addr?.city) addr.verifyNow?.();
+    tradeRows.replaceChildren(); (d.lines.length ? d.lines : [{}]).forEach((l) => addRow(l.tradeId || '', l.amount ?? '', l.tradeId ? '' : (l.description || '').slice(0, 40))); if (!d.lines.length) addRow();
+    notice(note, ''); if (d.warnings?.length) note.replaceChildren(h('div', { class: 'err' }, h('ul', { style: 'margin:0;padding-left:1.1rem' }, d.warnings.map((w) => h('li', {}, w)))));
+    else note.replaceChildren(h('div', { class: 'ok' }, 'Read from the document. Check every field, then create the project.'));
+  };
+  pick.onchange = guard(note, async () => { const file = pick.files[0]; pick.value = ''; if (!file) return; notice(note, 'Reading the document with AI. This can take a minute…', 'ok'); const d = await uploadFile('/projects/draft', file); fill(d, { file, name: file.name }); });
+  const spBtn = h('button', { type: 'button', class: 'small', style: 'display:none', onclick: guard(note, async () => { const it = await pickFromSharePoint(api); if (!it) return; notice(note, 'Reading the document with AI. This can take a minute…', 'ok'); const d = await api('POST', '/projects/draft-sharepoint', { itemId: it.id }); fill(d, { itemId: it.id, name: it.name }); }) }, 'Choose From SharePoint');
+  api('GET', '/sharepoint/status').then((s) => { if (s.configured) spBtn.style.display = ''; }).catch(() => {});
   const bg = modal('New project', h('form', { onsubmit: guard(err, async (e) => {
     e.preventDefault();
     const trades = [...tradeRows.children].map((r) => r._get()).filter((t) => t.tradeId || t.amount);
-    const r = await api('POST', '/projects', { name: f.name.value, gcId: f.gc.value, client: f.client.value, addr: (() => { if (!addr.ok()) throw new Error('Enter the project address and press "Verify address" (green check) first.'); return addr.get(); })(), retainagePct: f.ret.value, contractUrl: f.link.value, trades });
-    bg.remove(); location.hash = '#/projects/' + r.id;
-  }) }, h('div', { class: 'form' },
+    const r = await api('POST', '/projects', { name: f.name.value, gcId: f.gc.value, client: f.client.value, addr: (() => { if (!addr.ok()) throw new Error('Enter the project address and press "Verify address" (green check) first.'); return addr.get(); })(), retainagePct: f.ret.value, trades });
+    let kept = '';
+    if (doc) { try { if (doc.file) await uploadFile(`/projects/${r.id}/contract-file?kind=${encodeURIComponent(doc.kind)}`, doc.file); else await api('POST', `/projects/${r.id}/contract-file-sharepoint`, { itemId: doc.itemId, kind: doc.kind }); } catch (x) { kept = x.message; } }
+    bg.remove(); location.hash = '#/projects/' + r.id; if (kept) setTimeout(() => alert('The project was created, but the document could not be kept: ' + kept + ' Add it on the Contract tab.'), 300);
+  }) }, h('div', { class: 'card', style: 'background:var(--navy-soft);margin-bottom:.8rem' }, h('label', {}, 'Start From A Document (Optional)'), h('div', { class: 'row', style: 'flex-wrap:wrap;gap:.5rem' }, pick, h('button', { type: 'button', class: 'small', onclick: () => pick.click() }, 'Upload Proposal Or Signed Contract'), spBtn),
+    h('p', { class: 'muted', style: 'font-size:13px;margin:.3rem 0 0' }, 'AI fills in the name, GC, client, address, retainage and each trade with its amount. You check everything before anything is saved, and the document is kept as the project\'s contract file. Or skip this and type it all in.'), docBox, note),
+    h('div', { class: 'form' },
     h('div', {}, h('label', {}, 'Project name'), f.name), h('div', {}, h('label', {}, 'GC'), f.gc), h('div', {}, h('label', {}, 'Client'), f.client), h('div', { class: 'wide' }, addr.head, addr.el),
-    h('div', {}, h('label', {}, 'GC retainage %'), f.ret), h('div', { class: 'wide' }, h('label', {}, 'Contract link'), f.link),
-    h('div', { class: 'wide' }, h('label', {}, 'Trades and contract amounts'), tradeRows, h('button', { type: 'button', class: 'small', onclick: addRow }, '+ Add trade'))),
+    h('div', {}, h('label', {}, 'GC retainage %'), f.ret),
+    h('div', { class: 'wide' }, h('label', {}, 'Trades and contract amounts'), tradeRows, h('button', { type: 'button', class: 'small', onclick: () => addRow() }, '+ Add trade'))),
     err, h('div', { class: 'row', style: 'margin-top:1rem;justify-content:flex-end' }, h('button', { class: 'primary', type: 'submit' }, 'Create project'))));
 }
 
@@ -165,8 +185,12 @@ async function contractTab(p, canEdit, reload) {
   const kind = h('select', {}, ['Contract', 'Work order'].map((k) => h('option', { value: k }, k))), file = h('input', { type: 'file', accept: '.pdf,.png,.jpg,.jpeg', style: 'display:none' });
   file.onchange = guard(err, async () => { const f = file.files[0]; if (!f) return; notice(err, 'Reading the document with AI. This can take a minute…', 'ok'); const r = await uploadFile(`/projects/${pid}/contract?kind=${encodeURIComponent(kind.value)}`, f); if (r.error) throw new Error('Saved, but not read: ' + r.error); reload(); });
   const dollars = (v) => (v == null ? '—' : usd(v));
+  const cf = (await api('GET', `/projects/${pid}/contract-file`)).file, swap = h('input', { type: 'file', accept: '.pdf,.png,.jpg,.jpeg', style: 'display:none' });
+  swap.onchange = guard(err, async () => { const f = swap.files[0]; swap.value = ''; if (!f) return; if (cf && !confirm(`Replace ${cf.name} with ${f.name}?`)) return; await uploadFile(`/projects/${pid}/contract-file?kind=Contract`, f); reload(); });
+  const fileRow = h('div', { class: 'row', style: 'gap:.6rem;margin:.2rem 0 .6rem;flex-wrap:wrap' }, h('b', {}, 'Contract file: '), cf ? h('a', { href: cf.url, target: '_blank', rel: 'noopener' }, cf.name) : h('span', { class: 'muted' }, 'none kept yet'), cf?.spUrl ? h('a', { href: cf.spUrl, target: '_blank', rel: 'noopener', class: 'muted' }, '(in SharePoint)') : '',
+    canEdit ? [swap, h('button', { class: 'small', onclick: () => swap.click() }, cf ? 'Replace File' : 'Add File'), cf ? h('button', { class: 'small danger', onclick: guard(err, async () => { if (confirm(`Remove ${cf.name}? The file is deleted from the platform. A copy already in SharePoint stays there.`)) { await api('DELETE', `/projects/${pid}/contract-file`); reload(); } }) }, 'Remove File') : ''] : '');
   const upload = canEdit ? h('div', { class: 'row' }, kind, file, h('button', { class: 'primary', onclick: () => file.click() }, c.review ? 'Upload a different one' : 'Upload and read'), h('span', { class: 'muted', style: 'font-size:13px' }, 'PDF or photo. The trades and amounts below do not change until you press Apply.')) : '';
-  const head = h('div', { class: 'card' }, h('div', { class: 'row spread' }, h('h2', {}, 'Signed contract or work order')), err, upload,
+  const head = h('div', { class: 'card' }, h('div', { class: 'row spread' }, h('h2', {}, 'Signed contract or work order')), err, fileRow, upload,
     c.applied ? h('p', { class: 'muted', style: 'margin-top:.6rem' }, `Applied: ${c.applied.kind} ${c.applied.contractNumber || ''} ${c.applied.contractDate ? '· dated ' + c.applied.contractDate : ''} · total ${dollars(c.applied.total)} · retainage ${c.applied.retainagePct ?? '—'}%${c.applied.netDays != null ? ' · net ' + c.applied.netDays + ' days' : ''}`, c.applied.documentId ? [' · ', h('a', { href: `/api/documents/${c.applied.documentId}/file`, target: '_blank', rel: 'noopener' }, 'Open the file')] : '')
       : h('p', { class: 'muted', style: 'margin-top:.6rem' }, c.review ? 'Not applied yet. Until it is, the trade figures from the proposal stay in use.' : 'No contract uploaded yet. The trade figures from the winning proposal are in use until a signed contract or work order is applied.'),
     c.applied?.paymentTerms ? h('p', { style: 'margin:.3rem 0 0' }, h('b', {}, 'Payment terms: '), c.applied.paymentTerms) : '');

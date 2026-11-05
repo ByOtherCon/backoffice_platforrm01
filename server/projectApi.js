@@ -24,7 +24,7 @@ export async function listProjects(user, manageAll) {
 }
 
 export async function getProject(id) {
-  const [p] = await q(`SELECT p.*, g.name AS gc, d.url AS contract_url FROM projects p JOIN gcs g ON g.id=p.gc_id
+  const [p] = await q(`SELECT p.*, g.name AS gc, COALESCE(d.url, CASE WHEN d.storage_key IS NOT NULL THEN '/api/documents/' || d.id || '/file' END) AS contract_url FROM projects p JOIN gcs g ON g.id=p.gc_id
                        LEFT JOIN documents d ON d.id=p.contract_document_id WHERE p.id=$1`, [id]);
   if (!p) throw new HttpError(404, 'Project not found.');
   const loaded = await loadInputs([id]);

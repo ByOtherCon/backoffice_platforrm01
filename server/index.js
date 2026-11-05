@@ -28,6 +28,7 @@ import * as tk from './takeoff.js';
 import * as bd from './bids.js';
 import * as pw from './passwords.js';
 import * as ct from './contracts.js';
+import * as pd from './projectDraft.js';
 import * as qbo from './quickbooks.js';
 import * as qbi from './qbImport.js';
 import * as acc from './access.js';
@@ -234,6 +235,14 @@ route('POST', '/api/opportunities/:id/followup/classify', async ({ user, params,
 route('POST', '/api/opportunities/:id/followup/pause', async ({ user, params, body }) => { await fu.pause(estWrite(user), uuid(params.id), body); return { ok: true }; });
 route('POST', '/api/opportunities/:id/followup/resume', async ({ user, params, body }) => { await fu.resume(estWrite(user), uuid(params.id), body); return { ok: true }; });
 route('POST', '/api/projects/:id/contract', async ({ req, user, params }) => { manage(user); return ct.readContract(user, uuid(params.id), await readRaw(req), fname(req), q1(req, 'kind') || 'Contract'); }, { raw: true });
+// A new project from a document, and the project's contract file (kept at creation; replace or remove it later).
+route('POST', '/api/projects/draft', async ({ req, user }) => { manage(user); return pd.readDraft(user, await readRaw(req), fname(req)); }, { raw: true });
+route('POST', '/api/projects/draft-sharepoint', async ({ user, body }) => { manage(user); return pd.readDraftFromSharePoint(user, body.itemId); });
+route('GET', '/api/sharepoint/browse', async ({ req, user }) => { manage(user); if (!sharepoint.configured()) throw new HttpError(503, 'SharePoint is not connected yet.'); return pd.browse(q1(req, 'id') || 'root'); });
+route('POST', '/api/projects/:id/contract-file', async ({ req, user, params }) => { manage(user); return pd.setContractFile(user, uuid(params.id), await readRaw(req), fname(req), q1(req, 'kind') || 'Contract'); }, { raw: true });
+route('POST', '/api/projects/:id/contract-file-sharepoint', async ({ user, params, body }) => { manage(user); return pd.setContractFileFromSharePoint(user, uuid(params.id), body.itemId, body.kind); });
+route('GET', '/api/projects/:id/contract-file', async ({ user, params }) => { await auth.requireProject(user, uuid(params.id)); return { file: await pd.contractFile(params.id) }; });
+route('DELETE', '/api/projects/:id/contract-file', async ({ user, params }) => { manage(user); await pd.removeContractFile(uuid(params.id)); return { ok: true }; });
 route('GET', '/api/projects/:id/contract', async ({ user, params }) => { await auth.requireProject(user, uuid(params.id)); return ct.getContract(params.id); });
 route('PUT', '/api/contract-runs/:id', async ({ user, params, body }) => { manage(user); await ct.updateRun(uuid(params.id), body); return { ok: true }; });
 route('POST', '/api/contract-runs/:id/lines', async ({ user, params, body }) => { manage(user); return ct.addLine(uuid(params.id), body); });

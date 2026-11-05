@@ -91,16 +91,47 @@ async function dashboardView() { return dashboardUi.dashboardView(); }
 // ------------------------------------------------------------------ projects
 // Projects and Receipts & Supplier Invoices live together: costs belong to projects.
 const projectsTabs = (active) => h('div', { class: 'tabs' }, state.user.areas?.includes('projects') ? h('a', { class: active === 'projects' ? 'on' : '', href: '#/projects' }, 'Projects') : '', state.user.areas?.includes('costs') ? h('a', { class: active === 'receipts' ? 'on' : '', href: '#/projects/receipts' }, 'Receipts & Supplier Invoices') : '');
+let projectsYear = null, projectsInactive = false, projectsFind = '';
 async function projectsView() {
-  const rows = await api('GET', '/projects');
-  const canAdd = isManager();
-  const body = rows.length ? h('div', { class: 'scroll' }, h('table', {},
-    h('thead', {}, h('tr', {}, ['Project', 'GC', 'Contract', 'Billed', 'Due now', 'Projected profit', 'Margin'].map((t, i) => h('th', { class: i > 1 ? 'n' : '' }, t)))),
-    h('tbody', {}, rows.map((r) => h('tr', { class: 'link', onclick: () => (location.hash = '#/projects/' + r.id) },
-      h('td', {}, r.name, r.active ? '' : h('span', { class: 'pill', style: 'margin-left:.5rem' }, 'Inactive')), h('td', {}, r.gc),
-      h('td', { class: 'n' }, usd(r.contract)), h('td', { class: 'n' }, usd(r.billed)), h('td', { class: 'n' }, usd(r.currentlyDue)),
-      h('td', { class: 'n ' + cls(r.projectedProfit) }, usd(r.projectedProfit)), h('td', { class: 'n' }, pct(r.marginPct))))))) : h('p', { class: 'muted' }, 'No projects yet.');
-  return shell('projects', [h('div', { class: 'row spread' }, h('h1', {}, 'Projects'), canAdd && h('button', { class: 'primary', onclick: newProjectModal }, '+ New project')), projectsTabs('projects'), h('div', { class: 'card' }, body)]);
+  const d = await api('GET', '/projects/home' + (projectsYear ? '?year=' + projectsYear : '')); projectsYear = d.year;
+  const canAdd = isManager(), err = h('div'), sm = d.summary, money0 = (n) => usd(n).replace(/\.00$/, '');
+  const tile = (label, value, note, tone = '') => h('div', { class: 'kpi ' + tone }, h('div', { class: 'l' }, label), h('div', { class: 'v' }, value), note ? h('div', { class: 'muted', style: 'font-size:12px' }, note) : '');
+  const yearSel = h('select', { onchange: () => { projectsYear = Number(yearSel.value); render(); } }, d.years.map((y) => h('option', { value: y }, y))); yearSel.value = d.year;
+  const summary = h('div', { class: 'grid kpis', style: 'margin-bottom:1rem' },
+    tile(`Active In ${d.year}`, sm.active, `${sm.inactive} inactive`), tile('Active Contract Value', money0(sm.contractActive), `${money0(sm.billedActive)} billed`),
+    tile('Due Now', money0(sm.dueNowActive), 'ready to invoice', sm.dueNowActive > 0 ? 'warn' : ''), tile('Projected Profit', money0(sm.profitActive), 'active projects', sm.profitActive < 0 ? 'bad' : 'good'),
+    tile('Notices To Owner', `${sm.ntoNeeded} needed`, sm.ntoOverdue ? `${sm.ntoOverdue} overdue · ${sm.ntoSent} sent` : `${sm.ntoSent} sent`, sm.ntoOverdue ? 'bad' : ''));
+  // alerts and deadlines: the serious ones first; the rest open on request
+  let showAll = false; const alertBox = h('div'), dot = { high: '#c0392b', medium: '#d68910', info: '#8a8fa3' };
+  const drawAlerts = () => { const list = showAll ? d.alerts : d.alerts.slice(0, 6); alertBox.replaceChildren(list.length ? h('div', {}, list.map((a) => h('div', { style: 'display:flex;gap:.6rem;align-items:baseline;padding:.3rem 0;border-bottom:1px solid var(--line)' }, h('span', { style: `width:.6rem;height:.6rem;border-radius:50%;background:${dot[a.severity]};flex:none;position:relative;top:1px`, title: a.severity }), h('div', { style: 'flex:1;min-width:0' }, h('a', { href: a.link }, a.title), h('div', { class: 'muted', style: 'font-size:13px' }, a.detail))))) : h('p', { class: 'muted' }, 'Nothing needs attention right now.'),
+    d.alerts.length > 6 ? h('button', { class: 'small', style: 'margin-top:.5rem', onclick: () => { showAll = !showAll; drawAlerts(); } }, showAll ? 'Show Fewer' : `Show All ${d.alertCount}`) : ''); };
+  drawAlerts();
+  // the editable list
+  const find = h('input', { type: 'search', placeholder: 'Find a project…', value: projectsFind, style: 'max-width:15rem', oninput: () => { projectsFind = find.value; draw(); } });
+  const inactiveBox = h('input', { type: 'checkbox', onchange: () => { projectsInactive = inactiveBox.checked; draw(); } }); inactiveBox.checked = projectsInactive;
+  const ntoCell = (r) => {
+    if (!r.nto) return h('td', {}, '—'); const cell = h('td', { style: 'white-space:normal;min-width:11rem' });
+    const send = (body) => guard(err, async () => { await api('PUT', `/projects/${r.id}/nto`, body); render(); });
+    const sel = h('select', { disabled: canAdd ? null : true, onchange: () => { if (sel.value === 'Sent') { const dt = h('input', { type: 'date', value: todayStr() }); cell.replaceChildren(h('div', { class: 'row', style: 'gap:.3rem' }, dt, h('button', { class: 'small primary', onclick: send({ status: 'Sent', sentDate: dt.value }) }, 'Save'), h('button', { class: 'small', onclick: () => render() }, 'Cancel'))); } else send({ status: sel.value })(); } }, ['Needed', 'Sent', 'Not Required'].map((x) => h('option', { value: x }, x))); sel.value = r.nto.status;
+    cell.append(sel, r.nto.status === 'Sent' && r.nto.sentDate ? h('div', { class: 'muted', style: 'font-size:12px' }, 'Sent ' + String(r.nto.sentDate).slice(0, 10)) : '', r.nto.status === 'Needed' && r.nto.due ? h('div', { class: r.nto.overdue ? 'neg' : 'muted', style: 'font-size:12px' }, r.nto.overdue ? `Overdue (was due ${r.nto.due})` : `Due ${r.nto.due} (${r.nto.daysLeft} days)`) : '', r.nto.status === 'Needed' && !r.nto.due ? h('div', { class: 'muted', style: 'font-size:12px' }, 'Due 45 days after work starts') : '');
+    return cell;
+  };
+  const table = h('div', { class: 'scroll' }), count = h('span', { class: 'muted' });
+  function draw() {
+    const t = projectsFind.trim().toLowerCase(); const rows = d.rows.filter((r) => (projectsInactive || r.active) && (!t || [r.name, r.gc, r.client, r.address, r.proposalId].some((v) => String(v || '').toLowerCase().includes(t))));
+    count.textContent = `${rows.length} shown`;
+    table.replaceChildren(rows.length ? h('table', {}, h('thead', {}, h('tr', {}, ['Project', 'GC', 'Address', 'Start', 'Notice To Owner'].map((x) => h('th', {}, x)), ['Contract', 'Billed', 'Due Now'].map((x) => h('th', { class: 'n' }, x)), h('th', {}, 'Active'))),
+      h('tbody', {}, rows.map((r) => h('tr', { class: r.active ? '' : 'muted' },
+        h('td', { style: 'white-space:normal;min-width:12rem' }, h('a', { href: '#/projects/' + r.id }, r.name), r.proposalId ? h('div', { class: 'muted', style: 'font-size:12px' }, r.proposalId) : ''), h('td', {}, r.gc), h('td', { style: 'white-space:normal;min-width:12rem', class: 'muted' }, r.address || '—'),
+        h('td', {}, canAdd ? h('input', { type: 'date', value: r.startDate || '', style: 'width:9.5rem', onchange: (e) => guard(err, async () => { await api('PUT', `/projects/${r.id}`, { startDate: e.target.value || null }); render(); })() }) : (r.startDate || '—')),
+        ntoCell(r), h('td', { class: 'n' }, usd(r.contract)), h('td', { class: 'n' }, usd(r.billed)), h('td', { class: 'n' }, usd(r.currentlyDue)),
+        h('td', {}, h('input', { type: 'checkbox', checked: r.active, disabled: canAdd ? null : true, title: r.active ? 'Active: untick to close the project' : 'Inactive: tick to reopen', onchange: (e) => { const on = e.target.checked; if (!on && !confirm(`Mark ${r.name} inactive? It leaves the active list; nothing is deleted.`)) { e.target.checked = true; return; } guard(err, async () => { await api('PUT', `/projects/${r.id}`, { active: on }); render(); })(); } }))))))
+      : h('p', { class: 'muted' }, projectsInactive ? 'No projects match.' : 'No active projects match.'));
+  }
+  draw();
+  return shell('projects', [h('div', { class: 'row spread' }, h('h1', {}, 'Projects'), h('div', { class: 'row', style: 'gap:.6rem' }, h('label', { style: 'margin:0' }, 'Year'), yearSel, canAdd && h('button', { class: 'primary', onclick: newProjectModal }, '+ New project'))), projectsTabs('projects'), summary,
+    h('div', { class: 'card' }, h('div', { class: 'row spread' }, h('h2', {}, `Alerts & Deadlines${d.alertCount ? ` (${d.alertCount})` : ''}`)), alertBox),
+    h('div', { class: 'card' }, h('div', { class: 'row spread', style: 'flex-wrap:wrap;gap:.6rem' }, h('h2', {}, 'Projects'), h('div', { class: 'row', style: 'gap:.8rem;flex-wrap:wrap' }, find, h('label', { style: 'display:flex;gap:.35rem;align-items:center;margin:0;text-transform:none;letter-spacing:0;font-weight:400;font-size:14px' }, inactiveBox, 'Show Inactive'), count)), err, table)]);
 }
 
 

@@ -30,6 +30,7 @@ import * as pw from './passwords.js';
 import * as ct from './contracts.js';
 import * as pd from './projectDraft.js';
 import * as cod from './changeOrderDoc.js';
+import { projectsHome } from './projectsHome.js';
 import * as qbo from './quickbooks.js';
 import * as qbi from './qbImport.js';
 import * as acc from './access.js';
@@ -85,6 +86,7 @@ route('GET', '/api/team/estimators', async ({ user }) => { auth.requireRole(user
 // Dashboard and projects
 route('GET', '/api/dashboard', async ({ user }) => { auth.requireRole(user, [...auth.MANAGE, 'Project Manager', 'Estimator']); return pj.dashboard(user, auth.MANAGE.includes(user.role)); });
 route('GET', '/api/projects', async ({ user }) => { auth.requireRole(user, [...auth.MANAGE, 'Project Manager']); return pj.listProjects(user, auth.MANAGE.includes(user.role)); });
+route('GET', '/api/projects/home', async ({ req, user }) => { auth.requireRole(user, [...auth.MANAGE, 'Project Manager']); return projectsHome(user, auth.MANAGE.includes(user.role), q1(req, 'year')); });
 route('POST', '/api/projects', async ({ user, body }) => { manage(user); return pj.createProject(body); });
 route('GET', '/api/projects/:id', async ({ user, params }) => { await auth.requireProject(user, uuid(params.id)); return pj.getProject(params.id); });
 route('PUT', '/api/projects/:id', async ({ user, params, body }) => { manage(user); await pj.updateProject(uuid(params.id), body); return { ok: true }; });

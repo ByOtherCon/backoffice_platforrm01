@@ -90,6 +90,7 @@ export async function updateProject(id, b) {
     const ac = b.addr !== undefined ? addressColumns(b.addr, { florida: true, label: 'Project address', required: true, old }) : legacyAddressColumns(text(b.address, 'Project address', { max: 300 }));
     for (const [k, v] of Object.entries(ac)) add(k, v);
   }
+  if (b.startDate !== undefined) add('start_date', dateStr(b.startDate || null, 'Start date'));
   if (b.gcId !== undefined) add('gc_id', b.gcId);
   if (b.active !== undefined) { if (typeof b.active !== 'boolean') throw bad('Active must be true or false.'); add('active', b.active); }
   if (b.retainagePct !== undefined) { const n = Number(b.retainagePct); if (!(n >= 0 && n <= 100)) throw bad('Retainage must be between 0 and 100.'); add('retainage_pct', n); }

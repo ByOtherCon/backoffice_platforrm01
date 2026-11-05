@@ -107,6 +107,7 @@ export async function listNtos(year) {
   const rows = await q(`${NTO_SQL} WHERE n.year = $1 OR (n.year < $1 AND p.active AND n.status = 'Needed') ORDER BY n.status = 'Sent', p.name`, [y]);
   return rows.map((r) => ntoShape(r, y));
 }
+export async function ntosFor(ids) { if (!ids.length) return []; return (await q(`${NTO_SQL} WHERE n.project_id = ANY($1::uuid[])`, [ids])).map((r) => ntoShape(r)); }
 export async function getNto(projectId) { const [r] = await q(`${NTO_SQL} WHERE n.project_id=$1`, [projectId]); return r ? ntoShape(r) : null; }
 export async function updateNto(projectId, b) {
   const [cur] = await q('SELECT * FROM project_ntos WHERE project_id=$1', [projectId]); if (!cur) throw new HttpError(404, 'Project not found.');

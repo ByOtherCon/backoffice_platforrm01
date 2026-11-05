@@ -21,6 +21,11 @@ const sha = (t) => crypto.createHash('sha256').update(t).digest('hex');
 const SESSION_DAYS = 14;
 export const COOKIE = 'bo_session';
 
+export async function createSession(userId) {
+  const token = crypto.randomBytes(32).toString('base64url');
+  await q(`INSERT INTO sessions(token_hash,user_id,expires_at) VALUES ($1,$2, now() + ($3 || ' days')::interval)`, [sha(token), userId, String(SESSION_DAYS)]);
+  return token;
+}
 export async function login(email, password) {
   email = String(email || '').trim().toLowerCase();
   const [{ n }] = await q(`SELECT count(*)::int n FROM login_attempts WHERE email=$1 AND NOT success AND attempted_at > now() - interval '15 minutes'`, [email]);
@@ -29,8 +34,7 @@ export async function login(email, password) {
   const ok = user ? await verifyPassword(String(password || ''), user.password_hash) : (await scrypt('x', Buffer.alloc(16)), false);
   await q('INSERT INTO login_attempts(email, success) VALUES ($1,$2)', [email, ok]);
   if (!ok) throw new HttpError(401, 'Email or password is incorrect.');
-  const token = crypto.randomBytes(32).toString('base64url');
-  await q(`INSERT INTO sessions(token_hash,user_id,expires_at) VALUES ($1,$2, now() + ($3 || ' days')::interval)`, [sha(token), user.id, String(SESSION_DAYS)]);
+  const token = await createSession(user.id);
   return { token, user: publicUser(user) };
 }
 export const publicUser = (u) => ({ id: u.id, email: u.email, name: u.name, role: u.role, areas: areasFor(u) });

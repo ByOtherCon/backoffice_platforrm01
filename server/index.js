@@ -31,6 +31,7 @@ import * as ct from './contracts.js';
 import * as qbo from './quickbooks.js';
 import * as qbi from './qbImport.js';
 import * as acc from './access.js';
+import * as gl from './googleLogin.js';
 import { bootstrapOwner } from './bootstrap.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
@@ -45,6 +46,16 @@ route('POST', '/api/login', async ({ body, res }) => {
   const { token, user } = await auth.login(body.email, body.password);
   send(res, 200, { user }, { 'set-cookie': auth.sessionCookie(token, SECURE) });
   return 'sent';
+});
+// Sign in with Google (company Workspace accounts only). These pages are public: the person is not signed in yet.
+route('GET', '/api/auth/options', async () => gl.options());
+route('GET', '/api/auth/google/start', async ({ res }) => { const s = gl.start(SECURE); res.writeHead(302, { location: s.url, 'set-cookie': s.setCookie, 'cache-control': 'no-store' }); res.end(); return 'sent'; });
+route('GET', '/api/auth/google/callback', async ({ req, res }) => {
+  const p = new URL(req.url, 'http://x').searchParams;
+  const r = p.get('error') ? { error: 'Google did not allow the sign-in.' } : await gl.finish(req, p.get('code'), p.get('state'));
+  const headers = { 'cache-control': 'no-store', 'set-cookie': [gl.clearNonce(SECURE)], location: '/#/dashboard' };
+  if (r.token) headers['set-cookie'].push(auth.sessionCookie(r.token, SECURE)); else headers.location = '/?login_error=' + encodeURIComponent(r.error);
+  res.writeHead(302, headers); res.end(); return 'sent';
 });
 route('POST', '/api/logout', async ({ user, res }) => { if (user) await auth.logout(user.token); send(res, 200, { ok: true }, { 'set-cookie': auth.clearCookie(SECURE) }); return 'sent'; });
 route('GET', '/api/me', async ({ user }) => { if (!user) throw new HttpError(401, 'Sign in required.'); return { user: { id: user.id, email: user.email, name: user.name, role: user.role, areas: acc.areasFor(user) } }; });

@@ -54,6 +54,7 @@ function resetView(token) {
     h('img', { src: '/logo.png', alt: 'ByOther Construction' }), h('div', { class: 'card' }, who, h('div', {}, h('label', {}, 'New password'), n1), h('div', { style: 'margin-top:.8rem' }, h('label', {}, 'Type it again'), n2), err,
       h('button', { class: 'primary', style: 'width:100%;margin-top:.8rem', type: 'submit' }, 'Save new password'), h('button', { type: 'button', class: 'small', style: 'margin-top:.6rem', onclick: done }, 'Back to sign in'))));
 }
+let loginMsg = null;
 function loginView() {
   const resetToken = new URLSearchParams(location.search).get('reset'); if (resetToken) return resetView(resetToken);
   const err = h('div'); const email = h('input', { type: 'email', autocomplete: 'username', required: true }); const pw = h('input', { type: 'password', autocomplete: 'current-password', required: true });
@@ -62,6 +63,9 @@ function loginView() {
       h('div', {}, h('label', {}, 'Company email'), email), h('div', { style: 'margin-top:.8rem' }, h('label', {}, 'Password'), pw), err,
       h('button', { class: 'primary', style: 'width:100%;margin-top:.8rem', type: 'submit' }, 'Sign in'),
       h('button', { type: 'button', class: 'small', style: 'margin-top:.6rem', onclick: () => forgotForm(email.value) }, 'Forgot password?')));
+  const why = new URLSearchParams(location.search).get('login_error'); if (why) { loginMsg = why; history.replaceState(null, '', '/'); }   // the page is drawn twice at start, so the message is kept
+  if (loginMsg) notice(err, loginMsg);
+  api('GET', '/auth/options').then((o) => { if (o.google) form.querySelector('.card').append(h('div', { style: 'margin-top:1rem;border-top:1px solid var(--line);padding-top:.9rem' }, h('a', { class: 'gbtn', href: '/api/auth/google/start' }, 'Sign in with Google'), h('p', { class: 'muted', style: 'font-size:12px;text-align:center;margin:.5rem 0 0' }, `Use your @${o.domain} account.`))); }).catch(() => {});
   return h('div', { class: 'login' }, form);
 }
 
@@ -597,6 +601,16 @@ async function aiCard() {
 
 // Super Admin: is the shared SharePoint folder connection working?
 let qbFilter = 'New';
+async function googleSigninCard() {
+  const o = await api('GET', '/auth/options'), err = h('div'); const here = location.origin + '/api/auth/google/callback';
+  const copy = (text) => h('button', { class: 'small', onclick: guard(err, async () => { await navigator.clipboard.writeText(text); notice(err, 'Copied. Paste it into the Google Cloud console exactly as it is.', 'ok'); }) }, 'Copy');
+  return h('div', { class: 'card' }, h('h2', {}, 'Sign in with Google'), err,
+    h('p', { class: 'muted' }, `People sign in with their @${o.domain} Google account instead of a password. They still need a login here (Admin → Company → Users & access) with their access chosen; Google only proves who they are. Passwords keep working as a backup.`),
+    o.redirectUri ? h('div', {}, h('label', {}, 'Redirect address to add in the Google Cloud console'), h('div', { class: 'row' }, h('input', { readonly: true, value: o.redirectUri, style: 'flex:1;min-width:20rem', onfocus: (e) => e.target.select() }), copy(o.redirectUri)),
+      o.redirectUri !== here ? h('p', { class: 'err' }, `This page is open at ${location.origin}, but the server will use ${new URL(o.redirectUri).origin}. Set PUBLIC_URL on Render to ${location.origin} and redeploy.`) : '',
+      h('p', { class: 'muted', style: 'font-size:13px' }, 'Where: console.cloud.google.com → the project you made for Gmail → APIs & Services → Credentials → your OAuth client → Authorized redirect URIs → Add URI → Save.')) : h('p', { class: 'err' }, 'The server does not know its own address (PUBLIC_URL).'),
+    h('p', { class: o.google ? 'ok' : 'err' }, o.google ? `Ready: the "Sign in with Google" button is on the sign-in page for @${o.domain} accounts.` : 'The Google keys are not on the server yet (GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET).'));
+}
 async function quickbooksCard() {
   const s = await api('GET', '/quickbooks/status'), err = h('div'); const live = s.connected && s.connectedEnvironment === s.environment; const rows = live ? await api('GET', '/quickbooks/invoices?status=' + qbFilter + (qbSearch ? '&search=' + encodeURIComponent(qbSearch) : '')) : []; const here = location.origin + '/api/quickbooks/callback';
   const copy = (text) => h('button', { class: 'small', onclick: guard(err, async () => { await navigator.clipboard.writeText(text); notice(err, 'Copied. Paste it into the Intuit developer site exactly as it is.', 'ok'); }) }, 'Copy');
@@ -876,7 +890,7 @@ async function adminCards(group) {
   const top = ['Super Admin', 'Sub Admin'].includes(state.user.role), parts = [];
   if (group === 'lists') for (const s of SECTIONS) parts.push(await adminSection(s));
   else if (group === 'company') { if (isSuper()) parts.push(await usersSection()); parts.push(await clockSettingsCard()); if (top) parts.push(await overheadCard()); }
-  else if (group === 'connections') { if (top) parts.push(await bidFeedCard()); if (isSuper()) { parts.push(await sharepointCard()); parts.push(await quickbooksCard()); } }
+  else if (group === 'connections') { if (isSuper()) parts.push(await googleSigninCard()); if (top) parts.push(await bidFeedCard()); if (isSuper()) { parts.push(await sharepointCard()); parts.push(await quickbooksCard()); } }
   else if (group === 'ai') { parts.push(await aiCard()); if (isSuper()) parts.push(await aiReportCard()); }
   return parts;
 }

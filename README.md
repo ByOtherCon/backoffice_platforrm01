@@ -98,3 +98,10 @@ Admin → QuickBooks. Connect once (Intuit developer app keys on Render, then **
 - The usual billing rules still apply: an invoice that would pass the trade's contract, or a payment above the invoice, is refused and nothing is saved.
 - An invoice that exactly matches a tentative line of the contract's invoice schedule marks that line Invoiced.
 - Sandbox keys (`QBO_ENVIRONMENT=sandbox`) read a test company. For real books use the production keys and remove that setting, then disconnect and connect again.
+
+## Who can do what, and signing in
+
+- **Users** are created in the app (Admin → Company → Users & access), not on Render. Render is only where the app runs.
+- **Access:** each person's access level (role) gives default areas. In the user form the owner can choose areas by hand (Estimating, Job costing, Invoice matching, Costs and receipts, Compliance, Reports, Admin lists) and which dashboard cards that person sees. An area the role does not normally have lets that person work in it as an office assistant would; approving payments and owner settings are never included. The owner always has everything.
+- **QuickBooks page:** anyone with the *Invoice matching* area gets a QuickBooks page in the menu (without Admin access) to review and import invoices.
+- **Sign in with Google:** staff sign in with their @byother.net Google account (domain set by `GOOGLE_LOGIN_DOMAIN`, default byother.net). It uses the same Google app as Gmail (`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`). One more redirect address must be added to that app in the Google Cloud console; Admin → Connections → Sign in with Google shows it with a Copy button. A Google account without a Back Office login, or with a switched-off one, is refused. Passwords keep working as a backup.

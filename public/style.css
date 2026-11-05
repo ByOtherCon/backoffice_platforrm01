@@ -104,3 +104,5 @@ details.adm[open]>summary{border-bottom-left-radius:0;border-bottom-right-radius
 details.adm>.card{margin-bottom:0;border-top-left-radius:0;border-top-right-radius:0;border-top:0}
 details.adm[hidden]{display:none}
 details.adm>.card{padding-top:.5rem}
+
+.gbtn{display:block;text-align:center;padding:.65rem;border:1px solid var(--line);border-radius:8px;text-decoration:none;font-weight:600;color:var(--navy);background:#fff}.gbtn:hover{background:var(--navy-soft)}

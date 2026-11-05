@@ -597,7 +597,12 @@ async function quickbooksCard() {
     s.redirectUri ? h('div', {}, h('label', {}, 'Redirect address to give Intuit'), h('div', { class: 'row' }, h('input', { readonly: true, value: s.redirectUri, style: 'flex:1;min-width:20rem', onfocus: (e) => e.target.select() }), copy(s.redirectUri)),
       s.redirectUri !== here ? h('p', { class: 'err' }, `This page is open at ${location.origin}, but the server will use ${new URL(s.redirectUri).origin}. Intuit must get the address you actually sign in with. If they differ, set PUBLIC_URL on Render to ${location.origin} and redeploy, then reload this page.`) : h('p', { class: 'ok' }, 'This matches the address you are using now.'))
       : h('p', { class: 'err' }, s.problem || 'The server does not know its own address.'),
-    h('p', { class: s.configured ? 'ok' : 'muted' }, s.configured ? `Keys found (${s.environment}). The Connect button comes with the next update.` : 'Keys not added yet: ' + s.needs.join(', ') + '.'));
+    !s.configured ? h('p', { class: 'muted' }, 'Keys not added yet: ' + s.needs.join(', ') + '.')
+      : s.connected ? h('div', {}, h('p', { class: 'ok' }, `Connected to ${s.company || 'company ' + s.realmId} (${s.connectedEnvironment === 'sandbox' ? 'sandbox test company, not your real books' : 'live company'}). Connected ${new Date(s.connectedAt).toLocaleString()}.`),
+          s.connectedEnvironment !== s.environment ? h('p', { class: 'err' }, `The server is set to ${s.environment} but this connection is ${s.connectedEnvironment}. Disconnect and connect again.`) : '',
+          h('div', { class: 'row' }, h('button', { onclick: guard(err, async () => { if (confirm('Disconnect QuickBooks? Anything already imported stays.')) { await api('DELETE', '/quickbooks'); render(); } }) }, 'Disconnect')))
+      : h('div', {}, h('p', { class: 'muted' }, `Keys found (${s.environment === 'sandbox' ? 'sandbox test keys' : 'live keys'}). Press Connect, sign in to QuickBooks and choose the company.`),
+          h('div', { class: 'row' }, h('button', { class: 'primary', onclick: guard(err, async () => { location.href = (await api('GET', '/quickbooks/connect')).url; }) }, 'Connect QuickBooks'))));
 }
 async function sharepointCard() {
   const s = await api('GET', '/sharepoint/status?test=1'), err = h('div');

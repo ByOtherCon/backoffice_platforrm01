@@ -166,6 +166,13 @@ route('GET', '/api/opportunities/:id/folder-files', async ({ user, params }) => 
 route('POST', '/api/opportunities/:id/folder', async ({ user, params }) => { estWrite(user); return folders.ensureOpportunityFolder(uuid(params.id)); });
 route('POST', '/api/projects/:id/folder', async ({ user, params }) => { manage(user); return folders.ensureProjectFolder(uuid(params.id)); });
 route('GET', '/api/quickbooks/status', async ({ user }) => { auth.requireRole(user, auth.SUPER); return qbo.status(); });
+route('GET', '/api/quickbooks/connect', async ({ user }) => { auth.requireRole(user, auth.SUPER); return { url: qbo.connectUrl(user) }; });
+route('GET', '/api/quickbooks/callback', async ({ req, res, user }) => {
+  auth.requireRole(user, auth.SUPER); const p = new URL(req.url, 'http://x').searchParams;
+  if (p.get('error')) throw bad('Intuit did not allow the connection (' + p.get('error') + ').');
+  await qbo.finishConnect(p.get('code'), p.get('state'), p.get('realmId')); res.writeHead(302, { location: '/#/admin', 'cache-control': 'no-store' }); res.end(); return 'sent';
+});
+route('DELETE', '/api/quickbooks', async ({ user }) => { auth.requireRole(user, auth.SUPER); await qbo.disconnect(); return { ok: true }; });
 route('GET', '/api/sharepoint/status', async ({ req, user }) => { auth.requireRole(user, [...auth.MANAGE, 'Estimator']); return q1(req, 'test') === '1' && auth.SUPER.includes(user.role) ? sharepoint.status() : { configured: sharepoint.configured() }; });
 route('POST', '/api/opportunities/:id/status', async ({ user, params, body }) => es.transition(estWrite(user), uuid(params.id), body));
 route('POST', '/api/opportunities/:id/notes', async ({ user, params, body }) => { await es.addUserNote(estWrite(user), uuid(params.id), body.body); return { ok: true }; });

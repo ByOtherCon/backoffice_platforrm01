@@ -25,6 +25,7 @@ function shell(active, content) {
   const areas = state.user.areas || [], has = (a) => areas.includes(a), nav = [['dashboard', 'Dashboard']];
   if (has('estimating')) nav.push(['estimating', 'Estimating']); if (has('projects') || has('costs')) nav.push(['projects', 'Projects']); nav.push(['messages', 'Messages']); if (has('reports')) nav.push(['reports', 'Reports']);
   if (has('billing')) nav.push(['quickbooks', 'QuickBooks']); if (has('compliance')) nav.push(['compliance', 'Compliance']);
+  if (has('projects') && isManager()) nav.push(['timepay', 'Time & Pay']);
   if (state.user.clock) nav.push(['timeclock', 'Time Clock']);
   if (isSuper() || state.user.role === 'Sub Admin' || has('lists')) nav.push(['admin', 'Admin']);
   return h('div', {},
@@ -774,6 +775,69 @@ async function timeclockView() {
   const home = await api('GET', '/me/clock/home'); const ui = makeClockUi({ api, base: '/me/clock', reload: () => render() });
   return shell('timeclock', [h('h1', {}, 'Time Clock'), h('p', { class: 'sub' }, `${home.employee.name}: clock in to a project and trade. Your hours post to that project's labor.`), h('div', { style: 'max-width:560px' }, ...ui.body(home))]);
 }
+// ------------------------------------------------------------------ Time & Pay (the office's side of the time clock)
+let tpTab = 'week', tpStart = null;
+const hr2 = (n) => (Math.round(Number(n || 0) * 100) / 100).toFixed(2);
+const shiftDay = (d, n) => { const x = new Date(d + 'T12:00:00Z'); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
+const dayLabel = (d) => new Date(String(d).slice(0, 10) + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+// Add a day for someone, or change one: who, where (project or Other), the date, the total, and trades with hours.
+async function timeEntryForm(e, onDone) {
+  const emps = (await api('GET', '/admin/employees')).filter((x) => x.active || (e && x.id === e.employeeId)), projects = (await api('GET', '/projects')).filter((p) => p.active || (e && p.id === e.projectId));
+  const err = h('div'), clocked = e && e.method === 'Clock';
+  const who = h('select', { disabled: e ? true : null }, emps.map((x) => h('option', { value: x.id }, x.name))); if (e) who.value = e.employeeId;
+  const site = h('select', {}, projects.map((p) => h('option', { value: p.id }, p.name)), h('option', { value: '__other' }, 'Other jobsite…')); if (e) site.value = e.projectId || '__other'; if (e && e.other) site.disabled = true;
+  const oName = h('input', { placeholder: 'Jobsite name', value: e?.other ? e.project.replace(/^Other: /, '') : '' }), oWhere = h('input', { placeholder: 'Street, city', value: e?.otherAddress || '' }), oBox = h('div', { class: 'form wide' }, field('Jobsite Name', oName), field('Where Is It?', oWhere));
+  const date = h('input', { type: 'date', value: e?.date || todayStr(), max: todayStr(), disabled: clocked ? true : null }), hours = h('input', { type: 'number', step: '0.25', min: '0.25', max: '24', value: e?.totalHours ?? '' }), lunch = h('input', { type: 'number', step: '0.25', min: '0', value: e?.lunchHours ?? 0 });
+  const cin = h('input', { type: 'datetime-local', value: clocked ? localInput(e.clockIn) : '' }), cout = h('input', { type: 'datetime-local', value: clocked && e.clockOut ? localInput(e.clockOut) : '' }), notes = h('input', { value: e?.notes || '' }), inj = h('input', { type: 'checkbox' }); inj.checked = !!e?.injured;
+  const rowsBox = h('div'); let tradeOpts = [];
+  const loadTrades = async () => { tradeOpts = site.value === '__other' ? state.trades.filter((t) => !t.archived).map((t) => ({ id: t.id, name: t.name, k: 'tradeId' })) : ((await api('GET', `/projects/${site.value}`)).trades || []).map((t) => ({ id: t.id, name: t.name, k: 'projectTradeId' })); };
+  const addRow = (l) => { const sel = h('select', {}, h('option', { value: '' }, tradeOpts.length ? 'Choose the trade…' : 'No trades'), tradeOpts.map((t) => h('option', { value: t.id }, t.name))); sel.value = l ? (l.projectTradeId || l.tradeId || '') : ''; const amt = h('input', { type: 'number', step: '0.25', min: '0', value: l?.hours ?? '', placeholder: 'Hours (blank = the rest)', style: 'width:11rem' }); const row = h('div', { class: 'trade-row' }, sel, amt, h('button', { class: 'small', type: 'button', onclick: () => row.remove() }, 'Remove')); row._get = () => ({ [tradeOpts[0]?.k || 'projectTradeId']: sel.value || null, hours: amt.value === '' ? 'rest' : amt.value }); rowsBox.append(row); };
+  const draw = async () => { oBox.style.display = site.value === '__other' ? '' : 'none'; await loadTrades(); rowsBox.replaceChildren(); (e && site.value === (e.projectId || '__other') ? e.lines : [null]).forEach((l) => addRow(l)); };
+  site.onchange = guard(err, draw); await draw();
+  formModal(e ? `Change ${e.employee} · ${dayLabel(e.date)}` : 'Add A Day For An Employee', [field('Employee', who), field('Jobsite', site), oBox, field('Date', date), ...(clocked ? [field('Clock In', cin), field('Clock Out', cout), field('Lunch (Hours)', lunch)] : [field('Total Hours', hours)]),
+    field('Hours By Trade (the last trade can take the rest)', h('div', {}, rowsBox, h('button', { class: 'small', type: 'button', onclick: () => addRow() }, '+ Another Trade')), 'wide'), field('Notes', notes, 'wide'), h('label', { class: 'wide', style: 'text-transform:none;letter-spacing:0;font-weight:400;display:flex;gap:.5rem;align-items:center' }, inj, 'Injury reported for this day'), err],
+  async () => {
+    const lines = [...rowsBox.children].map((r) => r._get()).filter((l) => l.projectTradeId || l.tradeId);
+    if (e) { const b = { notes: notes.value, injured: inj.checked, lines }; if (clocked) { b.clockIn = new Date(cin.value).toISOString(); if (cout.value) b.clockOut = new Date(cout.value).toISOString(); b.lunchHours = lunch.value; } else { b.totalHours = hours.value; b.date = date.value; } if (!e.other) b.projectId = site.value; await api('PUT', `/time/entries/${e.id}`, b); }
+    else await api('POST', '/time/entries', { employeeId: who.value, date: date.value, hours: hours.value, notes: notes.value, injured: inj.checked, lines, ...(site.value === '__other' ? { other: { name: oName.value, address: oWhere.value } } : { projectId: site.value }) });
+    onDone();
+  }, e ? 'Save' : 'Add Day');
+}
+async function timePayView() {
+  const err = h('div'), sup = isSuper(), canSave = isManager();
+  const tabs = h('div', { class: 'tabs' }, [['week', 'Week'], ['all', 'All Time'], ['changes', 'Change Requests']].map(([k, l]) => h('a', { class: tpTab === k ? 'on' : '', href: '#/timepay', onclick: (ev) => { ev.preventDefault(); tpTab = k; render(); } }, l)));
+  const sitesTable = (rows, title) => h('div', { class: 'card' }, h('h2', {}, title), rows.length ? h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Project / Site'), h('th', {}, 'Trade'), h('th', { class: 'n' }, 'People'), h('th', { class: 'n' }, 'Hours'), sup ? h('th', { class: 'n' }, 'Cost') : '')),
+    h('tbody', {}, rows.map((r) => h('tr', {}, h('td', {}, r.projectId ? h('a', { href: `#/projects/${r.projectId}/labor` }, r.site) : r.site), h('td', {}, r.trade), h('td', { class: 'n' }, r.people), h('td', { class: 'n' }, hr2(r.hours)), sup ? h('td', { class: 'n' }, usd(r.cost)) : ''))),
+    h('tfoot', {}, h('tr', { class: 'total' }, h('td', { colspan: 3 }, 'Total'), h('td', { class: 'n' }, hr2(rows.reduce((n, r) => n + r.hours, 0))), sup ? h('td', { class: 'n' }, usd(rows.reduce((n, r) => n + (r.cost || 0), 0))) : '')))) : h('p', { class: 'muted' }, 'No hours yet.'));
+  let body;
+  if (tpTab === 'changes') {
+    const [pend, done] = await Promise.all([api('GET', '/time/corrections?status=Pending'), api('GET', '/time/corrections?status=All')]);
+    const decide = (c, apply) => guard(err, async () => { const note = apply ? '' : prompt('Reason (optional)') || ''; await api('POST', `/time/corrections/${c.id}/${apply ? 'apply' : 'decline'}`, { note }); render(); });
+    body = [h('div', { class: 'card' }, h('h2', {}, `Waiting For You (${pend.length})`), err, h('p', { class: 'muted' }, 'Employees change today and yesterday themselves. Older days come here. Applying a request makes the change and updates labor cost.'),
+      pend.length ? h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, ['Employee', 'Day', 'Site', 'Hours Now', 'What They Asked'].map((t) => h('th', {}, t)), h('th'))), h('tbody', {}, pend.map((c) => h('tr', {}, h('td', {}, c.employee), h('td', {}, dayLabel(c.date)), h('td', {}, c.site), h('td', { class: 'n' }, hr2(c.hours)), h('td', { style: 'white-space:normal;max-width:24rem' }, c.message, c.proposal?.totalHours ? h('div', { class: 'muted', style: 'font-size:12px' }, `Suggested hours: ${c.proposal.totalHours}`) : ''),
+        h('td', { style: 'white-space:nowrap' }, canSave ? [h('button', { class: 'small primary', onclick: decide(c, true) }, 'Apply'), ' ', h('button', { class: 'small', onclick: decide(c, false) }, 'Decline'), ' ', h('button', { class: 'small', onclick: guard(err, async () => { const all = await api('GET', `/time/entries?from=${c.date}&to=${c.date}`); const en = all.find((x) => x.id === c.entryId); if (en) await timeEntryForm(en, () => render()); }) }, 'Open Day')] : '')))))) : h('p', { class: 'muted' }, 'Nothing waiting.')),
+      h('div', { class: 'card' }, h('h2', {}, 'Decided'), done.filter((c) => c.status !== 'Pending').length ? h('table', {}, h('tbody', {}, done.filter((c) => c.status !== 'Pending').slice(0, 30).map((c) => h('tr', {}, h('td', {}, c.employee), h('td', {}, dayLabel(c.date)), h('td', {}, h('span', { class: 'pill ' + (c.status === 'Applied' ? 'Approved' : 'Rejected') }, c.status)), h('td', { class: 'muted', style: 'white-space:normal' }, c.note || c.message))))) : h('p', { class: 'muted' }, 'None yet.'))];
+  } else if (tpTab === 'all') {
+    const d = await api('GET', '/time/summary?scope=all');
+    body = [h('div', { class: 'card' }, h('div', { class: 'row spread' }, h('h2', {}, 'Every Project, All Time'), h('a', { class: 'small', href: '/api/time/export' }, 'Export Everything For Excel')), h('p', { class: 'muted' }, 'Hours stay on a project for as long as the project exists. Other (one-off) jobsites are listed under their own name.')), sitesTable(d.sites, 'Hours' + (sup ? ' And Cost' : '') + ' By Project And Trade')];
+  } else {
+    const d = await api('GET', '/time/summary?start=' + (tpStart || '')); tpStart = d.start; const week = await api('GET', `/time/entries?from=${d.start}&to=${d.end}`);
+    const nav = h('div', { class: 'row', style: 'gap:.5rem;flex-wrap:wrap' }, h('button', { class: 'small', onclick: () => { tpStart = shiftDay(d.start, -7); render(); } }, '‹ Previous Week'), h('strong', {}, `${dayLabel(d.start)} to ${dayLabel(d.end)}`), h('button', { class: 'small', onclick: () => { tpStart = shiftDay(d.start, 7); render(); } }, 'Next Week ›'), h('button', { class: 'small', onclick: () => { tpStart = null; render(); } }, 'This Week'),
+      h('a', { class: 'small', href: `/api/time/export?from=${d.start}&to=${d.end}`, style: 'margin-left:auto' }, 'Export This Week For Excel'));
+    const people = h('div', { class: 'card' }, h('div', { class: 'row spread' }, h('h2', {}, 'Hours' + (sup ? ' And Pay' : '') + ' By Person'), canSave ? h('button', { class: 'small', onclick: () => timeEntryForm(null, () => render()) }, '+ Add A Day') : ''), err,
+      d.people.length ? h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Employee'), h('th', { class: 'n' }, 'Days'), h('th', { class: 'n' }, 'Hours'), h('th', { class: 'n' }, 'Regular'), h('th', { class: 'n' }, 'Overtime'), h('th', { class: 'n' }, 'Other Sites'), sup ? h('th', { class: 'n' }, 'Rate') : '', sup ? h('th', { class: 'n' }, 'Pay') : '', h('th', {}, ''))),
+        h('tbody', {}, d.people.map((p) => h('tr', { class: p.active ? '' : 'muted' }, h('td', {}, p.name), h('td', { class: 'n' }, p.days), h('td', { class: 'n' }, hr2(p.hours)), h('td', { class: 'n' }, hr2(p.regular)), h('td', { class: 'n' }, hr2(p.overtime)), h('td', { class: 'n' }, hr2(p.otherHours)), sup ? h('td', { class: 'n' }, p.payType === 'daily' ? `${usd(p.rate)}/day` : `${usd(p.rate)}/hr`) : '', sup ? h('td', { class: 'n' }, usd(p.pay)) : '',
+          h('td', {}, p.open ? h('span', { class: 'pill Pending' }, 'Clocked In') : '', p.injuries ? h('span', { class: 'pill Rejected', style: 'margin-left:.3rem' }, 'Injury Reported') : '')))),
+        h('tfoot', {}, h('tr', { class: 'total' }, h('td', {}, 'Week Total'), h('td'), h('td', { class: 'n' }, hr2(d.totals.hours)), h('td'), h('td'), h('td'), sup ? h('td') : '', sup ? h('td', { class: 'n' }, usd(d.totals.pay)) : '', h('td'))))) : h('p', { class: 'muted' }, 'No time this week.'),
+      !sup ? h('p', { class: 'muted', style: 'font-size:13px' }, 'Pay and rates are shown to the owner only.') : '');
+    const days = h('div', { class: 'card' }, h('h2', {}, 'Days This Week'), week.length ? h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, ['Day', 'Employee', 'Site', 'Trades'].map((t) => h('th', {}, t)), h('th', { class: 'n' }, 'Hours'), h('th'))),
+      h('tbody', {}, week.map((e) => h('tr', {}, h('td', {}, dayLabel(e.date)), h('td', {}, e.employee), h('td', { style: 'white-space:normal' }, e.project, e.other ? h('div', { class: 'muted', style: 'font-size:12px' }, e.otherAddress || '') : ''), h('td', { style: 'white-space:normal' }, e.lines.map((l) => `${l.trade || 'No trade'} ${hr2(l.hours)}h`).join(', ') || (e.status === 'open' ? 'Clocked in' : '—')),
+        h('td', { class: 'n' }, e.status === 'open' ? 'open' : hr2(e.totalHours), e.lateIn ? h('span', { class: 'pill Pending', style: 'margin-left:.3rem' }, 'Late') : '', e.injured ? h('span', { class: 'pill Rejected', style: 'margin-left:.3rem', title: e.injuryNote || '' }, 'Injury') : '', e.modified ? h('span', { class: 'pill', style: 'margin-left:.3rem' }, 'Edited') : ''),
+        h('td', { style: 'white-space:nowrap' }, canSave && e.status === 'complete' ? [h('button', { class: 'small', onclick: guard(err, () => timeEntryForm(e, () => render())) }, 'Change'), ' '] : '', canSave ? h('button', { class: 'small danger', onclick: guard(err, async () => { if (confirm(`Delete ${e.employee}'s ${dayLabel(e.date)}? Labor cost updates automatically.`)) { await api('DELETE', `/time/entries/${e.id}`); render(); } }) }, 'Delete') : '')))))) : h('p', { class: 'muted' }, 'Nothing this week.'));
+    body = [nav, people, sitesTable(d.sites, 'Hours' + (sup ? ' And Cost' : '') + ' By Project And Trade (This Week)'), days];
+  }
+  return shell('timepay', [h('h1', {}, 'Time & Pay'), tabs, h('p', { class: 'sub' }, 'Weeks run Monday to Sunday. Hours come from the time clock page; add or change a day for anyone here. Everything exports for Excel.'), ...body]);
+}
 let qbTab = 'invoices', qbCostFilter = 'New', qbCostSearch = '', qbHiddenSearch = '';
 async function quickbooksView() {
   const s = await api('GET', '/quickbooks/review'), err = h('div'); const live = s.connected && s.connectedEnvironment === s.environment;
@@ -990,11 +1054,16 @@ const SECTIONS = [
   { kind: 'gcs', title: 'GCs', one: 'GC', fields: [['name', 'Name', 'text']], archive: 'archived' },
   { kind: 'subcontractors', title: 'Subcontractors (labor, vetted)', one: 'subcontractor', fields: [['name', 'Name', 'text'], ['email', 'Email', 'email'], ['phone', 'Phone', 'text'], ['address', 'Address', 'address']], archive: 'archived' },
   { kind: 'suppliers', title: 'Vendors (materials, lodging, equipment, purchases)', one: 'vendor', fields: [['name', 'Name', 'text'], ['provider_type', 'Type', ['Materials', 'Hotel / Lodging', 'Equipment', 'Other purchase']], ['credit_limit', 'Credit limit', 'number'], ['email', 'Email', 'email'], ['phone', 'Phone', 'text'], ['address', 'Address', 'address']], archive: 'archived' },
-  { kind: 'employees', title: 'Employees (1099 crew, time clock)', one: 'employee', fields: [['name', 'Name', 'text'], ['position', 'Position', POSITIONS], ['pay_type', 'Pay type', ['hourly', 'daily']], ['hourly_rate', 'Rate ($/hr or $/day)', 'number'], ['phone', 'Phone', 'text'], ['email', 'Email', 'email']], archive: 'active', invert: true, extra: (r, err) => [h('button', { class: 'small', onclick: () => pinForm(r) }, r.has_pin ? 'Reset PIN' : 'Set PIN')] },
+  { kind: 'employees', title: 'Employees (1099 crew, time clock)', one: 'employee', fields: [['name', 'Name', 'text'], ['position', 'Position', POSITIONS], ['pay_type', 'Pay type', ['hourly', 'daily']], ['hourly_rate', 'Rate ($/hr or $/day)', 'number'], ['phone', 'Phone', 'text'], ['email', 'Email', 'email']], archive: 'active', invert: true, extra: (r, err) => [h('button', { class: 'small', onclick: () => pinForm(r) }, r.pin_default ? 'PIN: Automatic' : 'Change PIN')] },
 ];
 const visibleFields = (sec) => sec.fields.filter(([k]) => !(sec.kind === 'employees' && ['pay_type', 'hourly_rate'].includes(k) && !isSuper()));
 const tableCols = (sec) => visibleFields(sec).filter(([k]) => !['address', 'credit_limit', 'phone', 'email', 'pay_type'].includes(k) || (sec.kind !== 'employees' && ['phone', 'email', 'credit_limit'].includes(k)));
-function pinForm(emp) { const pin = h('input', { type: 'password', inputmode: 'numeric', maxlength: 8, autocomplete: 'new-password', placeholder: '4 to 8 digits' }); formModal(`Time clock PIN for ${emp.name}`, [field('PIN', pin, 'wide'), h('p', { class: 'muted wide' }, 'The employee uses this on the time clock page. Setting a new PIN also clears any lockout.')], async () => { await api('PUT', `/admin/employees/${emp.id}/pin`, { pin: pin.value }); render(); }, 'Save PIN'); }
+function pinForm(emp) {
+  const pin = h('input', { type: 'password', inputmode: 'numeric', maxlength: 8, autocomplete: 'new-password', placeholder: '4 to 8 digits' }), err = h('div');
+  formModal(`Time Clock PIN For ${emp.name}`, [h('p', { class: 'wide' }, emp.pin_default ? 'Right now this employee uses the automatic PIN: the last 4 digits of their phone number, or 0000 when there is no number.' : 'This employee has a PIN you chose.'), field('Choose A PIN', pin, 'wide'),
+    h('div', { class: 'wide' }, h('button', { type: 'button', class: 'small', onclick: guard(err, async () => { await api('PUT', `/admin/employees/${emp.id}/pin`, { default: true }); render(); }) }, 'Use The Automatic PIN Instead'), err),
+    h('p', { class: 'muted wide' }, 'The employee uses the PIN on the time clock page to clock in and to see their own hours and pay. Setting a PIN also clears any lockout.')], async () => { await api('PUT', `/admin/employees/${emp.id}/pin`, { pin: pin.value }); render(); }, 'Save PIN');
+}
 function recordForm(sec, rec, done) {
   const addr = visibleFields(sec).some(([, , t]) => t === 'address') ? addressBlock(api, { kind: 'other', init: rec ? { street: rec.address, city: rec.city, state: rec.state, zip: rec.zip, verified: rec.address_verified } : null, label: 'Address (optional)' }) : null;
   const inputs = Object.fromEntries(visibleFields(sec).filter(([, , t]) => t !== 'address').map(([k, , t]) => {
@@ -1142,7 +1211,7 @@ async function render() {
   const [, page = 'dashboard', id, tab] = location.hash.split('/');
   try {
     if (['admin'].includes(page) || (page === 'projects' && !id)) [state.trades, state.gcs] = await Promise.all([api('GET', '/admin/trades'), api('GET', '/admin/gcs')]).catch(() => [state.trades, state.gcs]);
-    const view = page === 'estimating' ? await estimatingView(id, tab) : page === 'messages' ? await messagesView(id) : page === 'timeclock' ? await timeclockView() : page === 'quickbooks' ? await quickbooksView() : page === 'admin' ? await adminView(id) : page === 'receipts' || (page === 'projects' && id === 'receipts') || (page === 'projects' && !id && !state.user.areas?.includes('projects') && state.user.areas?.includes('costs')) ? await receiptsView() : page === 'compliance' ? await complianceView() : page === 'projects' ? (id ? await projectView(id, tab) : await projectsView()) : page === 'reports' ? await reportsView() : await dashboardView();
+    const view = page === 'estimating' ? await estimatingView(id, tab) : page === 'messages' ? await messagesView(id) : page === 'timeclock' ? await timeclockView() : page === 'timepay' ? await timePayView() : page === 'quickbooks' ? await quickbooksView() : page === 'admin' ? await adminView(id) : page === 'receipts' || (page === 'projects' && id === 'receipts') || (page === 'projects' && !id && !state.user.areas?.includes('projects') && state.user.areas?.includes('costs')) ? await receiptsView() : page === 'compliance' ? await complianceView() : page === 'projects' ? (id ? await projectView(id, tab) : await projectsView()) : page === 'reports' ? await reportsView() : await dashboardView();
     if (token === rendering) { $app.replaceChildren(view); updateBell(); updateMessagesBadge(); }
   } catch (e) { if (token === rendering && state.user) $app.replaceChildren(shell(page, h('div', { class: 'err' }, e.message))); }
 }

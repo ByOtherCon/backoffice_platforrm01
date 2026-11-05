@@ -37,11 +37,28 @@ async function graph(method, path, { body, raw, headers = {}, absolute } = {}) {
     return r.status === 204 ? {} : r.json().catch(() => ({}));
   }
 }
+// MS_SITE_URL is often pasted with extra parts (a library, "Forms/AllItems.aspx", a query). Only the site itself matters:
+// https://<tenant>.sharepoint.com/sites/<name> (or /teams/<name>, or the bare host for the root site).
+export function siteParts(raw) {
+  let u; try { u = new URL(/^https?:\/\//i.test(raw) ? raw : 'https://' + raw); } catch { return null; }
+  const seg = u.pathname.split('/').filter(Boolean).map(decodeURIComponent);
+  const site = ['sites', 'teams'].includes((seg[0] || '').toLowerCase()) && seg[1] ? '/' + seg.slice(0, 2).map(encodeURIComponent).join('/') : '';
+  return { host: u.hostname, path: site, personal: /-my\.sharepoint\.com$/i.test(u.hostname) };
+}
+async function visibleSites() {
+  try { const r = await graph('GET', '/sites?search=*&$top=25&$select=webUrl,displayName'); return (r?.value || []).map((x) => x.webUrl).filter((x) => x && !/-my\.sharepoint\.com/i.test(x)).slice(0, 8); } catch { return []; }
+}
 async function driveId() {
-  if (drive) return drive; const s = need(); const u = new URL(s.siteUrl);
-  const site = await graph('GET', `/sites/${u.hostname}:${u.pathname}`); if (!site?.id) throw new HttpError(502, 'SharePoint could not find that site. Check MS_SITE_URL.');
+  if (drive) return drive; const s = need(); const parts = siteParts(s.siteUrl);
+  if (!parts) throw new HttpError(502, 'MS_SITE_URL is not a web address. It should look like https://<yourtenant>.sharepoint.com/sites/<SiteName>.');
+  if (parts.personal) throw new HttpError(502, 'MS_SITE_URL points at a personal OneDrive (-my.sharepoint.com). Use the shared team site instead: https://<yourtenant>.sharepoint.com/sites/<SiteName>.');
+  const site = await graph('GET', parts.path ? `/sites/${parts.host}:${parts.path}` : `/sites/${parts.host}`);
+  if (!site?.id) {
+    const seen = await visibleSites();
+    throw new HttpError(502, `SharePoint has no site at ${parts.host}${parts.path || '/'}. Set MS_SITE_URL to the site's address, like https://${parts.host}/sites/<SiteName>.${seen.length ? ' Sites this app can see: ' + seen.join(' , ') + '.' : ' The app could not list any sites; check that Sites.ReadWrite.All has admin consent.'}`);
+  }
   const drives = (await graph('GET', `/sites/${site.id}/drives`))?.value || []; const d = drives.find((x) => x.name.toLowerCase() === s.library.toLowerCase());
-  if (!d) throw new HttpError(502, `The site has no document library named "${s.library}". Libraries here: ${drives.map((x) => x.name).join(', ') || 'none'}.`);
+  if (!d) throw new HttpError(502, `The site has no document library named "${s.library}". Libraries here: ${drives.map((x) => x.name).join(', ') || 'none'}. Set MS_LIBRARY to one of them.`);
   drive = d.id; return drive;
 }
 async function children(parentId) {

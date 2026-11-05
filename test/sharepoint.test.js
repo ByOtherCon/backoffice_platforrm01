@@ -28,7 +28,8 @@ const graph = async (url, init = {}) => {
   if (graphDown) return res({ error: { code: 'serviceNotAvailable' } }, 500);
   const base = '/v1.0'; if (!p.startsWith(base)) return res({}, 404); const r = p.slice(base.length);
   let g;
-  if ((g = r.match(/^\/sites\/([^/:]+):(.+)$/))) return res({ id: 'site1' });
+  if ((g = r.match(/^\/sites\/([^/:]+):(.+)$/))) return /^\/sites\/ByOther$/i.test(g[2]) ? res({ id: 'site1' }) : res({}, 404);
+  if (r === '/sites') return res({ value: [{ webUrl: 'https://byother.sharepoint.com/sites/ByOther' }, { webUrl: 'https://byother-my.sharepoint.com/personal/x' }] });
   if (r === '/sites/site1/drives') return res({ value: [{ id: 'drv1', name: 'Documents' }] });
   if (r === '/drives/drv1/root') return res({ name: 'Documents', webUrl: 'https://byother.sharepoint.com/sites/ByOther/Shared Documents' });
   if ((g = r.match(/^\/drives\/drv1\/(root|items\/([^/]+))\/children$/))) { const id = g[2] || 'root';
@@ -77,6 +78,18 @@ test('status check: anyone on the team sees whether it is set up; only the owner
   assert.equal((await call('GET', '/api/sharepoint/status', null, pm)).status, 403);
   const t = (await call('GET', '/api/sharepoint/status?test=1', null, owner)).body; assert.deepEqual([t.configured, t.connected, t.library, t.root], [true, true, 'Documents', 'ByOther']);
   graphDown = true; SP.resetCache(); const bad = (await call('GET', '/api/sharepoint/status?test=1', null, owner)).body; assert.equal(bad.connected, false); assert.match(bad.error, /SharePoint answered with an error/); graphDown = false; SP.resetCache();
+});
+
+test('a messy or wrong MS_SITE_URL is cleaned up, or explained with the sites the app can see', async () => {
+  assert.deepEqual(SP.siteParts('https://byother.sharepoint.com/sites/ByOther/Shared%20Documents/Forms/AllItems.aspx?id=%2Fx'), { host: 'byother.sharepoint.com', path: '/sites/ByOther', personal: false });
+  assert.deepEqual(SP.siteParts('byother.sharepoint.com'), { host: 'byother.sharepoint.com', path: '', personal: false }); assert.equal(SP.siteParts('https://x-my.sharepoint.com/personal/a_b').personal, true); assert.equal(SP.siteParts('not a url at all'), null);
+  const check = async (url) => { process.env.MS_SITE_URL = url; SP.resetCache(); return (await call('GET', '/api/sharepoint/status?test=1', null, owner)).body; };
+  assert.equal((await check('https://byother.sharepoint.com/sites/ByOther/Shared%20Documents/Forms/AllItems.aspx?id=%2Fsites%2FByOther')).connected, true);
+  const wrong = await check('https://byother.sharepoint.com/sites/Wrong'); assert.equal(wrong.connected, false);
+  assert.match(wrong.error, /no site at byother\.sharepoint\.com\/sites\/Wrong/); assert.match(wrong.error, /Sites this app can see: https:\/\/byother\.sharepoint\.com\/sites\/ByOther\./); assert.doesNotMatch(wrong.error, /-my\./);
+  assert.match((await check('https://byother-my.sharepoint.com/personal/ben_byother_net')).error, /personal OneDrive/);
+  assert.match((await check('hello world')).error, /is not a web address/);
+  await check('https://byother.sharepoint.com/sites/ByOther'); SP.resetCache();
 });
 
 test('accepting creates ByOther / year / GC / P-code folder with the numbered sub-folders, and links it', async () => {

@@ -82,6 +82,7 @@ test('status check: anyone on the team sees whether it is set up; only the owner
 
 test('a messy or wrong MS_SITE_URL is cleaned up, or explained with the sites the app can see', async () => {
   assert.deepEqual(SP.siteParts('https://byother.sharepoint.com/sites/ByOther/Shared%20Documents/Forms/AllItems.aspx?id=%2Fx'), { host: 'byother.sharepoint.com', path: '/sites/ByOther', personal: false });
+  assert.deepEqual(SP.siteParts('https://byothercon.sharepoint.com/:u:/r/sites/ByOtherProjects/SitePages/CollabHome.aspx?d=w8&csf=1&web=2&share=abc&e=o9'), { host: 'byothercon.sharepoint.com', path: '/sites/ByOtherProjects', personal: false });   // a pasted share link
   assert.deepEqual(SP.siteParts('byother.sharepoint.com'), { host: 'byother.sharepoint.com', path: '', personal: false }); assert.equal(SP.siteParts('https://x-my.sharepoint.com/personal/a_b').personal, true); assert.equal(SP.siteParts('not a url at all'), null);
   const check = async (url) => { process.env.MS_SITE_URL = url; SP.resetCache(); return (await call('GET', '/api/sharepoint/status?test=1', null, owner)).body; };
   assert.equal((await check('https://byother.sharepoint.com/sites/ByOther/Shared%20Documents/Forms/AllItems.aspx?id=%2Fsites%2FByOther')).connected, true);

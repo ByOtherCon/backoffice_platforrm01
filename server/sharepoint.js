@@ -42,7 +42,9 @@ async function graph(method, path, { body, raw, headers = {}, absolute } = {}) {
 export function siteParts(raw) {
   let u; try { u = new URL(/^https?:\/\//i.test(raw) ? raw : 'https://' + raw); } catch { return null; }
   const seg = u.pathname.split('/').filter(Boolean).map(decodeURIComponent);
-  const site = ['sites', 'teams'].includes((seg[0] || '').toLowerCase()) && seg[1] ? '/' + seg.slice(0, 2).map(encodeURIComponent).join('/') : '';
+  // a share link looks like /:u:/r/sites/<name>/SitePages/..., so the site is found wherever "sites" or "teams" appears
+  const at = seg.findIndex((x, i) => ['sites', 'teams'].includes(x.toLowerCase()) && seg[i + 1]);
+  const site = at >= 0 ? '/' + seg.slice(at, at + 2).map(encodeURIComponent).join('/') : '';
   return { host: u.hostname, path: site, personal: /-my\.sharepoint\.com$/i.test(u.hostname) };
 }
 async function visibleSites() {

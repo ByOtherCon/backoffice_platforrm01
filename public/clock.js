@@ -16,9 +16,10 @@ async function loginView() {
   const roster = await api('GET', '/clock/roster'); const err = h('div');
   const who = h('select', {}, h('option', { value: '' }, 'Choose your name…'), roster.map((e) => h('option', { value: e.id }, e.name)));
   const pin = h('input', { type: 'password', inputmode: 'numeric', autocomplete: 'off', placeholder: 'PIN', maxlength: 8 });
-  return frame(h('h1', {}, 'Time clock'), h('form', { class: 'card', onsubmit: guard(err, async (e) => { e.preventDefault(); const r = await api('POST', '/clock/login', { employeeId: who.value, pin: pin.value }); state.employee = r.employee; load(); }) },
+  const tabBar = h('div', { class: 'tabs' }, [['clock', 'Clock'], ['week', 'My Week']].map(([k, l]) => h('a', { class: ui.getTab() === k ? 'on' : '', href: '#', onclick: (e) => { e.preventDefault(); ui.setTab(k); load(); } }, l)));
+  return frame(h('h1', {}, 'Time Clock'), tabBar, ui.getTab() === 'week' ? h('p', { class: 'sub' }, 'Please select a name and enter your PIN to proceed.') : h('p', { class: 'sub' }, 'Select your name and enter your PIN to clock in and see your week.'), h('form', { class: 'card', onsubmit: guard(err, async (e) => { e.preventDefault(); const r = await api('POST', '/clock/login', { employeeId: who.value, pin: pin.value }); state.employee = r.employee; load(); }) },
     field('Name', who), h('div', { style: 'margin-top:.8rem' }, field('PIN', pin)), err, h('button', { class: 'primary bigbtn', style: 'margin-top:1rem', type: 'submit' }, 'Sign in')),
-    roster.length ? '' : h('p', { class: 'muted' }, 'No one has a PIN yet. The office sets it in Admin > Employees.'));
+    roster.length ? '' : h('p', { class: 'muted' }, 'No employees are set up yet. The office adds them in Admin > Lists.'));
 }
 
 const ui = makeClockUi({ api, base: '/clock', reload: () => load() });

@@ -45,7 +45,7 @@ test('setup: two projects on two GCs with costs, billing, labor, a receipt, and 
 test('each role is offered only its own sources', async () => {
   const ids = async (c) => (await call('GET', '/api/reports/sources', null, c)).body.sources.map((s) => s.id).sort();
   assert.deepEqual(await ids(est), ['follow_ups', 'opportunities', 'todos', 'trade_prices']);
-  assert.deepEqual(await ids(pm), ['change_orders', 'labor', 'project_trades', 'projects', 'time_entries', 'todos']);
+  assert.deepEqual(await ids(pm), ['change_orders', 'labor', 'project_trades', 'projects', 'time_entries', 'time_lines', 'todos']);
   const mgr = await ids(asst); assert.ok(mgr.includes('client_invoices') && mgr.includes('vendors') && !mgr.includes('employees') && !mgr.includes('overhead') && !mgr.includes('ai_usage'));
   const sa = await ids(owner); for (const x of ['employees', 'overhead', 'ai_usage', 'ntos', 'documents', 'supplier_lines', 'vendor_bills', 'payment_requests']) assert.ok(sa.includes(x), x);
   assert.equal((await run({ source: 'client_invoices' }, est)).status, 403); assert.equal((await run({ source: 'employees' }, asst)).status, 403); assert.equal((await run({ source: 'nope' })).status, 400);

@@ -29,7 +29,7 @@ test('setup: project with trades, two employees with PINs', async () => {
   const p = (await call('GET', `/api/projects/${pid}`, null, office)).body; demo = p.trades.find((t) => t.name === 'Demolition').id; dry = p.trades.find((t) => t.name === 'Drywall').id;
   e1 = (await call('POST', '/api/admin/employees', { name: 'Alex', hourly_rate: 20 }, owner)).body;
   e2 = (await call('POST', '/api/admin/employees', { name: 'Blake', hourly_rate: 25 }, owner)).body;
-  assert.equal(e1.has_pin, false); assert.equal(e1.pin_hash, undefined);
+  assert.equal(e1.has_pin, true); assert.equal(e1.pin_default, true); assert.equal(e1.pin_hash, undefined);   // every new employee starts with the automatic PIN
   assert.equal((await call('PUT', `/api/admin/employees/${e1.id}/pin`, { pin: '12' }, office)).status, 400);
   assert.equal((await call('PUT', `/api/admin/employees/${e1.id}/pin`, { pin: '4821' }, pm)).status, 403);
   assert.equal((await call('PUT', `/api/admin/employees/${e1.id}/pin`, { pin: '4821' }, office)).status, 200);

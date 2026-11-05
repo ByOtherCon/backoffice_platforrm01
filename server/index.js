@@ -90,6 +90,7 @@ route('GET', '/api/projects', async ({ user }) => { auth.requireRole(user, [...a
 route('GET', '/api/projects/home', async ({ req, user }) => { auth.requireRole(user, [...auth.MANAGE, 'Project Manager']); return projectsHome(user, auth.MANAGE.includes(user.role), q1(req, 'year')); });
 route('POST', '/api/projects', async ({ user, body }) => { manage(user); return pj.createProject(body); });
 route('GET', '/api/projects/:id', async ({ user, params }) => { await auth.requireProject(user, uuid(params.id)); return pj.getProject(params.id); });
+route('POST', '/api/projects/:id/locate', async ({ user, params }) => { manage(user); const g = await pj.locateProject(uuid(params.id), { enable: !!0 }); if (!g) throw new HttpError(422, 'The address could not be found on the map. Check the project address, or enter the coordinates by hand.'); return g; });
 route('PUT', '/api/projects/:id', async ({ user, params, body }) => { manage(user); await pj.updateProject(uuid(params.id), body); return { ok: true }; });
 route('POST', '/api/projects/:id/trades', async ({ user, params, body }) => { manage(user); await pj.addTrade(uuid(params.id), body); return { ok: true }; });
 route('PUT', '/api/projects/:id/trades/:tid', async ({ user, params, body }) => { manage(user); await pj.setTradeAmount(uuid(params.id), uuid(params.tid), body); return { ok: true }; });
@@ -137,15 +138,26 @@ route('GET', '/api/me/clock/home', async ({ user }) => tc.clockHome(myClock(user
 route('POST', '/api/me/clock/in', async ({ user, body }) => tc.clockIn(myClock(user), body));
 route('POST', '/api/me/clock/out', async ({ user, body }) => tc.clockOut(myClock(user), body));
 route('POST', '/api/me/clock/manual', async ({ user, body }) => tc.manualEntry(myClock(user), body));
+route('PUT', '/api/me/clock/entries/:id', async ({ user, params, body }) => { await tc.employeeEdit(myClock(user), uuid(params.id), body); return { ok: true }; });
+route('POST', '/api/me/clock/entries/:id/request', async ({ user, params, body }) => tc.requestChange(myClock(user), uuid(params.id), body));
 route('GET', '/api/clock/home', async ({ user }) => tc.clockHome(emp(user)));
 route('POST', '/api/clock/in', async ({ user, body }) => tc.clockIn(emp(user), body));
 route('POST', '/api/clock/out', async ({ user, body }) => tc.clockOut(emp(user), body));
 route('POST', '/api/clock/manual', async ({ user, body }) => tc.manualEntry(emp(user), body));
+route('PUT', '/api/clock/entries/:id', async ({ user, params, body }) => { await tc.employeeEdit(emp(user), uuid(params.id), body); return { ok: true }; });
+route('POST', '/api/clock/entries/:id/request', async ({ user, params, body }) => tc.requestChange(emp(user), uuid(params.id), body));
 route('GET', '/api/time/active', async ({ user }) => { auth.requireRole(user, [...auth.MANAGE, 'Project Manager']); return tc.activeNow(); });
 route('GET', '/api/time/entries', async ({ req, user }) => { manage(user); const u = new URL(req.url, 'http://x').searchParams; return tc.listEntries({ from: u.get('from'), to: u.get('to'), employeeId: u.get('employeeId'), projectId: u.get('projectId') }); });
 route('PUT', '/api/time/entries/:id', async ({ user, params, body }) => { manage(user); await tc.editEntry(uuid(params.id), body, user.id); return { ok: true }; });
 route('DELETE', '/api/time/entries/:id', async ({ user, params }) => { manage(user); await tc.deleteEntry(uuid(params.id)); return { ok: true }; });
-route('PUT', '/api/admin/employees/:id/pin', async ({ user, params, body }) => { manage(user); await tc.setPin(uuid(params.id), body.pin); return { ok: true }; });
+route('PUT', '/api/admin/employees/:id/pin', async ({ user, params, body }) => { manage(user); if (body.default) await tc.applyDefaultPin(uuid(params.id), { force: true }); else await tc.setPin(uuid(params.id), body.pin); return { ok: true }; });
+// The office's weekly tally, adding or changing a day for anyone, requests to change older days, and the Excel-ready export.
+route('GET', '/api/time/summary', async ({ req, user }) => { manage(user); const u = new URL(req.url, 'http://x').searchParams; return tc.summary({ start: u.get('start'), scope: u.get('scope') === 'all' ? 'all' : 'week', showPay: auth.SUPER.includes(user.role) }); });
+route('POST', '/api/time/entries', async ({ user, body }) => { manage(user); return tc.manualEntry(uuid(body.employeeId || ''), body, { office: true, userId: user.id }); });
+route('GET', '/api/time/corrections', async ({ req, user }) => { manage(user); return tc.listCorrections(new URL(req.url, 'http://x').searchParams.get('status') || 'Pending'); });
+route('POST', '/api/time/corrections/:id/apply', async ({ user, params, body }) => { manage(user); await tc.decideCorrection(user.id, uuid(params.id), true, body.note); return { ok: true }; });
+route('POST', '/api/time/corrections/:id/decline', async ({ user, params, body }) => { manage(user); await tc.decideCorrection(user.id, uuid(params.id), false, body.note); return { ok: true }; });
+route('GET', '/api/time/export', async ({ req, res, user }) => { manage(user); const u = new URL(req.url, 'http://x').searchParams; const cfg = { source: 'time_lines', ...(u.get('from') || u.get('to') ? { dateRange: { col: 'date', from: u.get('from') || undefined, to: u.get('to') || undefined } } : {}), sort: { col: 'date', dir: 'asc' } }; const f = await rp.exportCsv(user, cfg); res.writeHead(200, { ...SEC, 'content-type': 'text/csv; charset=utf-8', 'content-disposition': `attachment; filename="${f.name}"`, 'cache-control': 'private, no-store' }); res.end(f.body); return 'sent'; });
 route('GET', '/api/settings/timeclock', async ({ user }) => { manage(user); return tc.getSettings(); });
 route('PUT', '/api/settings/timeclock', async ({ user, body }) => { auth.requireRole(user, auth.APPROVERS); return tc.saveSettings(body); });
 route('POST', '/api/time/recalculate', async ({ user }) => { auth.requireRole(user, auth.APPROVERS); return tc.recalcAll(); });
@@ -393,7 +405,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const port = Number(process.env.PORT) || 3000;
   if (!process.env.DATABASE_URL) { console.error('DATABASE_URL is not set.'); process.exit(1); }
   bootstrapOwner().then((r) => console.log(r.created ? `Created the owner login for ${r.email}. Remove ADMIN_PASSWORD from the host settings now.` : r.reason.startsWith('Set ') ? r.reason : 'Owner login already set up.')).catch((e) => console.error('bootstrap failed', e.message));
-  server.listen(port, () => { console.log(`by Other Desk Platform on port ${port}`); bd.startScheduler(); setTimeout(() => folders.syncGcs(), 20000); setInterval(() => folders.syncGcs(), 3600000); setInterval(() => { qbo.status().then((st) => st.connected && st.connectedEnvironment === st.environment ? qbi.sync().then(() => qbc.sync()) : null).catch((e) => console.error('QuickBooks sync', e.message)); }, 3600000); setInterval(() => fu.closeDueCases().catch((e) => console.error('follow-up sweep', e.message)), 3600000); });
+  server.listen(port, () => { console.log(`by Other Desk Platform on port ${port}`); bd.startScheduler(); tc.ensureDefaultPins().then((n) => n && console.log(`Gave ${n} employee${n === 1 ? '' : 's'} the automatic time clock PIN (last 4 of the phone, else 0000).`)).catch((e) => console.error('default PINs', e.message)); setTimeout(() => folders.syncGcs(), 20000); setInterval(() => folders.syncGcs(), 3600000); setInterval(() => { qbo.status().then((st) => st.connected && st.connectedEnvironment === st.environment ? qbi.sync().then(() => qbc.sync()) : null).catch((e) => console.error('QuickBooks sync', e.message)); }, 3600000); setInterval(() => fu.closeDueCases().catch((e) => console.error('follow-up sweep', e.message)), 3600000); });
   const watch = () => cp.scan().then(() => cp.scanNtos()).then(() => cp.sendQueued()).catch((e) => console.error('compliance scan failed', e.message));
   setTimeout(watch, 15_000); setInterval(watch, 6 * 3600_000);
 }

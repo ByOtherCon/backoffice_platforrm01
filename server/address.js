@@ -65,3 +65,14 @@ export function legacyAddressColumns(line) {
   const s = String(line ?? '').trim(); if (!s) return { address: null, city: null, state: null, zip: null, address_verified: false };
   const sp = splitAddress(s); return sp ? { address: sp.street, city: sp.city, state: sp.state, zip: sp.zip || null, address_verified: false } : { address: s, city: null, state: null, zip: null, address_verified: false };
 }
+
+// The point on the map for an address (the Census geocoder's coordinates), or null. Used to fence a jobsite for the time clock.
+export async function geocode(a) {
+  const c = cleanAddr(a || {}); if (!c.street || !c.city || !c.state) return null;
+  try {
+    const q = { street: forGeocoder(c.street), city: c.city, state: c.state, benchmark: 'Public_AR_Current', format: 'json' }; if (c.zip) q.zip = c.zip.slice(0, 5);
+    const r = await afetch('https://geocoding.geo.census.gov/geocoder/addresses?' + new URLSearchParams(q), { signal: AbortSignal.timeout(8000) }); if (!r.ok) return null;
+    const m = (await r.json())?.result?.addressMatches?.[0]?.coordinates; const lat = Number(m?.y), lng = Number(m?.x);
+    return Number.isFinite(lat) && Number.isFinite(lng) && m ? { lat: Math.round(lat * 1e6) / 1e6, lng: Math.round(lng * 1e6) / 1e6 } : null;
+  } catch { return null; }
+}

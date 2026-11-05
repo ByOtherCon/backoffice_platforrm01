@@ -3,7 +3,7 @@ import { bad, money, text, dateStr, httpsUrl, HttpError } from './http.js';
 import { loadInputs, summarize } from './projects.js';
 import { validateTrade } from '../src/lib/costing.ts';
 import { addrLine } from '../src/lib/workflow.ts';
-import { addressColumns, legacyAddressColumns } from './address.js';
+import { addressColumns, legacyAddressColumns, geocode } from './address.js';
 import { deleteDocument } from './documents.js';
 
 // The project's address the way every screen shows it, and as separate fields for the form.
@@ -55,6 +55,14 @@ function parseTrades(list) {
 
 // The address comes as b.addr (street, city, state, ZIP and the green-check token) from the forms. One text line in b.address is still
 // accepted from older callers: it is split up and kept unchecked. { trusted: true } is for code that already holds a checked address.
+// Puts the jobsite on the map from its checked address so the time clock can keep clock-ins within the radius (3 miles unless changed).
+// A new project is fenced by default; changing an address moves the point but leaves the on/off choice alone. Best effort: no match leaves it as it was.
+export async function locateProject(id, { enable = false } = {}) {
+  const [p] = await q('SELECT address, city, state, zip, address_verified FROM projects WHERE id=$1', [id]); if (!p) throw new HttpError(404, 'Project not found.');
+  if (!p.address || !p.city || !p.state) return null;
+  const g = await geocode({ street: p.address, city: p.city, state: p.state, zip: p.zip }); if (!g) return null;
+  await q(`UPDATE projects SET lat=$2, lng=$3${enable ? ', geofence_required=true' : ''} WHERE id=$1`, [id, g.lat, g.lng]); return g;
+}
 export async function createProject(b, outerTx = null, { trusted = false } = {}) {
   const name = text(b.name, 'Project name', { max: 200 }), client = text(b.client, 'Client', { max: 200 });
   const ac = b.addr !== undefined ? addressColumns(b.addr, { florida: true, label: 'Project address', required: true, trusted }) : legacyAddressColumns(text(b.address, 'Project address', { max: 300 }));
@@ -76,7 +84,9 @@ export async function createProject(b, outerTx = null, { trusted = false } = {})
       }
       return { id: p.id };
     };
-    return outerTx ? await body(outerTx) : await tx(body);
+    const made = outerTx ? await body(outerTx) : await tx(body);
+    if (!outerTx && ac.address_verified) await locateProject(made.id, { enable: true }).catch(() => null);
+    return made;
   } catch (e) { throw dbError(e); }
 }
 
@@ -101,6 +111,7 @@ export async function updateProject(id, b) {
   if (!sets.length) throw bad('Nothing to save.');
   const r = await q(`UPDATE projects SET ${sets.join(',')} WHERE id=$1 RETURNING id`, vals);
   if (!r.length) throw new HttpError(404, 'Project not found.');
+  if (b.addr !== undefined && b.addr?.street) await locateProject(id).catch(() => null);   // a changed address moves the jobsite point
 }
 
 // After any change that affects contract value, make sure the trade's numbers still obey the billing rules.

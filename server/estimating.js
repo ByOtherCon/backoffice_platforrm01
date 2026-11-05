@@ -3,7 +3,7 @@ import { bad, money, text, dateStr, httpsUrl, HttpError } from './http.js';
 import * as E from '../src/lib/estimating.ts';
 import * as W from '../src/lib/workflow.ts';
 import * as R from '../src/lib/bidrules.ts';
-import { createProject, listProjects } from './projectApi.js';
+import { createProject, listProjects, locateProject } from './projectApi.js';
 import { loadInputs } from './projects.js';
 import { registerLinkable } from './messaging.js';
 import { tradeStats } from '../src/lib/costing.ts';
@@ -291,6 +291,7 @@ export async function transition(user, id, b = {}) {
   });
   // The shared folder follows the status: made when work is taken on, renamed P -> C when it becomes a contract.
   if (['Reviewing', 'Accepted'].includes(done.to)) { const f = await folders.tryEnsureOpportunityFolder(id); if (f?.webUrl) done.result.folderUrl = f.webUrl; }
+  if (done.to === 'Awarded' && done.result.projectId) await locateProject(done.result.projectId, { enable: true }).catch(() => null);   // fence the new jobsite for the time clock
   if (done.to === 'Awarded' && done.result.projectId) { const f = await folders.onAwarded(id, done.result.projectId); if (f?.webUrl) done.result.folderUrl = f.webUrl; }
   return done.result;
 }

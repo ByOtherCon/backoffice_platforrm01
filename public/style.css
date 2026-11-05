@@ -134,3 +134,6 @@ details.adm>.card{padding-top:.5rem}
 .seg button:disabled{opacity:.35;cursor:not-allowed}
 button.linklike{background:none;border:0;padding:.25rem .1rem;color:var(--navy);cursor:pointer;font:inherit;text-align:left}button.linklike:hover{text-decoration:underline}
 .sp-list table{width:100%}
+
+/* time clock: one trade row = the trade (wide enough to read) and its hours (a short drop-down) */
+.trade-row2{display:flex;gap:.4rem;align-items:center;margin:.3rem 0;flex-wrap:wrap}.trade-row2 select.tradesel{width:auto!important;flex:1 1 10rem;min-width:10rem}.trade-row2 select.hrsel{width:5.2rem!important;min-width:0}.trade-row2 .rest{min-width:5rem;font-size:14px}

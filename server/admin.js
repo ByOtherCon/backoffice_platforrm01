@@ -4,6 +4,7 @@ import { hashPassword, MIN_PASSWORD } from './auth.js';
 import { parseAccess } from './access.js';
 import { WIDGETS } from './dashboard.js';
 import { addressColumns, legacyAddressColumns } from './address.js';
+import { applyDefaultPin } from './timeclock.js';
 
 const bool = (v, l) => { if (typeof v !== 'boolean') throw bad(`${l} must be true or false.`); return v; };
 const oneOf = (list) => (v, l) => { if (!list.includes(v)) throw bad(`Choose a valid ${l}.`); return v; };
@@ -43,7 +44,9 @@ export const list = async (kind, { rates = false } = {}) => (await q(`SELECT * F
 export const touchesPay = (kind, body) => kind === 'employees' && PAY_FIELDS.some((f) => body && body[f] !== undefined);
 export async function create(kind, body) {
   const v = parse(kind, body, true), keys = Object.keys(v);
-  try { return strip((await q(`INSERT INTO ${KINDS[kind].table} (${keys.join(',')}) VALUES (${keys.map((_, i) => '$' + (i + 1)).join(',')}) RETURNING *`, keys.map((k) => v[k])))[0]); } catch (e) { throw dbError(e); }
+  let row; try { row = (await q(`INSERT INTO ${KINDS[kind].table} (${keys.join(',')}) VALUES (${keys.map((_, i) => '$' + (i + 1)).join(',')}) RETURNING *`, keys.map((k) => v[k])))[0]; } catch (e) { throw dbError(e); }
+  if (kind === 'employees') { await applyDefaultPin(row.id); return strip((await q('SELECT * FROM employees WHERE id=$1', [row.id]))[0]); }   // every employee can sign in to the time clock from day one
+  return strip(row);
 }
 export async function update(kind, id, body) {
   const old = KINDS[kind].address && (body.addr !== undefined) ? (await q(`SELECT address, city, state, zip, address_verified FROM ${KINDS[kind].table} WHERE id=$1`, [id]))[0] ?? null : null;
@@ -51,6 +54,7 @@ export async function update(kind, id, body) {
   try {
     const r = await q(`UPDATE ${KINDS[kind].table} SET ${keys.map((k, i) => `${k}=$${i + 2}`).join(',')} WHERE id=$1 RETURNING *`, [id, ...keys.map((k) => v[k])]);
     if (!r.length) throw new HttpError(404, 'Not found.');
+    if (kind === 'employees' && body.phone !== undefined) { await applyDefaultPin(id); return strip((await q('SELECT * FROM employees WHERE id=$1', [id]))[0]); }   // an automatic PIN follows the phone number; a chosen one never changes
     return strip(r[0]);
   } catch (e) { throw dbError(e); }
 }

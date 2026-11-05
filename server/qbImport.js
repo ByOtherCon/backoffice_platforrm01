@@ -6,15 +6,24 @@ import * as QB from './quickbooks.js';
 import { assertValid } from './projectApi.js';
 import { suggestProject, readLines, splitByTrade, spreadPayment, matchTrade } from '../src/lib/qbmatch.ts';
 import { toCents, toDollars } from '../src/lib/costing.ts';
+import { todayEastern } from '../src/lib/estimating.ts';
 
 const STATE = 'qbo_sync';
 const getState = async () => (await q(`SELECT value FROM app_settings WHERE key=$1`, [STATE]))[0]?.value ?? {};
 const putState = (v) => q(`INSERT INTO app_settings(key,value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=$2, updated_at=now()`, [STATE, v]);
+// What the person chose: invoices dated before startDate are never read, and confident matches may import by themselves.
+export async function getSettings() { const s = await getState(); return { startDate: s.startDate || todayEastern().slice(0, 4) + '-01-01', autoImport: s.autoImport !== false }; }
+export async function saveSettings(b) {
+  const cur = await getState(), next = { ...cur };
+  if (b.startDate !== undefined) { if (!/^\d{4}-\d{2}-\d{2}$/.test(String(b.startDate))) throw bad('Choose a start date.'); if (b.startDate !== (cur.startDate || null)) { next.startDate = b.startDate; next.since = null; } }   // a new date means reading again from that date
+  if (b.autoImport !== undefined) next.autoImport = !!b.autoImport;
+  await putState(next); return getSettings();
+}
 const date = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(v || '') ? v : null);
 const lit = (iso) => String(iso).replace(/[^0-9T:.+\-Z]/g, '');   // only ever our own timestamp goes into a query
 
-async function pages(entity, since) {
-  const out = []; const where = since ? ` where MetaData.LastUpdatedTime >= '${lit(since)}'` : '';
+async function pages(entity, since, startDate) {
+  const out = []; const conds = [`TxnDate >= '${lit(startDate)}'`]; if (since) conds.push(`MetaData.LastUpdatedTime >= '${lit(since)}'`); const where = ' where ' + conds.join(' and ');
   for (let start = 1; start < 5000; start += 100) {
     let r; try { r = await QB.query(`select * from ${entity}${where} orderby MetaData.LastUpdatedTime startposition ${start} maxresults 100`); } catch (e) { throw e instanceof HttpError ? new HttpError(e.status, `Reading ${entity}s: ${e.message}`) : e; }
     const rows = r?.QueryResponse?.[entity] ?? []; out.push(...rows); if (rows.length < 100) break;
@@ -27,22 +36,22 @@ const projectsForMatching = async () => (await q(`SELECT p.id, p.name, g.name AS
 let syncing = null;
 export function sync() { return (syncing ||= doSync().finally(() => { syncing = null; })); }
 async function doSync() {
-  const st = await getState(), started = new Date().toISOString(), since = st.since ? new Date(Date.parse(st.since) - 5 * 60000).toISOString() : null;   // a small overlap so nothing slips between runs
-  const [invoices, payments] = await Promise.all([pages('Invoice', since), pages('Payment', since)]);
+  const st = await getState(), cfg = await getSettings(), started = new Date().toISOString(), since = st.since ? new Date(Date.parse(st.since) - 5 * 60000).toISOString() : null;   // a small overlap so nothing slips between runs
+  const [invoices, payments] = await Promise.all([pages('Invoice', since, cfg.startDate), pages('Payment', since, cfg.startDate)]);
   const projects = await projectsForMatching(); let added = 0, changed = 0, paymentsNew = 0, autoPaid = 0;
   const maps = new Map((await q('SELECT qb_customer_id, project_id FROM qb_customer_map')).map((m) => [m.qb_customer_id, m.project_id]));
   for (const inv of invoices) {
     const lines = readLines(inv.Line), total = Math.round(Number(inv.TotalAmt) * 100) / 100; if (!Number.isFinite(total)) continue;
     const memo = [inv.PrivateNote, inv.CustomerMemo?.value].filter(Boolean).join(' ').slice(0, 500) || null;
-    const sug = maps.get(inv.CustomerRef?.value) ? { projectId: maps.get(inv.CustomerRef.value), how: 'remembered for this QuickBooks customer' } : suggestProject({ docNumber: inv.DocNumber, customerName: inv.CustomerRef?.name, memo, lines }, projects);
+    const sug = maps.get(inv.CustomerRef?.value) ? { projectId: maps.get(inv.CustomerRef.value), how: 'remembered for this QuickBooks customer', confident: true } : suggestProject({ docNumber: inv.DocNumber, customerName: inv.CustomerRef?.name, memo, lines }, projects);
     const [cur] = await q('SELECT id, status, imported_total FROM qb_invoices WHERE qb_id=$1', [String(inv.Id)]);
-    const vals = [String(inv.Id), inv.DocNumber ?? null, date(inv.TxnDate), date(inv.DueDate), total, inv.Balance != null ? Number(inv.Balance) : null, inv.CustomerRef?.value ?? null, inv.CustomerRef?.name ?? null, memo, JSON.stringify(lines), inv.MetaData?.LastUpdatedTime ?? null, sug?.projectId ?? null, sug?.how ?? null];
-    if (!cur) { await q(`INSERT INTO qb_invoices(qb_id,doc_number,txn_date,due_date,total,balance,customer_id,customer_name,memo,lines,qb_updated,suggested_project_id,suggested_by,project_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$12)`, vals); added++; }
+    const vals = [String(inv.Id), inv.DocNumber ?? null, date(inv.TxnDate), date(inv.DueDate), total, inv.Balance != null ? Number(inv.Balance) : null, inv.CustomerRef?.value ?? null, inv.CustomerRef?.name ?? null, memo, JSON.stringify(lines), inv.MetaData?.LastUpdatedTime ?? null, sug?.projectId ?? null, sug?.how ?? null, !!sug?.confident];
+    if (!cur) { await q(`INSERT INTO qb_invoices(qb_id,doc_number,txn_date,due_date,total,balance,customer_id,customer_name,memo,lines,qb_updated,suggested_project_id,suggested_by,confident,project_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$12)`, vals); added++; }
     else if (cur.status === 'Imported' || cur.status === 'Changed') {
       // already in Job Costing: never rewritten behind anyone's back; a changed total is flagged for a person to look at
       const moved = Math.abs(Number(cur.imported_total) - total) > 0.005;
       await q(`UPDATE qb_invoices SET balance=$2, qb_updated=$3, synced_at=now(), status=$4, message=$5 WHERE id=$1`, [cur.id, vals[5], vals[10], moved ? 'Changed' : 'Imported', moved ? `The total in QuickBooks is now ${total.toFixed(2)}; it was ${Number(cur.imported_total).toFixed(2)} when imported. Job Costing was not changed.` : null]); if (moved) changed++;
-    } else await q(`UPDATE qb_invoices SET doc_number=$2,txn_date=$3,due_date=$4,total=$5,balance=$6,customer_id=$7,customer_name=$8,memo=$9,lines=$10,qb_updated=$11,suggested_project_id=$12,suggested_by=$13,synced_at=now(), project_id=COALESCE(project_id,$12) WHERE id=$1`, [cur.id, ...vals.slice(1)]);
+    } else await q(`UPDATE qb_invoices SET doc_number=$2,txn_date=$3,due_date=$4,total=$5,balance=$6,customer_id=$7,customer_name=$8,memo=$9,lines=$10,qb_updated=$11,suggested_project_id=$12,suggested_by=$13,confident=$14,synced_at=now(), project_id=COALESCE(project_id,$12) WHERE id=$1`, [cur.id, ...vals.slice(1)]);
   }
   for (const p of payments) {
     for (const ln of p.Line || []) for (const lt of ln.LinkedTxn || []) {
@@ -51,19 +60,44 @@ async function doSync() {
     }
   }
   for (const inv of await q(`SELECT id FROM qb_invoices WHERE status IN ('Imported','Changed')`)) { try { autoPaid += await importPayments(inv.id); } catch { /* shown on the invoice; the rest carry on */ } }
-  await putState({ since: started, lastRun: started, added, changed, payments: paymentsNew, autoPaid, invoicesSeen: invoices.length, paymentsSeen: payments.length });
-  return { added, changed, payments: paymentsNew, autoPaid, invoicesSeen: invoices.length };
+  // confident matches go in without anyone: the project is clear and every line either has a trade or is spread over the whole project
+  let auto = 0, needLook = 0;
+  if (cfg.autoImport) for (const c of await q(`SELECT id, project_id FROM qb_invoices WHERE status='New' AND confident AND project_id IS NOT NULL AND project_id = suggested_project_id ORDER BY txn_date`)) {
+    try { await autoImport(c.id, c.project_id); auto++; }
+    catch (e) { needLook++; await q(`UPDATE qb_invoices SET message=$2 WHERE id=$1`, [c.id, 'Not imported automatically: ' + String(e.message || e).slice(0, 400)]); }
+  }
+  await putState({ ...(await getState()), since: started, lastRun: started, added, changed, payments: paymentsNew, autoPaid, auto, needLook, invoicesSeen: invoices.length, paymentsSeen: payments.length });
+  return { added, changed, payments: paymentsNew, autoPaid, auto, needLook, invoicesSeen: invoices.length };
 }
 
-export async function lastSync() { const s = await getState(); return s.lastRun ? { at: s.lastRun, added: s.added, changed: s.changed, payments: s.payments, autoPaid: s.autoPaid, invoicesSeen: s.invoicesSeen } : null; }
-export async function counts() { const r = await q(`SELECT status, count(*)::int n FROM qb_invoices GROUP BY 1`); return Object.fromEntries(r.map((x) => [x.status, x.n])); }
+export async function lastSync() { const s = await getState(); return s.lastRun ? { at: s.lastRun, added: s.added, changed: s.changed, payments: s.payments, autoPaid: s.autoPaid, auto: s.auto ?? 0, needLook: s.needLook ?? 0, invoicesSeen: s.invoicesSeen } : null; }
+export async function counts() {
+  const { startDate } = await getSettings();
+  const r = await q(`SELECT status, count(*) FILTER (WHERE status <> 'New' OR txn_date IS NULL OR txn_date >= $1)::int n FROM qb_invoices GROUP BY 1`, [startDate]);
+  return Object.fromEntries(r.filter((x) => x.n).map((x) => [x.status, x.n]));
+}
+// Everything still New that nothing matched to a project, in one step (they can be restored one by one).
+export async function ignoreUnmatched() {
+  const { startDate } = await getSettings();
+  const r = await q(`UPDATE qb_invoices SET status='Ignored' WHERE status='New' AND project_id IS NULL AND suggested_project_id IS NULL AND (txn_date IS NULL OR txn_date >= $1) RETURNING id`, [startDate]);
+  return { ignored: r.length };
+}
+// Staged invoices that look like they belong to this project (for its Progress Billing tab).
+export async function projectSuggestions(projectId) {
+  const rows = await q(`SELECT id, doc_number, txn_date, total, customer_name, suggested_by, message FROM qb_invoices WHERE status='New' AND (suggested_project_id=$1 OR project_id=$1) ORDER BY txn_date DESC LIMIT 20`, [projectId]);
+  return rows.map((r) => ({ id: r.id, number: r.doc_number, date: r.txn_date, total: Number(r.total), customer: r.customer_name, why: r.suggested_by, message: r.message }));
+}
 
-export async function list(status = 'New') {
+export async function list(status = 'New', search = '') {
   if (!['New', 'Imported', 'Ignored', 'Changed', 'All'].includes(status)) throw bad('Unknown status.');
-  const rows = await q(`SELECT i.*, p.name AS project_name, s.name AS suggested_name FROM qb_invoices i LEFT JOIN projects p ON p.id=i.project_id LEFT JOIN projects s ON s.id=i.suggested_project_id ${status === 'All' ? '' : 'WHERE i.status=$1'} ORDER BY i.txn_date DESC NULLS LAST, i.doc_number LIMIT 300`, status === 'All' ? [] : [status]);
+  const { startDate } = await getSettings(), params = [], where = [];
+  if (status !== 'All') { params.push(status); where.push(`i.status=$${params.length}`); }
+  if (status === 'New') { params.push(startDate); where.push(`(i.txn_date IS NULL OR i.txn_date >= $${params.length})`); }   // older ones stay out of the way
+  if (search.trim()) { params.push('%' + search.trim().toLowerCase().replace(/[%_]/g, '') + '%'); where.push(`(lower(coalesce(i.doc_number,'')) LIKE $${params.length} OR lower(coalesce(i.customer_name,'')) LIKE $${params.length} OR lower(coalesce(i.memo,'')) LIKE $${params.length})`); }
+  const rows = await q(`SELECT i.*, p.name AS project_name, s.name AS suggested_name FROM qb_invoices i LEFT JOIN projects p ON p.id=i.project_id LEFT JOIN projects s ON s.id=i.suggested_project_id ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY i.txn_date DESC NULLS LAST, i.doc_number LIMIT 300`, params);
   const pays = rows.length ? await q('SELECT * FROM qb_payments WHERE invoice_qb_id = ANY($1::text[]) ORDER BY paid_date', [rows.map((r) => r.qb_id)]) : [];
   return rows.map((r) => ({ id: r.id, qbId: r.qb_id, number: r.doc_number, date: r.txn_date, dueDate: r.due_date, total: Number(r.total), balance: r.balance === null ? null : Number(r.balance), customer: r.customer_name, memo: r.memo, lines: r.lines, status: r.status, message: r.message,
-    projectId: r.project_id, project: r.project_name, suggestedProjectId: r.suggested_project_id, suggestedBy: r.suggested_by, importedAt: r.imported_at,
+    projectId: r.project_id, project: r.project_name, suggestedProjectId: r.suggested_project_id, suggestedBy: r.suggested_by, confident: r.confident, importedAt: r.imported_at,
     payments: pays.filter((p) => p.invoice_qb_id === r.qb_id).map((p) => ({ id: p.qb_id, date: p.paid_date, amount: Number(p.amount), imported: p.imported })) }));
 }
 
@@ -101,9 +135,19 @@ export async function importInvoice(invoiceId, b) {
     const projectId = b.projectId || inv.project_id; if (!projectId) throw bad('Choose the project first.');
     const [proj] = await t('SELECT id, retainage_pct FROM projects WHERE id=$1', [projectId]); if (!proj) throw bad('Project not found.');
     const lines = inv.lines, ptIds = new Set((await t('SELECT id FROM project_trades WHERE project_id=$1', [projectId])).map((x) => x.id));
-    const assign = Array.isArray(b.lines) ? b.lines : []; const tradeOf = (i) => { const a = assign.find((x) => Number(x.index) === i)?.projectTradeId; if (a && !ptIds.has(a)) throw bad('A line is set to a trade that is not on that project.'); return a || null; };
+    const weights = new Map((await t(`SELECT pt.id, (pt.original_amount + COALESCE((SELECT SUM(amount) FROM change_orders WHERE project_trade_id=pt.id AND status='Approved'),0))::float8 AS w FROM project_trades pt WHERE pt.project_id=$1`, [projectId])).map((x) => [x.id, x.w]));
+    const assign = Array.isArray(b.lines) ? b.lines : [];
+    // a line goes to one trade, is spread over every trade of the project by contract amount, or is split by hand (amounts must add up to the line)
+    const assignOf = (i) => {
+      const a = assign.find((x) => Number(x.index) === i); if (!a) return null;
+      if (a.spread) return { spread: true };
+      if (Array.isArray(a.split)) return { split: a.split.filter((x) => Number(x.amount) !== 0).map((x) => { if (!ptIds.has(x.projectTradeId)) throw bad('A split is set to a trade that is not on that project.'); return { projectTradeId: x.projectTradeId, amount: Math.round(Number(x.amount) * 100) / 100 }; }) };
+      if (a.projectTradeId) { if (!ptIds.has(a.projectTradeId)) throw bad('A line is set to a trade that is not on that project.'); return a.projectTradeId; }
+      return null;
+    };
     const override = b.retainageHeld === undefined || b.retainageHeld === '' || b.retainageHeld === null ? null : money(b.retainageHeld, 'Retainage held');
-    const { splits, unassigned } = splitByTrade(lines, tradeOf, Number(proj.retainage_pct), override);
+    const { splits, unassigned, badSplit } = splitByTrade(lines, assignOf, Number(proj.retainage_pct), override, weights);
+    if (badSplit.length) throw bad(`The amounts you split must add up to the line: ${badSplit.slice(0, 3).map((i) => lines[i].description || lines[i].itemName || 'line ' + (i + 1)).join('; ')}`);
     if (unassigned.length) throw bad(`Choose a trade for: ${unassigned.slice(0, 3).map((i) => lines[i].description || lines[i].itemName || 'line ' + (i + 1)).join('; ')}${unassigned.length > 3 ? '…' : ''}`);
     if (!splits.length) throw bad('There is nothing to bill on this invoice.');
     // Say it plainly when a trade has no room left, with the numbers, before the general billing rule has to refuse it.
@@ -149,4 +193,13 @@ async function importPayments(invoiceId) {
     const rows = await t(`SELECT ci.id, ci.amount::float8 AS amount FROM client_invoices ci WHERE ci.qb_invoice_id=$1 AND ci.project_id=$2 ORDER BY ci.id`, [inv.qb_id, inv.project_id]); if (!rows.length) return 0;
     const n = await applyPayments(t, inv.qb_id, rows); if (n) await assertValid(t, inv.project_id); return n;
   });
+}
+
+// A confident match imports itself: lines go to the trade they name, anything else is spread over the whole project by contract amount.
+async function autoImport(invoiceId, projectId) {
+  const { guess } = await guessTrades(invoiceId, projectId);
+  const [inv] = await q('SELECT lines, suggested_by FROM qb_invoices WHERE id=$1', [invoiceId]);
+  const lines = inv.lines.map((l, i) => (l.retainage ? null : guess[i] ? { index: i, projectTradeId: guess[i] } : { index: i, spread: true })).filter(Boolean);
+  await importInvoice(invoiceId, { projectId, lines });
+  await q(`UPDATE qb_invoices SET message=$2 WHERE id=$1`, [invoiceId, `Imported automatically (matched by ${inv.suggested_by}).`]);
 }

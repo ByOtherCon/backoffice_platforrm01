@@ -56,11 +56,12 @@ test('who may sync and review: the office, not a project manager', async () => {
   assert.equal((await call('POST', '/api/quickbooks/sync', {}, pm)).status, 403); assert.equal((await call('GET', '/api/quickbooks/invoices', null, pm)).status, 403); assert.equal((await call('GET', '/api/quickbooks/invoices', null, asst)).status, 200);
 });
 test('sync stages invoices (nothing touches billing), suggests the project from the contract code or name, and is safe to repeat', async () => {
+  assert.equal((await call('PUT', '/api/quickbooks/settings', { startDate: '2026-01-01', autoImport: false }, asst)).status, 200);
   const r = (await call('POST', '/api/quickbooks/sync', {}, asst)).body; assert.deepEqual([r.added, r.invoicesSeen, r.payments], [2, 2, 1]);
   const a = await staged('C11031-1'), b = await staged('2001'); assert.deepEqual([a.status, a.suggestedProjectId, a.suggestedBy, a.total], ['New', pid, 'contract code C11031', 36000]); assert.equal(b.suggestedProjectId, null);
   assert.deepEqual(a.lines.map((l) => [l.amount, l.retainage]), [[10000, false], [30000, false], [-4000, true]]); assert.deepEqual(a.payments.map((p) => [p.amount, p.imported]), [[20000, false]]);
   assert.equal((await billing()).length, 0);
-  queries = []; assert.equal((await call('POST', '/api/quickbooks/sync', {}, asst)).body.added, 0); assert.ok(queries.every((s) => /where MetaData\.LastUpdatedTime >= '/.test(s)));   // the second run asks only for what changed
+  queries = []; assert.equal((await call('POST', '/api/quickbooks/sync', {}, asst)).body.added, 0); assert.ok(queries.every((s) => /where TxnDate >= '2026-01-01' and MetaData\.LastUpdatedTime >= '/.test(s)));   // the second run asks only for what changed
   assert.equal((await q('SELECT count(*)::int n FROM qb_invoices'))[0].n, 2);
 });
 test('review: lines are matched to the project trades; importing builds one billing row per trade with retainage and payments spread in proportion', async () => {
@@ -92,4 +93,50 @@ test('unmatched invoices: choose a project, ignore, or restore', async () => {
   assert.equal((await call('POST', `/api/quickbooks/invoices/${b.id}/restore`, {}, asst)).status, 200); assert.equal((await staged('2001')).status, 'New');
   assert.equal((await call('PUT', `/api/quickbooks/invoices/${b.id}/project`, { projectId: pid }, asst)).status, 200); assert.equal((await staged('2001')).projectId, pid);
   const c = (await call('GET', '/api/quickbooks/status', null, owner)).body; assert.ok(c.lastSync.at); assert.deepEqual(c.counts, { Changed: 1, New: 2 });
+});
+
+test('start date: older invoices stay out of the list and the count, it is part of every QuickBooks query, and changing it reads again from that date', async () => {
+  const dflt = (await call('GET', '/api/quickbooks/settings', null, asst)).body; assert.deepEqual([dflt.startDate, dflt.autoImport], ['2026-01-01', false]);
+  assert.equal((await call('PUT', '/api/quickbooks/settings', { startDate: 'soon' }, asst)).status, 400); assert.equal((await call('PUT', '/api/quickbooks/settings', { startDate: '2026-01-01' }, pm)).status, 403);
+  invoices.push({ Id: '120', DocNumber: 'OLD-1', TxnDate: '2025-06-01', TotalAmt: 100, CustomerRef: { value: '88', name: 'Old Customer' }, MetaData: { LastUpdatedTime: LU }, Line: [{ DetailType: 'SalesItemLineDetail', Amount: 100, Description: 'Old', SalesItemLineDetail: { ItemRef: { name: 'Services' } } }] });
+  queries = []; await call('POST', '/api/quickbooks/sync', {}, asst); assert.ok(queries.every((x) => /where TxnDate >= '2026-01-01'/.test(x)));
+  assert.ok(!(await call('GET', '/api/quickbooks/invoices?status=New', null, asst)).body.some((i) => i.number === 'OLD-1')); assert.equal((await call('GET', '/api/quickbooks/status', null, owner)).body.counts.New, 2);
+  assert.equal((await call('PUT', '/api/quickbooks/settings', { startDate: '2025-01-01' }, asst)).status, 200);
+  assert.ok((await call('GET', '/api/quickbooks/invoices?status=New', null, asst)).body.some((i) => i.number === 'OLD-1'));
+  queries = []; await call('POST', '/api/quickbooks/sync', {}, asst); assert.ok(queries.every((x) => /where TxnDate >= '2025-01-01'$/.test(x.split(' orderby ')[0])));   // reads everything again from the new date, not just what changed
+  assert.deepEqual((await call('GET', '/api/quickbooks/invoices?status=New&search=old', null, asst)).body.map((i) => i.number), ['OLD-1']);   // search by number, customer or memo
+  await call('PUT', '/api/quickbooks/settings', { startDate: '2026-01-01' }, asst);
+});
+test('Ignore all not matched: only New invoices with no project, in one step', async () => {
+  invoices.push({ Id: '121', DocNumber: 'ZZ-1', TxnDate: '2026-11-03', TotalAmt: 10, CustomerRef: { value: '89', name: 'Nobody At All' }, MetaData: { LastUpdatedTime: LU }, Line: [{ DetailType: 'SalesItemLineDetail', Amount: 10, Description: 'x', SalesItemLineDetail: { ItemRef: { name: 'Services' } } }] });
+  await call('POST', '/api/quickbooks/sync', {}, asst);
+  const r = (await call('POST', '/api/quickbooks/invoices/ignore-unmatched', {}, asst)).body; assert.equal(r.ignored, 1);   // ZZ-1 has no match; 2001 was matched by hand and C11031-2 has a suggestion
+  assert.equal((await staged('ZZ-1')).status, 'Ignored'); assert.equal((await staged('2001')).status, 'New'); assert.equal((await staged('C11031-2')).status, 'New');
+  assert.equal((await call('POST', '/api/quickbooks/invoices/ignore-unmatched', {}, pm)).status, 403);
+});
+test('automatic log: a confident match imports itself (lines without a trade spread over the whole project); one that cannot is left for a person with the reason', async () => {
+  await call('PUT', '/api/quickbooks/settings', { autoImport: true }, asst);
+  invoices.push({ Id: '110', DocNumber: 'C11031-9', TxnDate: '2026-11-22', TotalAmt: 2000, CustomerRef: { value: '91', name: 'Whatever' }, MetaData: { LastUpdatedTime: LU }, Line: [{ DetailType: 'SalesItemLineDetail', Amount: 1000, Description: 'Selective demolition', SalesItemLineDetail: { ItemRef: { name: 'Demolition' } } }, { DetailType: 'SalesItemLineDetail', Amount: 1000, Description: 'General conditions', SalesItemLineDetail: { ItemRef: { name: 'Services' } } }] },
+    { Id: '111', DocNumber: 'C11031-10', TxnDate: '2026-11-23', TotalAmt: 90000, CustomerRef: { value: '92', name: 'Whatever 2' }, MetaData: { LastUpdatedTime: LU }, Line: [{ DetailType: 'SalesItemLineDetail', Amount: 90000, Description: 'Selective demolition', SalesItemLineDetail: { ItemRef: { name: 'Demolition' } } }] });
+  const before = (await billing()).length; const r = (await call('POST', '/api/quickbooks/sync', {}, asst)).body; assert.deepEqual([r.auto, r.needLook], [1, 2]);   // C11031-9 imports; C11031-10 and the earlier too-big C11031-2 are tried and left for a person
+  const a = await staged('C11031-9'); assert.equal(a.status, 'Imported'); assert.match(a.message, /Imported automatically \(matched by contract code C11031\)/);
+  const rows = (await billing()).filter((x) => x.number === 'C11031-9').sort((x, y) => x.amount - y.amount); assert.deepEqual(rows.map((x) => [x.trade, x.amount]), [['Framing & Drywall', 750], ['Demolition', 1250]]);   // 1000 to Demolition + 1000 spread 250 / 750 by contract amount
+  assert.equal((await billing()).length, before + 2);
+  const b = await staged('C11031-10'); assert.equal(b.status, 'New'); assert.match(b.message, /^Not imported automatically: Not imported\. Demolition: this invoice bills \$90,000\.00/);
+  await call('PUT', '/api/quickbooks/settings', { autoImport: false }, asst);
+});
+test('an invoice against the whole project, or split by hand across trades (for example 5.00 as 2.50 and 2.50)', async () => {
+  invoices.push({ Id: '112', DocNumber: '3001', TxnDate: '2026-11-24', TotalAmt: 5, CustomerRef: { value: '93', name: 'Some Job' }, MetaData: { LastUpdatedTime: LU }, Line: [{ DetailType: 'SalesItemLineDetail', Amount: 5, Description: 'Mobilization', SalesItemLineDetail: { ItemRef: { name: 'Services' } } }] });
+  await call('POST', '/api/quickbooks/sync', {}, asst); const c = await staged('3001');
+  const bad = await call('POST', `/api/quickbooks/invoices/${c.id}/import`, { projectId: pid, lines: [{ index: 0, split: [{ projectTradeId: ptDemo, amount: 2 }, { projectTradeId: ptDry, amount: 2 }] }] }, asst); assert.equal(bad.status, 400); assert.match(bad.body.error, /must add up to the line/);
+  const ok = await call('POST', `/api/quickbooks/invoices/${c.id}/import`, { projectId: pid, lines: [{ index: 0, split: [{ projectTradeId: ptDemo, amount: 2.5 }, { projectTradeId: ptDry, amount: 2.5 }] }], retainageHeld: 0 }, asst); assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  assert.deepEqual((await billing()).filter((x) => x.number === '3001').map((x) => x.amount).sort(), [2.5, 2.5]);
+  const d = await staged('2001'); const sp = await call('POST', `/api/quickbooks/invoices/${d.id}/import`, { projectId: pid, lines: [{ index: 0, spread: true }], retainageHeld: 0 }, asst); assert.equal(sp.status, 200, JSON.stringify(sp.body));   // 500 over the whole project
+  assert.deepEqual((await billing()).filter((x) => x.number === '2001').map((x) => x.amount).sort((x, y) => x - y), [125, 375]);
+});
+test("a project's own page can list the invoices that look like it", async () => {
+  invoices.push({ Id: '130', DocNumber: 'C11031-20', TxnDate: '2026-11-25', TotalAmt: 70, CustomerRef: { value: '95', name: 'Whatever 3' }, MetaData: { LastUpdatedTime: LU }, Line: [{ DetailType: 'SalesItemLineDetail', Amount: 70, Description: 'Demolition', SalesItemLineDetail: { ItemRef: { name: 'Demolition' } } }] });
+  await call('POST', '/api/quickbooks/sync', {}, asst);
+  const sug = (await call('GET', `/api/projects/${pid}/qb-suggestions`, null, asst)).body; assert.ok(sug.some((x) => x.number === 'C11031-20' && /contract code/.test(x.why))); assert.ok(!sug.some((x) => x.number === 'C11031-9'));   // already imported ones are not suggestions
+  assert.equal((await call('GET', `/api/projects/${pid}/qb-suggestions`, null, pm)).status, 403);
 });

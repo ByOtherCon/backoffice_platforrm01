@@ -167,6 +167,10 @@ route('POST', '/api/time/recalculate', async ({ user }) => { auth.requireRole(us
 route('GET', '/api/compliance/vendors', async ({ user }) => { manage(user); return cp.vendorCompliance(); });
 route('POST', '/api/admin/subcontractors/:id/documents', async ({ user, params, body }) => { manage(user); return cp.setVendorDoc(uuid(params.id), body); });
 route('POST', '/api/admin/subcontractors/:id/confirm-address', async ({ user, params, body }) => { manage(user); await cp.confirmAddress(uuid(params.id), user.id, body.confirm !== false); return { ok: true }; });
+route('POST', '/api/admin/employees/:id/confirm-address', async ({ user, params, body }) => { manage(user); await cp.confirmEmployeeAddress(uuid(params.id), user.id, body.confirm !== false); return { ok: true }; });
+// 1099 readiness: who needs a 1099 for a year, what they were paid (crew pay for the Super Admin only), and whose address / W-9 is still missing or does not match.
+route('GET', '/api/tax/1099', async ({ req, user }) => { manage(user); const y = new URL(req.url, 'http://x').searchParams.get('year'); return { year: y ? Number(y) : null, rows: await cp.taxSummary(y || null, { showCrewPay: auth.SUPER.includes(user.role) }) }; });
+route('GET', '/api/tax/1099/export', async ({ req, res, user }) => { manage(user); const y = new URL(req.url, 'http://x').searchParams.get('year'); const f = await rp.exportCsv(user, { source: 'tax_1099', ...(y ? { filters: [{ col: 'year', op: 'eq', value: y }] } : {}), sort: { col: 'payee', dir: 'asc' } }); res.writeHead(200, { ...SEC, 'content-type': 'text/csv; charset=utf-8', 'content-disposition': `attachment; filename="${f.name}"`, 'cache-control': 'private, no-store' }); res.end(f.body); return 'sent'; });
 route('POST', '/api/admin/subcontractors/:id/folder', async ({ user, params }) => { manage(user); return sv.ensureSubFolder(uuid(params.id)); });
 route('DELETE', '/api/admin/subcontractors/:id/documents/:cat', async ({ user, params }) => { manage(user); await cp.clearVendorDoc(uuid(params.id), decodeURIComponent(params.cat)); return { ok: true }; });
 route('POST', '/api/compliance/scan', async ({ user }) => { manage(user); const a = await cp.scan(), b = await cp.scanNtos(); return { ...a, ntos: b, ...(await cp.sendQueued()) }; });
@@ -346,12 +350,12 @@ route('GET', '/api/records/:kind/:id/attached', async ({ user, params }) => { st
 route('GET', '/api/trade-options', async ({ user }) => { manage(user); const ps = await q('SELECT id, name FROM projects WHERE active ORDER BY name'); const ts = ps.length ? await q('SELECT pt.id, pt.project_id, t.name FROM project_trades pt JOIN trades t ON t.id=pt.trade_id WHERE pt.project_id = ANY($1::uuid[]) ORDER BY t.sort, t.name', [ps.map((p) => p.id)]) : []; return ps.map((p) => ({ ...p, trades: ts.filter((t) => t.project_id === p.id).map((t) => ({ id: t.id, name: t.name })) })); });
 const q1 = (req, k) => new URL(req.url, 'http://x').searchParams.get(k) || undefined;
 const fname = (req) => decodeURIComponent(String(req.headers['x-file-name'] || 'upload'));
-route('POST', '/api/documents/upload', async ({ req, user }) => { manage(user); return dc.uploadDocument(user, { category: q1(req, 'category'), name: q1(req, 'name'), filename: fname(req), projectId: q1(req, 'projectId'), subcontractorId: q1(req, 'subcontractorId'), expiresOn: q1(req, 'expiresOn'), bytes: await readRaw(req) }); }, { raw: true });
+route('POST', '/api/documents/upload', async ({ req, user }) => { manage(user); return dc.uploadDocument(user, { category: q1(req, 'category'), name: q1(req, 'name'), filename: fname(req), projectId: q1(req, 'projectId'), subcontractorId: q1(req, 'subcontractorId'), employeeId: q1(req, 'employeeId'), expiresOn: q1(req, 'expiresOn'), bytes: await readRaw(req) }); }, { raw: true });
 route('POST', '/api/documents', async ({ user, body }) => { manage(user); return dc.addLink(user, body); });
 route('GET', '/api/documents', async ({ req, user }) => { const pid = q1(req, 'projectId'); if (pid) await auth.requireProject(user, uuid(pid)); else manage(user); return dc.listDocuments({ projectId: pid, category: q1(req, 'category') }); });
 route('GET', '/api/documents/:id/file', async ({ res, user, params }) => {
   const d = await dc.getFile(uuid(params.id));
-  if (d.category === 'Employee ID') auth.requireRole(user, auth.APPROVERS); else if (d.project_id) await auth.requireProject(user, d.project_id); else manage(user);
+  if (d.category === 'Employee ID' || d.restricted) auth.requireRole(user, auth.APPROVERS); else if (d.project_id) await auth.requireProject(user, d.project_id); else manage(user);
   const inline = /^(application\/pdf|image\/)/.test(d.mime);
   res.writeHead(200, { ...SEC, 'content-type': d.mime, 'content-disposition': `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(d.name)}`, 'cache-control': 'private, no-store', 'content-security-policy': "default-src 'none'; sandbox" });
   fs.createReadStream(d.file).pipe(res); return 'sent';

@@ -145,3 +145,42 @@ export async function confirmAddress(subId, userId, confirm = true) {
   if (!r.address_verified || !r.address || !r.city || !r.state || !r.zip) throw bad('Verify the subcontractor\'s address first (Admin, Lists, Subcontractors).');
   await q('UPDATE subcontractors SET address_confirmed_key=$2, address_confirmed_by=$3, address_confirmed_at=now() WHERE id=$1', [subId, addrKey({ street: r.address, city: r.city, state: r.state, zip: r.zip }), userId]);
 }
+
+// ------------------------------------------------------------------ 1099 information
+// Everyone who gets a 1099 (1099 crew and subcontractors) needs a checked address and a W-9 whose address matches. The tax number itself is
+// never read or stored here: it stays on the W-9 file, which the office opens when the forms are prepared.
+const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+const sameName = (a, b) => { const x = norm(a), y = norm(b); if (!x || !y) return true; if (x === y || x.includes(y) || y.includes(x)) return true; const xs = x.split(' ').filter((w) => w.length > 2), ys = y.split(' ').filter((w) => w.length > 2); return xs.length > 0 && xs.every((w) => ys.includes(w)) || ys.length > 0 && ys.every((w) => xs.includes(w)); };
+const line = (a) => [a?.street, a?.city, [a?.state, a?.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+function taxOf(r, { w9Present, w9Read, w9Name }) {
+  const addr = { street: r.address, city: r.city, state: r.state, zip: r.zip }, ac = addressChecks({ ...addr, verified: !!r.address_verified, confirmedKey: r.address_confirmed_key }, w9Read);
+  const blockers = [...(w9Present ? [] : ['No W-9 on file']), ...ac.reasons];
+  return { id: r.id, name: r.name, active: r.active ?? !r.archived, address: addr, addressLine: line(addr), addressChecked: !!r.address_verified, w9: w9Present, w9Name: w9Name ?? null, w9Address: w9Read ?? null, addressMatch: ac.match, blockers, ready: blockers.length === 0,
+    nameNote: w9Present && w9Name && !sameName(r.name, w9Name) ? `The W-9 is in the name "${w9Name}", which differs from "${r.name}". The 1099 uses the W-9 name.` : null };
+}
+export async function employeeTax() {
+  const rows = await q(`SELECT e.id, e.name, e.active, e.address, e.city, e.state, e.zip, e.address_verified, e.address_confirmed_key, w.id AS w9_id, w.read_name, w.read_address FROM employees e LEFT JOIN documents w ON w.id=e.w9_document_id ORDER BY e.name`);
+  return rows.map((r) => taxOf(r, { w9Present: !!r.w9_id, w9Read: r.read_address, w9Name: r.read_name }));
+}
+export async function subTax() {
+  const rows = await q(`SELECT s.id, s.name, s.archived, s.address, s.city, s.state, s.zip, s.address_verified, s.address_confirmed_key, w.id AS w9_id, w.read_name, w.read_address FROM subcontractors s LEFT JOIN documents w ON w.id=s.w9_document_id ORDER BY s.name`);
+  return rows.map((r) => taxOf(r, { w9Present: !!r.w9_id, w9Read: r.read_address, w9Name: r.read_name }));
+}
+export async function confirmEmployeeAddress(employeeId, userId, confirm = true) {
+  const [r] = await q('SELECT address, city, state, zip, address_verified FROM employees WHERE id=$1', [employeeId]); if (!r) throw new HttpError(404, 'Employee not found.');
+  if (!confirm) { await q('UPDATE employees SET address_confirmed_key=NULL, address_confirmed_by=NULL, address_confirmed_at=NULL WHERE id=$1', [employeeId]); return; }
+  if (!r.address_verified || !r.address || !r.city || !r.state || !r.zip) throw bad('Verify the employee\'s address first (Admin, Lists, Employees).');
+  await q('UPDATE employees SET address_confirmed_key=$2, address_confirmed_by=$3, address_confirmed_at=now() WHERE id=$1', [employeeId, addrKey({ street: r.address, city: r.city, state: r.state, zip: r.zip }), userId]);
+}
+// The year-end view: what each 1099 payee was paid in a calendar year (crew pay is the Super Admin's to see) and whether their information is complete.
+// year = null gives every year that has payments.
+export async function taxSummary(year, { showCrewPay = false } = {}) {
+  const y = year == null ? null : Number(year); if (y !== null && !(Number.isInteger(y) && y >= 2000 && y <= 2100)) throw bad('Choose a valid year.');
+  const crew = await q(`SELECT employee_id AS id, EXTRACT(YEAR FROM work_date)::int AS yr, SUM(COALESCE(pay, ROUND(hours*rate,2)))::float8 AS total FROM labor_entries WHERE source='Time clock' ${y ? 'AND EXTRACT(YEAR FROM work_date)=$1' : ''} GROUP BY 1, 2`, y ? [y] : []);
+  const subs = await q(`SELECT sc.subcontractor_id AS id, EXTRACT(YEAR FROM sp.paid_date)::int AS yr, SUM(sp.amount)::float8 AS total FROM sub_payments sp JOIN sub_invoices si ON si.id=sp.sub_invoice_id JOIN sub_commitments sc ON sc.id=si.commitment_id ${y ? 'WHERE EXTRACT(YEAR FROM sp.paid_date)=$1' : ''} GROUP BY 1, 2`, y ? [y] : []);
+  const et = new Map((await employeeTax()).map((x) => [x.id, x])), st = new Map((await subTax()).map((x) => [x.id, x]));
+  const r2 = (n) => Math.round(n * 100) / 100, out = [];
+  for (const c of crew) { const t = et.get(c.id); if (!t) continue; out.push({ ...t, type: '1099 Crew', year: c.yr, paid: showCrewPay ? r2(c.total) : null, over600: r2(c.total) >= 600 }); }
+  for (const c of subs) { const t = st.get(c.id); if (!t) continue; out.push({ ...t, type: 'Subcontractor', year: c.yr, paid: r2(c.total), over600: r2(c.total) >= 600 }); }
+  return out.sort((a, b) => b.year - a.year || a.name.localeCompare(b.name));
+}

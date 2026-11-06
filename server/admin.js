@@ -5,7 +5,7 @@ import { parseAccess } from './access.js';
 import { WIDGETS } from './dashboard.js';
 import { addressColumns, legacyAddressColumns } from './address.js';
 import { applyDefaultPin } from './timeclock.js';
-import { vendorCompliance } from './compliance.js';
+import { vendorCompliance, employeeTax } from './compliance.js';
 import { tryEnsureSubFolder } from './subVerify.js';
 
 const bool = (v, l) => { if (typeof v !== 'boolean') throw bad(`${l} must be true or false.`); return v; };
@@ -16,7 +16,7 @@ export const KINDS = {
   gcs: { table: 'gcs', order: 'name', cols: { name: (v) => text(v, 'Name', { max: 200 }), archived: (v) => bool(v, 'Archived') }, required: ['name'] },
   subcontractors: { table: 'subcontractors', order: 'name', cols: { name: (v) => text(v, 'Name', { max: 200 }), email: optText(200), phone: optText(50), archived: (v) => bool(v, 'Archived') }, required: ['name'], address: true },
   suppliers: { table: 'suppliers', order: 'name', cols: { name: (v) => text(v, 'Name', { max: 200 }), provider_type: oneOf(['Materials', 'Hotel / Lodging', 'Equipment', 'Other purchase']), credit_limit: (v) => money(v, 'Credit limit'), email: optText(200), phone: optText(50), archived: (v) => bool(v, 'Archived') }, required: ['name'], address: true },
-  employees: { table: 'employees', order: 'name', cols: { name: (v) => text(v, 'Name', { max: 200 }), position: (v) => (v ? oneOf(['Skilled Labor', 'Carpenter', 'Carpenter Helper', 'Foreman', 'Supervisor'])(v, 'position') : null), hourly_rate: (v) => money(v, 'Rate'), pay_type: oneOf(['hourly', 'daily']), phone: optText(50), email: optText(200), active: (v) => bool(v, 'Active') }, required: ['name'] },
+  employees: { table: 'employees', order: 'name', address: true, cols: { name: (v) => text(v, 'Name', { max: 200 }), position: (v) => (v ? oneOf(['Skilled Labor', 'Carpenter', 'Carpenter Helper', 'Foreman', 'Supervisor'])(v, 'position') : null), hourly_rate: (v) => money(v, 'Rate'), pay_type: oneOf(['hourly', 'daily']), phone: optText(50), email: optText(200), active: (v) => bool(v, 'Active') }, required: ['name'] },
 };
 // Vendors and subcontractors carry a street / city / state / ZIP address with its green check (any U.S. state; the address is optional).
 // A form sends it as body.addr; one text line in body.address is still accepted from older callers and is split up, unchecked.
@@ -45,6 +45,7 @@ const PAY_FIELDS = ['hourly_rate', 'pay_type'];
 export const list = async (kind, { rates = false } = {}) => {
   const rows = (await q(`SELECT * FROM ${KINDS[kind].table} ORDER BY ${KINDS[kind].order}`)).map(strip).map((r) => { if (kind === 'employees' && !rates) for (const f of PAY_FIELDS) delete r[f]; return r; });
   if (kind === 'subcontractors') { const v = new Map((await vendorCompliance()).map((x) => [x.id, x])); for (const r of rows) { const x = v.get(r.id); r.verified = !!x?.verified; r.blockers = x?.blockers ?? []; r.docs = x?.docs ?? {}; r.address_match = x?.addressMatch ?? 'None'; } }   // is this subcontractor verified, and what is missing
+  if (kind === 'employees') { const t = new Map((await employeeTax()).map((x) => [x.id, x])); for (const r of rows) { const x = t.get(r.id); r.tax_ready = !!x?.ready; r.tax_blockers = x?.blockers ?? []; r.address_match = x?.addressMatch ?? 'None'; r.w9 = x?.w9 ?? null; r.w9_name = x?.w9Name ?? null; r.name_note = x?.nameNote ?? null; } }   // is the 1099 information complete, and what is missing
   return rows;
 };
 export const touchesPay = (kind, body) => kind === 'employees' && PAY_FIELDS.some((f) => body && body[f] !== undefined);

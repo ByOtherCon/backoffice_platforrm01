@@ -7,7 +7,7 @@ export const STAFF = ['Super Admin', 'Sub Admin', 'Exec Assistant', 'Estimator',
 // What a message or to-do can point at. `label` is shown to the user; `route` is where it opens.
 export const LINKABLE = {
   project: { sql: 'SELECT name AS label FROM projects WHERE id=$1', route: (id) => `#/projects/${id}` },
-  document: { sql: `SELECT name AS label FROM documents WHERE id=$1 AND category <> 'Employee ID'`, route: (id) => `/api/documents/${id}/file` },
+  document: { sql: `SELECT name AS label FROM documents WHERE id=$1 AND category <> 'Employee ID' AND NOT restricted`, route: (id) => `/api/documents/${id}/file` },
   vendor: { sql: 'SELECT name AS label FROM subcontractors WHERE id=$1', route: () => '#/compliance' },
   supplier: { sql: 'SELECT name AS label FROM suppliers WHERE id=$1', route: () => '#/admin' },
   receipt: { sql: `SELECT s.name || ' ' || si.reference AS label FROM supplier_invoices si JOIN suppliers s ON s.id=si.supplier_id WHERE si.id=$1`, route: () => '#/projects/receipts' },
@@ -35,7 +35,7 @@ export const directory = () => q(`SELECT id, name, email, title, role FROM app_u
 export async function searchRecords(kind, term) {
   const t = `%${String(term || '').trim().replace(/[%_]/g, '')}%`;
   const sql = { project: `SELECT id, name AS label FROM projects WHERE name ILIKE $1 ORDER BY name LIMIT 15`, vendor: `SELECT id, name AS label FROM subcontractors WHERE name ILIKE $1 ORDER BY name LIMIT 15`, supplier: `SELECT id, name AS label FROM suppliers WHERE name ILIKE $1 ORDER BY name LIMIT 15`,
-    document: `SELECT id, name AS label FROM documents WHERE name ILIKE $1 AND category <> 'Employee ID' ORDER BY created_at DESC LIMIT 15`, receipt: `SELECT si.id, s.name || ' ' || si.reference AS label FROM supplier_invoices si JOIN suppliers s ON s.id=si.supplier_id WHERE s.name || ' ' || si.reference ILIKE $1 ORDER BY si.invoice_date DESC NULLS LAST LIMIT 15`,
+    document: `SELECT id, name AS label FROM documents WHERE name ILIKE $1 AND category <> 'Employee ID' AND NOT restricted ORDER BY created_at DESC LIMIT 15`, receipt: `SELECT si.id, s.name || ' ' || si.reference AS label FROM supplier_invoices si JOIN suppliers s ON s.id=si.supplier_id WHERE s.name || ' ' || si.reference ILIKE $1 ORDER BY si.invoice_date DESC NULLS LAST LIMIT 15`,
     opportunity: `SELECT id, name AS label FROM opportunities WHERE name ILIKE $1 ORDER BY due_date DESC NULLS LAST LIMIT 15` }[kind];
   if (!sql || !LINKABLE[kind]) throw bad('Choose what to search for.');
   return (await q(sql, [t])).map((r) => ({ kind, id: r.id, label: r.label }));

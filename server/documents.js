@@ -4,7 +4,7 @@ import path from 'node:path';
 import { q, tx } from './db.js';
 import { bad, text, dateStr, httpsUrl, HttpError } from './http.js';
 import * as folders from './folders.js';
-import { afterVendorUpload } from './subVerify.js';
+import { afterVendorUpload, readVendorDocument } from './subVerify.js';
 
 export const UPLOAD_DIR = path.resolve(process.env.UPLOAD_DIR || 'uploads');
 export const CATEGORIES = ['Contract', 'Proposal', 'COI', 'W-9', 'Exemption', 'Approved CO', 'Invoice', 'Client Invoice', 'Vendor Invoice', 'Receipt', 'Plans', 'Notice to Owner', 'Supplier Statement', 'Employee ID', 'Other'];
@@ -40,7 +40,7 @@ export async function adoptFile(tmpPath, filename, allow = ['.pdf', '.zip']) {
   const key = crypto.randomBytes(16).toString('hex') + ext; await fs.promises.rename(tmpPath, path.join(UPLOAD_DIR, key)); await fs.promises.chmod(path.join(UPLOAD_DIR, key), 0o600).catch(() => {});
   return { key, mime: check[0], size };
 }
-export async function uploadDocument(user, { category, name, filename, bytes, projectId, subcontractorId, expiresOn }) {
+export async function uploadDocument(user, { category, name, filename, bytes, projectId, subcontractorId, employeeId, expiresOn }) {
   if (!CATEGORIES.includes(category)) throw bad('Choose a document category.');
   const exp = dateStr(expiresOn, 'Expiration date', category === 'COI');
   const f = await saveFile(bytes, filename);
@@ -49,6 +49,11 @@ export async function uploadDocument(user, { category, name, filename, bytes, pr
       if (projectId && !(await t('SELECT 1 FROM projects WHERE id=$1', [projectId])).length) throw bad('Project not found.');
       const [d] = await t('INSERT INTO documents(category,name,storage_key,mime,size,project_id,expires_on,created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id',
         [category, text(name, 'Name', { max: 200, required: false }) || filename, f.key, f.mime, f.size, projectId || null, exp, user.id]);
+      if (employeeId) {   // a 1099 crew member's W-9: private (tax numbers), replaces the one before
+        if (category !== 'W-9') throw bad('Only a W-9 attaches to an employee.');
+        await t('UPDATE documents SET restricted=true WHERE id=$1', [d.id]);
+        if (!(await t('UPDATE employees SET w9_document_id=$2 WHERE id=$1 RETURNING id', [employeeId, d.id])).length) throw new HttpError(404, 'Employee not found.');
+      }
       if (subcontractorId) {
         if (!VENDOR_DOC[category]) throw bad('Only W-9, COI and Exemption documents attach to a vendor.');
         if (!(await t(`UPDATE subcontractors SET ${VENDOR_DOC[category]}=$2 WHERE id=$1 RETURNING id`, [subcontractorId, d.id])).length) throw new HttpError(404, 'Vendor not found.');
@@ -56,6 +61,7 @@ export async function uploadDocument(user, { category, name, filename, bytes, pr
       return { id: d.id };
     }).then(async (r) => {
       if (projectId) { const [pr] = await q('SELECT ref_code FROM projects WHERE id=$1', [projectId]); if (pr?.ref_code) await q('UPDATE documents SET ref_code=$2 WHERE id=$1', [r.id, pr.ref_code]); const up = await folders.pushProjectFile(projectId, { category, filename, bytes, mime: f.mime }); if (up?.webUrl) await q('UPDATE documents SET sp_url=$2 WHERE id=$1', [r.id, up.webUrl]); }
+      if (employeeId) { try { return { ...r, read: await readVendorDocument(user, r.id, bytes, f.mime, filename) }; } catch { /* the file is saved either way */ } }   // the address on it is read; it is not copied to SharePoint
       if (subcontractorId) { try { const x = await afterVendorUpload(user, { docId: r.id, subId: subcontractorId, category, filename, bytes, mime: f.mime }); return { ...r, ...x }; } catch { /* the file is saved either way */ } }   // copied to the subcontractor's SharePoint folder; the address on it is read
       return r;
     });
@@ -68,13 +74,13 @@ export async function addLink(user, { category, name, url, projectId, expiresOn 
   return { id: d.id };
 }
 export const listDocuments = ({ projectId, category } = {}) => {
-  const w = [`d.category <> 'Employee ID'`], v = [];
+  const w = [`d.category <> 'Employee ID'`, 'NOT d.restricted'], v = [];
   if (projectId) { v.push(projectId); w.push(`d.project_id=$${v.length}`); }
   if (category) { v.push(category); w.push(`d.category=$${v.length}`); }
   return q(`SELECT d.id, d.category, d.name, d.url, d.expires_on, d.size, d.created_at, d.project_id, (d.storage_key IS NOT NULL) AS has_file, u.name AS uploaded_by FROM documents d LEFT JOIN app_users u ON u.id=d.created_by WHERE ${w.join(' AND ')} ORDER BY d.created_at DESC LIMIT 500`, v);
 };
 export async function getFile(id) {
-  const [d] = await q('SELECT storage_key, mime, name, category, project_id FROM documents WHERE id=$1', [id]);
+  const [d] = await q('SELECT storage_key, mime, name, category, project_id, restricted FROM documents WHERE id=$1', [id]);
   if (!d || !d.storage_key) throw new HttpError(404, 'File not found.');
   const file = path.join(UPLOAD_DIR, path.basename(d.storage_key));
   if (!fs.existsSync(file)) throw new HttpError(404, 'File is missing from storage.');
@@ -85,6 +91,7 @@ export async function deleteDocument(id) {
   await tx(async (t) => {
     for (const c of Object.values(VENDOR_DOC)) await t(`UPDATE subcontractors SET ${c}=NULL WHERE ${c}=$1`, [id]);
     await t('UPDATE projects SET contract_document_id=NULL WHERE contract_document_id=$1', [id]);
+    await t('UPDATE employees SET w9_document_id=NULL WHERE w9_document_id=$1', [id]);
     await t('UPDATE supplier_invoices SET document_id=NULL WHERE document_id=$1', [id]);
     await t('DELETE FROM documents WHERE id=$1', [id]);
   }).catch((e) => { throw e.code === '23503' ? new HttpError(409, 'This document is still referenced elsewhere.') : e; });

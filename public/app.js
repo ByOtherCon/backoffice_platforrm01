@@ -360,13 +360,42 @@ function pie(slices) {
 const legend = (slices) => h('div', {}, slices.map((s) => h('div', { class: 'row', style: 'gap:.5rem;margin:.25rem 0' }, h('span', { style: `width:12px;height:12px;border-radius:3px;background:${s.color};display:inline-block` }), h('span', {}, s.label), h('strong', { style: 'margin-left:auto;padding-left:1.5rem' }, usd(s.value)))));
 
 // ------------------------------------------------------------------ progress billing
+// The whole job on one screen, like the owner's spreadsheet: each trade's original contract, the approved change orders and the new total on the left,
+// then one column per invoice with the amount billed to each trade, colored by whether it has been paid. Totals run along the bottom and to the right.
+function billingMatrix(p, inv, canEdit, openInvoice) {
+  const today = todayStr(), cents = (n) => Math.round(Number(n || 0) * 100), money2 = (c) => usd(c / 100);
+  const baseNo = (c) => { const suffix = ` - ${c.trade}`; return c.number.endsWith(suffix) ? c.number.slice(0, -suffix.length) : c.number; };
+  const cos = new Map(); for (const c of p.changeOrders.filter((x) => x.status === 'Approved')) { const k = baseNo(c); const g = cos.get(k) || { no: k, date: c.approvedDate, desc: c.description, byTrade: new Map() }; g.byTrade.set(c.projectTradeId, (g.byTrade.get(c.projectTradeId) || 0) + cents(c.amount)); cos.set(k, g); }
+  const coCols = [...cos.values()].sort((a, b) => a.no.localeCompare(b.no, undefined, { numeric: true }));
+  const status = (i) => { const net = cents(i.amount) - cents(i.retainageHeld), paid = i.payments.filter((x) => x.kind === 'Payment').reduce((n, x) => n + cents(x.amount), 0); return { net, paid, st: net <= 0 || paid >= net ? 'Paid' : paid > 0 ? 'Partial' : i.dueDate && i.dueDate < today ? 'Overdue' : 'Unpaid' }; };
+  const groups = new Map(); for (const i of inv) { const k = `${i.number}|${i.date}`; const g = groups.get(k) || { no: i.number, date: i.date, rows: [] }; g.rows.push(i); groups.set(k, g); }
+  const cols = [...groups.values()].sort((a, b) => String(a.date).localeCompare(String(b.date)) || a.no.localeCompare(b.no, undefined, { numeric: true }));
+  for (const g of cols) { const sts = g.rows.map(status); g.owed = sts.reduce((n, x) => n + Math.max(0, x.net - x.paid), 0); g.total = g.rows.reduce((n, r) => n + cents(r.amount), 0); g.st = sts.every((x) => x.st === 'Paid') ? 'Paid' : sts.some((x) => x.st === 'Overdue') ? 'Overdue' : sts.some((x) => x.st === 'Partial' || x.st === 'Paid') ? 'Partial' : 'Unpaid'; }
+  const mon = (d) => new Date(String(d).slice(0, 10) + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
+  const tradeRow = (t) => { const tr = [h('td', { class: 'bm-name' }, t.name), h('td', { class: 'n' }, usd(t.original))];
+    for (const c of coCols) { const v = c.byTrade.get(t.id); tr.push(h('td', { class: 'n' }, v ? money2(v) : '')); }
+    tr.push(h('td', { class: 'n bm-tot' }, usd(t.contract)), h('td', { class: 'bm-gap' }));
+    for (const g of cols) { const r = g.rows.find((x) => x.projectTradeId === t.id); if (!r) { tr.push(h('td', { class: 'n' })); continue; } const s2 = status(r);
+      tr.push(h('td', { class: `n bm-${s2.st.toLowerCase()}${canEdit ? ' bm-click' : ''}`, title: `${s2.st}: invoiced ${usd(r.amount)}, retainage held ${usd(r.retainageHeld)}, payments received ${money2(s2.paid)}${r.dueDate ? ', due ' + r.dueDate : ''}`, onclick: canEdit ? () => openInvoice(r) : null }, usd(r.amount))); }
+    tr.push(h('td', { class: 'bm-gap' }), h('td', { class: 'n bm-tot' }, usd(t.billed)), h('td', { class: 'n' }, usd(t.retainageOutstanding)), h('td', { class: 'n' }, usd(t.received)), h('td', { class: 'n' }, usd(t.unbilled)), h('td', { class: 'n bm-owed' }, usd(t.currentlyDue)));
+    return h('tr', {}, tr); };
+  const T = p.totals, coSum = (c) => [...c.byTrade.values()].reduce((n, v) => n + v, 0);
+  const totalRow = h('tr', { class: 'total' }, h('td', { class: 'bm-name' }, 'Project'), h('td', { class: 'n' }, usd(p.trades.reduce((n, t) => n + t.original, 0))), ...coCols.map((c) => h('td', { class: 'n' }, money2(coSum(c)))), h('td', { class: 'n bm-tot' }, usd(T.contract)), h('td', { class: 'bm-gap' }),
+    ...cols.map((g) => h('td', { class: 'n' }, money2(g.total))), h('td', { class: 'bm-gap' }), h('td', { class: 'n bm-tot' }, usd(T.billed)), h('td', { class: 'n' }, usd(T.retainageOutstanding)), h('td', { class: 'n' }, usd(T.received)), h('td', { class: 'n' }, usd(T.unbilled)), h('td', { class: 'n bm-owed' }, usd(T.currentlyDue)));
+  const statusRow = h('tr', { class: 'bm-status' }, h('td', { class: 'bm-name' }, 'Paid?'), h('td'), ...coCols.map(() => h('td')), h('td'), h('td', { class: 'bm-gap' }), ...cols.map((g) => h('td', { class: 'n' }, h('span', { class: `bm-pill bm-${g.st.toLowerCase()}` }, g.st === 'Paid' ? 'Paid' : g.st === 'Partial' ? `Owed ${money2(g.owed)}` : g.st === 'Overdue' ? `Overdue ${money2(g.owed)}` : `Unpaid ${money2(g.owed)}`))), h('td', { class: 'bm-gap' }), h('td'), h('td'), h('td'), h('td'), h('td', { class: 'n bm-owed' }, usd(T.currentlyDue)));
+  const head = h('thead', {}, h('tr', {}, h('th', { class: 'bm-name' }, 'Trade'), h('th', { class: 'n' }, 'Original Contract'), ...coCols.map((c) => h('th', { class: 'n', title: `${c.desc || ''}${c.date ? ' · approved ' + c.date : ''}` }, c.no)), h('th', { class: 'n' }, 'Contract Total'), h('th', { class: 'bm-gap' }),
+    ...cols.map((g) => h('th', { class: 'n' }, h('div', {}, g.date ? mon(g.date) : ''), h('div', { class: 'bm-inv' }, '#' + g.no))), h('th', { class: 'bm-gap' }), h('th', { class: 'n' }, 'Billed To Date'), h('th', { class: 'n' }, 'Retainage Held'), h('th', { class: 'n' }, 'Received'), h('th', { class: 'n' }, 'Left To Invoice'), h('th', { class: 'n' }, 'Owed To Us Now')));
+  const legend = h('div', { class: 'row', style: 'gap:.9rem;flex-wrap:wrap;font-size:13px;margin:.2rem 0 .6rem' }, [['paid', 'Paid'], ['partial', 'Partly Paid'], ['unpaid', 'Unpaid, Not Due Yet'], ['overdue', 'Unpaid, Past Due']].map(([k, l]) => h('span', {}, h('span', { class: `bm-swatch bm-${k}` }), ' ' + l)));
+  return h('div', { class: 'card' }, h('h2', {}, 'Billing Matrix'), h('p', { class: 'muted', style: 'margin:0 0 .3rem;font-size:13px' }, `Each trade's contract with approved change orders, then every invoice and what was billed to each trade.${canEdit ? ' Click an amount to open that invoice.' : ''} "Owed To Us Now" is billed, minus retainage held, minus payments received.`), legend,
+    p.trades.length ? h('div', { class: 'scroll bm-wrap' }, h('table', { class: 'bm' }, head, h('tbody', {}, p.trades.map(tradeRow)), h('tfoot', {}, totalRow, statusRow))) : h('p', { class: 'muted' }, 'No trades on this project yet.'));
+}
 async function billingTab(p, canEdit, reload) {
   const inv = await api('GET', `/projects/${p.project.id}/billing`); const err = h('div'); const base = `/projects/${p.project.id}`;
   const T = p.totals;
   const slices = [{ label: 'Received', value: T.received, color: '#15803d' }, { label: 'Owed to us now', value: T.currentlyDue, color: '#b45309' }, { label: 'Retainage held', value: T.retainageOutstanding, color: '#6366f1' }, { label: 'Unbilled', value: Math.max(0, T.unbilled), color: '#cbd5e1' }];
   const th = (t, n) => h('th', { class: n ? 'n' : '' }, t);
   const sov = h('div', { class: 'card' }, h('h2', {}, 'Schedule of values'), h('div', { class: 'scroll' }, h('table', {},
-    h('thead', {}, h('tr', {}, th('Trade'), th('Contract (orig + COs)', 1), th('Billed to date', 1), th('% billed', 1), th('Retainage held', 1), th('Received', 1), th('Due now', 1), th('Balance to finish', 1))),
+    h('thead', {}, h('tr', {}, th('Trade'), th('Contract (orig + COs)', 1), th('Billed to date', 1), th('% billed', 1), th('Retainage held', 1), th('Received', 1), th('Owed To Us Now', 1), th('Balance to finish', 1))),
     h('tbody', {}, p.trades.map((t) => h('tr', {}, h('td', {}, t.name), h('td', { class: 'n' }, usd(t.contract)), h('td', { class: 'n' }, usd(t.billed)), h('td', { class: 'n' }, t.contract > 0 ? pct((t.billed / t.contract) * 100) : '—'), h('td', { class: 'n' }, usd(t.retainageOutstanding)), h('td', { class: 'n' }, usd(t.received)), h('td', { class: 'n' }, usd(t.currentlyDue)), h('td', { class: 'n' }, usd(t.unbilled))))),
     h('tfoot', {}, h('tr', { class: 'total' }, h('td', {}, 'Project'), h('td', { class: 'n' }, usd(T.contract)), h('td', { class: 'n' }, usd(T.billed)), h('td', { class: 'n' }, T.contract > 0 ? pct((T.billed / T.contract) * 100) : '—'), h('td', { class: 'n' }, usd(T.retainageOutstanding)), h('td', { class: 'n' }, usd(T.received)), h('td', { class: 'n' }, usd(T.currentlyDue)), h('td', { class: 'n' }, usd(T.unbilled)))))),
     h('div', { class: 'row', style: 'gap:2rem;margin-top:1.2rem;align-items:center' }, pie(slices), h('div', { style: 'min-width:260px' }, h('h2', {}, 'Where the contract stands'), legend(slices))));
@@ -398,7 +427,7 @@ async function billingTab(p, canEdit, reload) {
           h('button', { class: 'small danger', onclick: guard(err, async () => { if (confirm(`Delete invoice ${i.number} and its payments?`)) { await api('DELETE', `${base}/invoices/${i.id}`); reload(); } }) }, 'Delete'))),
         ...i.payments.map((pm) => h('tr', { class: 'muted' }, h('td', { colspan: 2, style: 'padding-left:1.5rem' }, pm.kind === 'Payment' ? '↳ Payment' : '↳ Retainage released'), h('td', {}, pm.date), h('td', { colspan: 5 }), h('td', { class: 'n' }, usd(pm.amount)),
           canEdit && h('td', {}, h('button', { class: 'small danger', onclick: guard(err, async () => { await api('DELETE', `${base}/invoices/${i.id}/payments/${pm.id}`); reload(); }) }, 'Remove'))))])))) : h('p', { class: 'muted' }, 'No invoices yet.'));
-  return h('div', {}, qbCard, sov, list);
+  return h('div', {}, qbCard, billingMatrix(p, inv, canEdit, editInvoice), sov, list);
 }
 
 // ------------------------------------------------------------------ costs & payables

@@ -100,7 +100,7 @@ async function projectsView() {
   const yearSel = h('select', { onchange: () => { projectsYear = Number(yearSel.value); render(); } }, d.years.map((y) => h('option', { value: y }, y))); yearSel.value = d.year;
   const summary = h('div', { class: 'grid kpis', style: 'margin-bottom:1rem' },
     tile(`Active In ${d.year}`, sm.active, `${sm.inactive} inactive`), tile('Active Contract Value', money0(sm.contractActive), `${money0(sm.billedActive)} billed`),
-    tile('Due Now', money0(sm.dueNowActive), 'ready to invoice', sm.dueNowActive > 0 ? 'warn' : ''), tile('Projected Profit', money0(sm.profitActive), 'active projects', sm.profitActive < 0 ? 'bad' : 'good'),
+    tile('Owed To Us Now', money0(sm.dueNowActive), 'billed to GCs, not yet paid', sm.dueNowActive > 0 ? 'warn' : ''), tile('Projected Profit', money0(sm.profitActive), 'active projects', sm.profitActive < 0 ? 'bad' : 'good'),
     tile('Notices To Owner', `${sm.ntoNeeded} needed`, sm.ntoOverdue ? `${sm.ntoOverdue} overdue · ${sm.ntoSent} sent` : `${sm.ntoSent} sent`, sm.ntoOverdue ? 'bad' : ''));
   // alerts and deadlines: the serious ones first; the rest open on request
   let showAll = false; const alertBox = h('div'), dot = { high: '#c0392b', medium: '#d68910', info: '#8a8fa3' };
@@ -121,7 +121,7 @@ async function projectsView() {
   function draw() {
     const t = projectsFind.trim().toLowerCase(); const rows = d.rows.filter((r) => (projectsInactive || r.active) && (!t || [r.name, r.gc, r.client, r.address, r.proposalId].some((v) => String(v || '').toLowerCase().includes(t))));
     count.textContent = `${rows.length} shown`;
-    table.replaceChildren(rows.length ? h('table', {}, h('thead', {}, h('tr', {}, ['Project', 'GC', 'Address', 'Start', 'Notice To Owner'].map((x) => h('th', {}, x)), ['Contract', 'Billed', 'Due Now'].map((x) => h('th', { class: 'n' }, x)), h('th', {}, 'Active'))),
+    table.replaceChildren(rows.length ? h('table', {}, h('thead', {}, h('tr', {}, ['Project', 'GC', 'Address', 'Start', 'Notice To Owner'].map((x) => h('th', {}, x)), ['Contract', 'Billed', 'Owed To Us'].map((x) => h('th', { class: 'n' }, x)), h('th', {}, 'Active'))),
       h('tbody', {}, rows.map((r) => h('tr', { class: r.active ? '' : 'muted' },
         h('td', { style: 'white-space:normal;min-width:12rem' }, h('a', { href: '#/projects/' + r.id }, r.name), r.proposalId ? h('div', { class: 'muted', style: 'font-size:12px' }, r.proposalId) : ''), h('td', {}, r.gc), h('td', { style: 'white-space:normal;min-width:12rem', class: 'muted' }, r.address || '—'),
         h('td', {}, canAdd ? h('input', { type: 'date', value: r.startDate || '', style: 'width:9.5rem', onchange: (e) => guard(err, async () => { await api('PUT', `/projects/${r.id}`, { startDate: e.target.value || null }); render(); })() }) : (r.startDate || '—')),
@@ -205,7 +205,7 @@ async function projectView(id, tab = 'trades') {
     h('div', { class: 'grid kpis', style: 'margin-bottom:1rem' },
       h('div', { class: 'kpi' }, h('div', { class: 'l' }, 'Original contract + COs'), h('div', { class: 'v' }, usd(p.totals.contract))),
       h('div', { class: 'kpi' }, h('div', { class: 'l' }, 'Billed'), h('div', { class: 'v' }, usd(p.totals.billed))),
-      h('div', { class: 'kpi warn' }, h('div', { class: 'l' }, 'Due now'), h('div', { class: 'v' }, usd(p.totals.currentlyDue))),
+      h('div', { class: 'kpi warn' }, h('div', { class: 'l' }, 'Owed To Us Now'), h('div', { class: 'v' }, usd(p.totals.currentlyDue)), h('div', { class: 'muted', style: 'font-size:12px' }, 'billed, not yet paid')),
       h('div', { class: 'kpi ' + (p.totals.projectedProfit < 0 ? 'bad' : 'good') }, h('div', { class: 'l' }, 'Projected profit'), h('div', { class: 'v' }, usd(p.totals.projectedProfit)))),
     h('div', { class: 'tabs' }, TABS.map(([t, label]) => h('a', { class: t === tab ? 'on' : '', href: `#/projects/${id}/${t}` }, label))),
     content]);
@@ -363,7 +363,7 @@ const legend = (slices) => h('div', {}, slices.map((s) => h('div', { class: 'row
 async function billingTab(p, canEdit, reload) {
   const inv = await api('GET', `/projects/${p.project.id}/billing`); const err = h('div'); const base = `/projects/${p.project.id}`;
   const T = p.totals;
-  const slices = [{ label: 'Received', value: T.received, color: '#15803d' }, { label: 'Due now', value: T.currentlyDue, color: '#b45309' }, { label: 'Retainage held', value: T.retainageOutstanding, color: '#6366f1' }, { label: 'Unbilled', value: Math.max(0, T.unbilled), color: '#cbd5e1' }];
+  const slices = [{ label: 'Received', value: T.received, color: '#15803d' }, { label: 'Owed to us now', value: T.currentlyDue, color: '#b45309' }, { label: 'Retainage held', value: T.retainageOutstanding, color: '#6366f1' }, { label: 'Unbilled', value: Math.max(0, T.unbilled), color: '#cbd5e1' }];
   const th = (t, n) => h('th', { class: n ? 'n' : '' }, t);
   const sov = h('div', { class: 'card' }, h('h2', {}, 'Schedule of values'), h('div', { class: 'scroll' }, h('table', {},
     h('thead', {}, h('tr', {}, th('Trade'), th('Contract (orig + COs)', 1), th('Billed to date', 1), th('% billed', 1), th('Retainage held', 1), th('Received', 1), th('Due now', 1), th('Balance to finish', 1))),
@@ -737,7 +737,7 @@ function qboInvoices(s, rows, err) {
       h('td', {}, r.status === 'New' ? [h('button', { class: 'small primary', onclick: () => qboReview(r) }, 'Review and import'), ' ', h('button', { class: 'small', onclick: guard(err, async () => { await api('POST', `/quickbooks/invoices/${r.id}/ignore`, {}); render(); }) }, 'Ignore')]
         : r.status === 'Ignored' ? h('button', { class: 'small', onclick: guard(err, async () => { await api('POST', `/quickbooks/invoices/${r.id}/restore`, {}); render(); }) }, 'Restore') : ''))))))
     : h('p', { class: 'muted' }, qbSearch ? 'No invoice matches that search.' : qbFilter === 'New' ? 'Nothing waiting. Press Sync from QuickBooks to look for new invoices.' : 'Nothing here.');
-  return h('div', { style: 'margin-top:1.2rem;border-top:1px solid var(--line);padding-top:1rem' }, h('div', { class: 'row spread' }, h('h3', { style: 'margin:0' }, 'Invoices from QuickBooks'), h('div', { class: 'row' }, pick, sync)),
+  return h('div', { style: 'margin-top:1.2rem;border-top:1px solid var(--line);padding-top:1rem' }, h('div', { class: 'row spread' }, h('h3', { style: 'margin:0' }, 'Client Invoices From QuickBooks (We Billed Them)'), h('div', { class: 'row' }, pick, sync)),
     h('p', { class: 'muted', style: 'font-size:13px' }, (last ? `Last read ${new Date(last.at).toLocaleString()} (${last.invoicesSeen} invoices looked at). ` : 'Not read yet. ') + 'It also checks by itself every hour.'),
     h('div', { class: 'row', style: 'margin:.4rem 0 .8rem' }, h('label', { style: 'margin:0' }, 'Read invoices dated from'), start, h('label', { style: 'margin:0;text-transform:none;letter-spacing:0;font-weight:400' }, auto, ' Log confident matches automatically'), h('button', { class: 'small', onclick: saveCfg }, 'Save')),
     h('div', { class: 'row', style: 'margin-bottom:.6rem' }, find, h('button', { class: 'small', onclick: () => { qbSearch = find.value; render(); } }, 'Search'), qbSearch ? h('button', { class: 'small', onclick: () => { qbSearch = ''; render(); } }, 'Clear') : '',
@@ -849,7 +849,7 @@ let qbTab = 'invoices', qbCostFilter = 'New', qbCostSearch = '', qbHiddenSearch 
 async function quickbooksView() {
   const s = await api('GET', '/quickbooks/review'), err = h('div'); const live = s.connected && s.connectedEnvironment === s.environment;
   let body;
-  const tabs = h('div', { class: 'tabs' }, [['invoices', 'Invoices'], ['costs', 'Costs'], ['hidden', 'Hidden']].map(([k, l]) => h('a', { class: qbTab === k ? 'on' : '', href: '#/quickbooks', onclick: (e) => { e.preventDefault(); qbTab = k; render(); } }, l)));
+  const tabs = h('div', { class: 'tabs' }, [['invoices', 'Client Invoices'], ['costs', 'Vendor Bills & Costs'], ['hidden', 'Hidden']].map(([k, l]) => h('a', { class: qbTab === k ? 'on' : '', href: '#/quickbooks', onclick: (e) => { e.preventDefault(); qbTab = k; render(); } }, l)));
   if (!live) body = h('div', { class: 'card' }, h('p', { class: s.connected ? 'err' : 'muted' }, s.connected ? 'QuickBooks was connected for a different environment than the server now uses. The owner needs to disconnect and connect again in Admin.' : 'QuickBooks is not connected yet. The owner connects it once in Admin → Connections.'), isSuper() ? h('a', { href: '#/admin/connections' }, 'Open the QuickBooks connection') : '');
   else {
     const head = h('p', { class: 'muted', style: 'margin-top:0' }, `Company: ${s.company || '—'}${s.connectedEnvironment === 'sandbox' ? ' (sandbox test company, not the real books)' : ''}`);
@@ -857,7 +857,7 @@ async function quickbooksView() {
     else if (qbTab === 'hidden') body = h('div', { class: 'card' }, head, err, await qboHidden(err));
     else { const rows = await api('GET', '/quickbooks/invoices?status=' + qbFilter + (qbSearch ? '&search=' + encodeURIComponent(qbSearch) : '')); body = h('div', { class: 'card' }, head, err, qboInvoices(s, rows, err)); }
   }
-  const sub = { invoices: 'Invoices from QuickBooks waiting to be matched to a project and its trades. Confident matches log themselves; the rest are here for you.', costs: 'Bills, checks, expenses and card charges from QuickBooks. Choose where each one goes: a trade, the whole project, or company overhead.', hidden: 'Vendors and transactions you hid because they are not project costs (taxes, insurance, payroll). Search them, and bring any back.' }[qbTab];
+  const sub = { invoices: 'Invoices YOU sent to GCs in QuickBooks. They owe you this money. Match each to a project and its trades so billing, retainage and payments received stay right. Confident matches log themselves; the rest are here for you.', costs: 'Bills, checks, expenses and card charges: money YOU owe vendors and subcontractors, or already paid out. Choose where each one goes: a trade, the whole project, or company overhead.', hidden: 'Vendors and transactions you hid because they are not project costs (taxes, insurance, payroll). Search them, and bring any back.' }[qbTab];
   return shell('quickbooks', [h('h1', {}, 'QuickBooks'), tabs, h('p', { class: 'sub' }, sub), body]);
 }
 // Costs from QuickBooks: each one is reviewed, then imported as a vendor invoice (or hidden when it is not a project cost).
@@ -880,7 +880,7 @@ async function qboCosts(err) {
       h('td', { style: 'white-space:nowrap' }, c.status === 'New' ? [h('button', { class: 'small primary', onclick: () => qboCostReview(c) }, 'Review And Import'), ' ', h('button', { class: 'small', onclick: () => hideAsk(c) }, 'Hide'), ' ', h('button', { class: 'small', onclick: guard(err, async () => { await api('POST', `/quickbooks/costs/${c.id}/ignore`, {}); render(); }) }, 'Ignore')]
         : c.status === 'Ignored' ? [h('button', { class: 'small', onclick: guard(err, async () => { await api('POST', `/quickbooks/costs/${c.id}/restore`, {}); render(); }) }, 'Restore'), ' ', h('button', { class: 'small', onclick: () => hideAsk(c) }, 'Hide')] : c.invoiceId ? h('a', { href: '#/projects/receipts' }, 'Open In Receipts') : ''))))))
     : h('p', { class: 'muted' }, qbCostSearch ? 'No cost matches that search.' : qbCostFilter === 'New' ? 'Nothing waiting. Press Sync Costs From QuickBooks to look for new bills, checks and expenses.' : 'Nothing here.');
-  return h('div', {}, h('div', { class: 'row spread' }, h('h3', { style: 'margin:0' }, 'Costs From QuickBooks'), h('div', { class: 'row' }, pick, sync)),
+  return h('div', {}, h('div', { class: 'row spread' }, h('h3', { style: 'margin:0' }, 'Vendor Bills And Costs From QuickBooks (We Owe Or Paid)'), h('div', { class: 'row' }, pick, sync)),
     h('p', { class: 'muted', style: 'font-size:13px' }, (last ? `Last read ${new Date(last.at).toLocaleString()} (${last.seen} looked at). ` : 'Not read yet. ') + 'It also checks by itself every hour, from the same start date as invoices. QuickBooks does not share the bank-feed list of transactions waiting for review, only what is already recorded as a bill, check, expense or card charge.'),
     h('div', { class: 'row', style: 'margin-bottom:.6rem' }, find, h('button', { class: 'small', onclick: () => { qbCostSearch = find.value; render(); } }, 'Search'), qbCostSearch ? h('button', { class: 'small', onclick: () => { qbCostSearch = ''; render(); } }, 'Clear') : ''), table);
 }

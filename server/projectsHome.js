@@ -34,7 +34,7 @@ export async function projectsHome(user, manageAll, yearArg) {
       if (r.nto.overdue) alerts.push({ severity: 'high', kind: 'nto', title: `Notice To Owner Overdue: ${r.name}`, detail: `Deadline was ${r.nto.due}.`, date: r.nto.due, link: link(r.id, 'docs'), projectId: r.id });
       else if (r.nto.daysLeft <= 10) alerts.push({ severity: 'medium', kind: 'nto', title: `Notice To Owner Due In ${r.nto.daysLeft} Day${r.nto.daysLeft === 1 ? '' : 's'}: ${r.name}`, detail: `Deadline ${r.nto.due}.`, date: r.nto.due, link: link(r.id, 'docs'), projectId: r.id });
     }
-    if (r.currentlyDue > 0) alerts.push({ severity: 'info', kind: 'billing', title: `Billing Due Now: ${r.name}`, detail: `${money(r.currentlyDue)} can be invoiced now.`, link: link(r.id, 'billing'), projectId: r.id });
+    if (r.currentlyDue > 0) alerts.push({ severity: 'info', kind: 'billing', title: `Client Owes Us: ${r.name}`, detail: `${money(r.currentlyDue)} is billed and not yet paid.`, link: link(r.id, 'billing'), projectId: r.id });
     const pc = pending.get(r.id); if (pc) alerts.push({ severity: 'info', kind: 'co', title: `Pending Change Orders: ${r.name}`, detail: `${pc.n} waiting for approval (${money(pc.amt)}).`, link: link(r.id, 'cos'), projectId: r.id });
     if (!r.hasContractFile) alerts.push({ severity: 'info', kind: 'contract', title: `No Contract File: ${r.name}`, detail: 'Add the signed contract on the Contract tab.', link: link(r.id, 'contract'), projectId: r.id });
     if (r.startDate && r.startDate >= today && r.startDate <= shift(today, 14)) alerts.push({ severity: 'info', kind: 'start', title: `Starts ${r.startDate}: ${r.name}`, detail: 'Starting within two weeks.', date: r.startDate, link: link(r.id), projectId: r.id });

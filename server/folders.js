@@ -100,7 +100,7 @@ export async function syncGcs(year = todayEastern().slice(0, 4)) {
   try {
     const names = await SP.listFolderNames([...SP.settings().root, String(year)]); if (!names.length) return { added: 0, found: 0 };
     const have = new Set((await q('SELECT name FROM gcs')).map((g) => key(g.name))); let added = 0;
-    for (const raw of names) { const name = raw.trim(); if (!name || have.has(key(name)) || /^(zz|_|\.)/i.test(name) || /^\d{1,2}\.\s/.test(name) || /^20\d\d\b/.test(name)) continue;   // office folders like "00. Proposal Kit" or "2026 Regions Bank Docs" are not GCs await q('INSERT INTO gcs(name) VALUES ($1) ON CONFLICT (name) DO NOTHING', [name]); have.add(key(name)); added++; }
+    for (const raw of names) { const name = raw.trim(); if (!name || have.has(key(name)) || /^(zz|_|\.)/i.test(name) || /^\d{1,2}\.\s/.test(name) || /^20\d\d\b/.test(name)) continue; await q('INSERT INTO gcs(name) VALUES ($1) ON CONFLICT (name) DO NOTHING', [name]); have.add(key(name)); added++; }
     return { added, found: names.length };
   } catch { return { added: 0, found: 0 }; }
 }

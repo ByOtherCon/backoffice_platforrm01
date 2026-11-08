@@ -139,10 +139,22 @@ button.linklike{background:none;border:0;padding:.25rem .1rem;color:var(--navy);
 .trade-row2{display:flex;gap:.4rem;align-items:center;margin:.3rem 0;flex-wrap:wrap}.trade-row2 select.tradesel{width:auto!important;flex:1 1 10rem;min-width:10rem}.trade-row2 select.hrsel{width:5.2rem!important;min-width:0}.trade-row2 .rest{min-width:5rem;font-size:14px}
 
 /* billing matrix: a spreadsheet-style view of trades, change orders and invoices, colored by paid / not paid */
-.bm-wrap{overflow-x:auto}.bm{border-collapse:separate;border-spacing:0;min-width:100%}.bm th,.bm td{white-space:nowrap;padding:.35rem .6rem;border-bottom:1px solid var(--line)}
+.bm-wrap{overflow-x:auto;container-type:inline-size}.bm{border-collapse:separate;border-spacing:0;min-width:100%}.bm th,.bm td{padding:.35rem .6rem;border-bottom:1px solid var(--line)}.bm td{white-space:nowrap}.bm th{white-space:normal;min-width:5.2rem}.bm th.bm-name{min-width:7rem}
 .bm th.bm-name,.bm td.bm-name{position:sticky;left:0;background:var(--card);z-index:1;font-weight:600;border-right:1px solid var(--line)}
 .bm .bm-gap{width:.7rem;min-width:.7rem;padding:0;background:#1b1462;border:0}.bm .bm-tot{font-weight:700;background:#f4f4fa}.bm .bm-owed{font-weight:700;color:#9a3412}
 .bm .bm-inv{font-size:12px;font-weight:400;color:var(--muted)}.bm tfoot tr.total td{font-weight:700;border-top:2px solid var(--navy)}
 .bm-paid{background:#dcfce7}.bm-partial{background:#fef3c7}.bm-unpaid{background:#ffedd5}.bm-overdue{background:#fecaca}
 .bm td.bm-click{cursor:pointer}.bm td.bm-click:hover{outline:2px solid var(--navy);outline-offset:-2px}
 .bm-pill{display:inline-block;padding:.1rem .5rem;border-radius:99px;font-size:12px;font-weight:600}.bm-swatch{display:inline-block;width:.9rem;height:.9rem;border-radius:3px;vertical-align:middle;border:1px solid rgba(0,0,0,.12)}
+
+/* ---- use the whole screen, and make tables fit it: headers wrap, the table tightens as the space shrinks, and the less important columns step aside */
+header.top{padding:0 clamp(1rem,2.5vw,2.5rem)}
+main{max-width:2200px;padding:1.6rem clamp(1rem,2.5vw,2.5rem) 4rem}
+th{white-space:normal;vertical-align:bottom;line-height:1.2;overflow-wrap:break-word}
+td.n,th.n{white-space:nowrap}
+.scroll{container-type:inline-size}
+@container (max-width:1400px){table{font-size:14px}th,td{padding:.45rem .4rem}th{font-size:11px;letter-spacing:.04em}}
+@container (max-width:1250px){table{font-size:13.5px}th,td{padding:.4rem .35rem}.lo{display:none}}
+@container (max-width:950px){table{font-size:13px}th,td{padding:.4rem .3rem}th{font-size:10.5px;letter-spacing:.02em}.lo2{display:none}}
+@container (max-width:700px){table{font-size:12.5px}th,td{padding:.35rem .25rem}.lo3{display:none}}
+button.small.icon{padding:.3rem .4rem;line-height:0;display:inline-flex;align-items:center}

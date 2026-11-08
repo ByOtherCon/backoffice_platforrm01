@@ -157,3 +157,6 @@ The **QuickBooks** page has three tabs: Invoices, Costs and Hidden. **Costs** re
 
 ## Billing matrix
 Projects → a project → **Progress Billing** opens with the **Billing Matrix**: one row per trade with the original contract, each approved change order (grouped by CO number) and the contract total on the left; then one column per invoice (month, invoice number) with the amount billed to each trade, colored green (paid), yellow (partly paid), orange (unpaid, not due yet) or red (unpaid, past due); then billed to date, retainage held, received, left to invoice and owed to us now. A bottom row totals every column and shows each invoice's status (Paid / Owed / Overdue). The office can click an amount to open that invoice.
+
+## Layout: full width, no scroll bars
+Pages use the whole screen width. Tables wrap their column headings, tighten their spacing as the space shrinks, and the less important columns step aside on narrower windows (columns tagged `lo`, `lo2`, `lo3` in `public/app.js`; the thresholds are the `@container` rules at the end of `public/style.css`). A table only gets a scroll bar as a last resort, on very narrow screens. "Delete" and "Remove" buttons in tables show a trash-can icon (`public/ui.js`, any `small danger` button labelled Delete or Remove).

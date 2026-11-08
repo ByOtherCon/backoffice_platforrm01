@@ -5,6 +5,8 @@ process.env.DATABASE_URL ||= 'postgres://bo_test:bo_test_pw@localhost/byother_te
 const { pool, q } = await import('../server/db.js');
 const { server } = await import('../server/index.js');
 const { hashPassword } = await import('../server/auth.js');
+const { todayEastern, shift } = await import('../src/lib/estimating.ts');
+const T0 = todayEastern();   // dates are relative to today so the tests do not go stale
 
 let base, owner, juliana, silvia, pm, pid, ids = {}, thread;
 before(async () => {
@@ -64,10 +66,10 @@ test('adding a person gives them the whole history', async () => {
 
 let todo;
 test('to-dos: anyone can add one, with a timeline, assign it to anyone, and link it to a record', async () => {
-  assert.equal((await call('POST', '/api/todos', { title: 'x', startDate: '2026-11-05', dueDate: '2026-11-01' }, owner)).status, 400);           // due before start
+  assert.equal((await call('POST', '/api/todos', { title: 'x', startDate: shift(T0, 3), dueDate: shift(T0, -1) }, owner)).status, 400);           // due before start
   assert.equal((await call('POST', '/api/todos', { title: 'x', dueDate: '2026-02-30' }, owner)).status, 400);
   assert.equal((await call('POST', '/api/todos', { title: 'x', assignedToId: ids['gone@x.net'] }, owner)).status, 400);
-  const r = await call('POST', '/api/todos', { title: 'Send Wingstop proposal', notes: 'Use the new template', startDate: '2026-11-02', dueDate: '2026-11-06', assignedToId: ids['juliana@x.net'], links: [{ kind: 'project', id: pid }], threadId: thread }, owner); assert.equal(r.status, 200); todo = r.body.id;
+  const r = await call('POST', '/api/todos', { title: 'Send Wingstop proposal', notes: 'Use the new template', startDate: shift(T0, -2), dueDate: shift(T0, 5), assignedToId: ids['juliana@x.net'], links: [{ kind: 'project', id: pid }], threadId: thread }, owner); assert.equal(r.status, 200); todo = r.body.id;
   assert.ok((await call('GET', '/api/notifications', null, juliana)).body.some((n) => n.kind === 'todo' && /New to-do from owner@x.net/.test(n.title)));
   const mine = (await call('GET', '/api/todos?assignedTo=me', null, juliana)).body; assert.deepEqual([mine.length, mine[0].title, mine[0].links[0].label, mine[0].assignedTo, mine[0].createdBy], [1, 'Send Wingstop proposal', 'Wingstop - St Cloud', 'juliana@x.net', 'owner@x.net']);
   assert.equal((await call('GET', '/api/todos', null, silvia)).body.length, 0);                                                                  // default list is yours: assigned to or created by you
@@ -82,7 +84,7 @@ test('to-dos: complete, reopen, overdue flag, attached-to-record view, conversat
   const done = (await call('GET', '/api/todos?assignedTo=me&status=Done', null, juliana)).body[0]; assert.deepEqual([done.status, !!done.doneAt, done.overdue], ['Done', true, false]);
   assert.equal((await call('PUT', `/api/todos/${todo}`, { status: 'Maybe' }, juliana)).status, 400);
   assert.equal((await call('PUT', `/api/todos/${todo}`, { status: 'Open' }, juliana)).status, 200);
-  assert.equal((await call('PUT', `/api/todos/${todo}`, { assignedToId: ids['silvia@x.net'], dueDate: '2026-11-10' }, owner)).status, 200);
+  assert.equal((await call('PUT', `/api/todos/${todo}`, { assignedToId: ids['silvia@x.net'], dueDate: shift(T0, 9) }, owner)).status, 200);
   assert.ok((await call('GET', '/api/notifications', null, silvia)).body.some((n) => /assigned to you/.test(n.title)));
   const att = (await call('GET', `/api/records/project/${pid}/attached`, null, pm)).body; assert.deepEqual([att.todos.map((t) => t.title), att.threads.map((t) => t.subject)], [['Send Wingstop proposal'], ['Wingstop bid']]);
   assert.equal((await call('GET', `/api/threads/${thread}`, null, owner)).body.todos[0].title, 'Send Wingstop proposal');

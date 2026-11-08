@@ -11,6 +11,9 @@ export const titleCase = (text) => {
 const TITLED = new Set(['button', 'th', 'label', 'h1', 'h2', 'h3', 'h4', 'summary', 'legend']);
 const titled = (tag, attrs, kid) => typeof kid === 'string' && (TITLED.has(tag) || (tag === 'a' && String(attrs?.href || '').startsWith('#/'))) ? titleCase(kid) : kid;
 
+// A small trash can for the "Delete" / "Remove" buttons that sit in table rows: it takes far less room than the word.
+const trashIcon = () => { const NS = 'http://www.w3.org/2000/svg', s = document.createElementNS(NS, 'svg'); s.setAttribute('viewBox', '0 0 24 24'); s.setAttribute('width', '16'); s.setAttribute('height', '16'); s.setAttribute('aria-hidden', 'true');
+  const p = document.createElementNS(NS, 'path'); p.setAttribute('d', 'M3 6h18M8 6V4h8v2m-9 0l1 14h8l1-14M10 10v7M14 10v7'); p.setAttribute('fill', 'none'); p.setAttribute('stroke', 'currentColor'); p.setAttribute('stroke-width', '2'); p.setAttribute('stroke-linecap', 'round'); p.setAttribute('stroke-linejoin', 'round'); s.append(p); return s; };
 export const h = (tag, attrs = {}, ...kids) => {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs || {})) {
@@ -19,6 +22,10 @@ export const h = (tag, attrs = {}, ...kids) => {
     else if (k === 'class') el.className = v;
     else if (k === 'value') el.value = v;
     else el.setAttribute(k, v === true ? '' : v);
+  }
+  const only = kids.flat(Infinity).filter((x) => x != null && x !== false);
+  if (tag === 'button' && /\bdanger\b/.test(attrs?.class || '') && only.length === 1 && typeof only[0] === 'string' && /^(delete|remove)$/i.test(only[0].trim())) {
+    el.classList.add('icon'); if (!el.title) el.title = only[0].trim(); el.setAttribute('aria-label', only[0].trim()); el.append(trashIcon()); return el;
   }
   for (const kid of kids.flat(Infinity)) if (kid != null && kid !== false) el.append(kid.nodeType ? kid : document.createTextNode(String(titled(tag, attrs, typeof kid === 'string' ? kid : kid))));
   return el;

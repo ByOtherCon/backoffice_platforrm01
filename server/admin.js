@@ -44,7 +44,7 @@ const strip = (r) => { if ('pin_hash' in r) { r.has_pin = !!r.pin_hash; delete r
 const PAY_FIELDS = ['hourly_rate', 'pay_type'];
 export const list = async (kind, { rates = false } = {}) => {
   const rows = (await q(`SELECT * FROM ${KINDS[kind].table} ORDER BY ${KINDS[kind].order}`)).map(strip).map((r) => { if (kind === 'employees' && !rates) for (const f of PAY_FIELDS) delete r[f]; return r; });
-  if (kind === 'subcontractors') { const v = new Map((await vendorCompliance()).map((x) => [x.id, x])); for (const r of rows) { const x = v.get(r.id); r.verified = !!x?.verified; r.blockers = x?.blockers ?? []; r.docs = x?.docs ?? {}; r.address_match = x?.addressMatch ?? 'None'; } }   // is this subcontractor verified, and what is missing
+  if (kind === 'subcontractors') { const v = new Map((await vendorCompliance()).map((x) => [x.id, x])); for (const r of rows) { const x = v.get(r.id); r.verified = !!x?.verified; r.blockers = x?.blockers ?? []; r.docs = x?.docs ?? {}; r.address_match = x?.addressMatch ?? 'None'; r.override = !!x?.override; } }   // is this subcontractor verified, and what is missing
   if (kind === 'employees') { const t = new Map((await employeeTax()).map((x) => [x.id, x])); for (const r of rows) { const x = t.get(r.id); r.tax_ready = !!x?.ready; r.tax_blockers = x?.blockers ?? []; r.address_match = x?.addressMatch ?? 'None'; r.w9 = x?.w9 ?? null; r.w9_name = x?.w9Name ?? null; r.name_note = x?.nameNote ?? null; } }   // is the 1099 information complete, and what is missing
   return rows;
 };

@@ -8,16 +8,17 @@ const today = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_Yo
 const DOC_COL = { 'W-9': 'w9_document_id', COI: 'coi_document_id', Exemption: 'exemption_document_id' };
 
 // ------------------------------------------------------------------ vendor documents and status
-const SELECT = `SELECT s.id, s.name, s.email, s.archived, s.address AS a_street, s.city AS a_city, s.state AS a_state, s.zip AS a_zip, s.address_verified, s.address_confirmed_key, s.address_confirmed_at, s.folder_url, w.read_address AS w9_read, w.read_name AS w9_read_name, c.read_address AS coi_read, w.id AS w9_id, w.name AS w9_name, w.url AS w9_url, w.storage_key AS w9_key,
+const SELECT = `SELECT s.id, s.name, s.email, s.archived, s.verified_override, s.address AS a_street, s.city AS a_city, s.state AS a_state, s.zip AS a_zip, s.address_verified, s.address_confirmed_key, s.address_confirmed_at, s.folder_url, w.read_address AS w9_read, w.read_name AS w9_read_name, c.read_address AS coi_read, w.id AS w9_id, w.name AS w9_name, w.url AS w9_url, w.storage_key AS w9_key,
     c.id AS coi_id, c.name AS coi_name, c.url AS coi_url, c.storage_key AS coi_key, c.expires_on AS coi_expires,
     x.id AS ex_id, x.name AS ex_name, x.url AS ex_url, x.storage_key AS ex_key, x.expires_on AS ex_expires
   FROM subcontractors s LEFT JOIN documents w ON w.id=s.w9_document_id LEFT JOIN documents c ON c.id=s.coi_document_id LEFT JOIN documents x ON x.id=s.exemption_document_id`;
 const shape = (r, asOf) => {
   const ev = evaluate({ w9: !!r.w9_id, coi: { present: !!r.coi_id, expires: r.coi_expires }, exemption: { present: !!r.ex_id, expires: r.ex_expires } }, asOf);
   const addr = { street: r.a_street, city: r.a_city, state: r.a_state, zip: r.a_zip }, ac = addressChecks({ ...addr, verified: !!r.address_verified, confirmedKey: r.address_confirmed_key }, r.w9_read);
-  // verified = documents in order AND the address is checked AND it matches what the documents say; only a verified subcontractor can be paid
-  const verified = ev.canPay && ac.reasons.length === 0, blockers = [...ev.reasons, ...ac.reasons];
-  return { id: r.id, name: r.name, email: r.email, archived: r.archived, ...ev, docsOk: ev.canPay, canPay: verified, verified, blockers, addressMatch: ac.match, address: addr, addressChecked: !!r.address_verified, folderUrl: r.folder_url ?? null,
+  // verified = a W-9 and unexpired insurance (or exemption) on file, or the owner verified it by hand. Only a verified subcontractor can be paid.
+  // (Address and W-9 matching is for the 1099 information, not for payment.)
+  const verified = ev.canPay || !!r.verified_override, blockers = verified ? [] : ev.reasons;
+  return { id: r.id, name: r.name, email: r.email, archived: r.archived, ...ev, docsOk: ev.canPay, canPay: verified, verified, override: !!r.verified_override && !ev.canPay, blockers, addressMatch: ac.match, address: addr, addressChecked: !!r.address_verified, folderUrl: r.folder_url ?? null,
     addressOnDocs: { w9: r.w9_read ?? null, w9Name: r.w9_read_name ?? null, coi: r.coi_read ?? null }, confirmedAt: ac.match === 'Confirmed' ? r.address_confirmed_at : null,
     docs: { 'W-9': r.w9_id ? { id: r.w9_id, name: r.w9_name, url: r.w9_url, file: !!r.w9_key } : null, COI: r.coi_id ? { id: r.coi_id, name: r.coi_name, url: r.coi_url, file: !!r.coi_key, expires: r.coi_expires } : null, Exemption: r.ex_id ? { id: r.ex_id, name: r.ex_name, url: r.ex_url, file: !!r.ex_key, expires: r.ex_expires } : null } };
 };
@@ -183,4 +184,10 @@ export async function taxSummary(year, { showCrewPay = false } = {}) {
   for (const c of crew) { const t = et.get(c.id); if (!t) continue; out.push({ ...t, type: '1099 Crew', year: c.yr, paid: showCrewPay ? r2(c.total) : null, over600: r2(c.total) >= 600 }); }
   for (const c of subs) { const t = st.get(c.id); if (!t) continue; out.push({ ...t, type: 'Subcontractor', year: c.yr, paid: r2(c.total), over600: r2(c.total) >= 600 }); }
   return out.sort((a, b) => b.year - a.year || a.name.localeCompare(b.name));
+}
+
+// The Super Admin verifies a subcontractor by hand (for example paperwork is being sorted out), or takes that back.
+export async function setVerifyOverride(subId, userId, on = true) {
+  const r = await q(`UPDATE subcontractors SET verified_override=$2, verified_override_by=$3, verified_override_at=CASE WHEN $2 THEN now() END WHERE id=$1 RETURNING id`, [subId, !!on, on ? userId : null]);
+  if (!r.length) throw new HttpError(404, 'Subcontractor not found.');
 }

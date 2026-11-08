@@ -88,29 +88,37 @@ test('W-9 and insurance are uploaded onto the subcontractor, copied into its fol
   assert.equal((await q('SELECT read_name FROM documents WHERE id=$1', [up.body.id]))[0].read_name, 'Rivera Framing');
 });
 
-test('a verified subcontractor can be paid; an unverified one cannot, and the message says so', async () => {
+test('a W-9 and unexpired insurance make a subcontractor verified, whatever address they have; without them it is unverified and cannot be paid, and the message says so', async () => {
   const id = (await q(`SELECT id FROM subcontractors WHERE name='Rivera Framing'`))[0].id;
   const com = (await call('POST', `/api/projects/${pid}/commitments`, { projectTradeId: ptId, subcontractorId: id, contractAmount: 20000 }, office)); assert.equal(com.status, 200, JSON.stringify(com.body));
   const bill = (await call('POST', `/api/projects/${pid}/commitments/${com.body.id}/bills`, { number: '1', date: '2026-11-01', amount: 5000 }, office)).body.id;
   const pay = () => call('POST', `/api/projects/${pid}/sub-bills/${bill}/payments`, { date: '2026-11-02', amount: 100 }, owner);
   assert.equal((await pay()).status, 200);
-  // the address on the record changes: it needs a new check and no longer matches the W-9
+  // the address on the record changes and no longer matches the W-9: still verified, still payable
   await call('PUT', `/api/admin/subcontractors/${id}`, { addr: await verified('55 Different Rd', 'Tampa', '33602') }, office);
-  const x = await pay(); assert.equal(x.status, 409); assert.match(x.body.error, /Rivera Framing is an unverified subcontractor and cannot be paid: .*does not match/);
-  const lines = (await call('GET', `/api/projects/${pid}/costs`, null, office)).body; assert.ok(JSON.stringify(lines).includes('"verified":false'));   // the project's billing view shows it too
+  let c = await comp(id); assert.deepEqual([c.verified, c.addressMatch, c.blockers], [true, 'Mismatch', []]); assert.equal((await pay()).status, 200);
+  // no address at all: still verified
+  await call('PUT', `/api/admin/subcontractors/${id}`, { addr: {} }, office); assert.equal((await comp(id)).verified, true);
+  // insurance that has expired: unverified, and payment is refused with the reason
+  await q(`UPDATE documents SET expires_on='2020-01-01' WHERE id=(SELECT coi_document_id FROM subcontractors WHERE id=$1)`, [id]);
+  c = await comp(id); assert.deepEqual([c.verified, c.docsOk], [false, false]); const x = await pay(); assert.equal(x.status, 409); assert.match(x.body.error, /Rivera Framing is an unverified subcontractor and cannot be paid: .*expired/);
+  assert.ok(JSON.stringify((await call('GET', `/api/projects/${pid}/costs`, null, office)).body).includes('"verified":false'));   // the project's costs view shows it too
+  // a new subcontractor with nothing on file
+  const none = (await call('POST', '/api/admin/subcontractors', { name: 'Nothing On File' }, office)).body.id; const n = await comp(none); assert.equal(n.verified, false); assert.ok(n.blockers.includes('No W-9 on file'));
+  await q(`UPDATE documents SET expires_on='2099-01-01' WHERE id=(SELECT coi_document_id FROM subcontractors WHERE id=$1)`, [id]); assert.equal((await comp(id)).verified, true);   // renewed: verified again with no further step
 });
 
-test('a person can confirm the address matches the documents; the confirmation lasts only while the address stays the same; no W-9 reading means a person must confirm', async () => {
-  const id = (await q(`SELECT id FROM subcontractors WHERE name='Rivera Framing'`))[0].id;
-  assert.equal((await call('POST', `/api/admin/subcontractors/${id}/confirm-address`, {}, pm)).status, 403);
-  assert.equal((await call('POST', `/api/admin/subcontractors/${id}/confirm-address`, {}, office)).status, 200); let c = await comp(id); assert.deepEqual([c.addressMatch, c.verified], ['Confirmed', true]);
-  await call('PUT', `/api/admin/subcontractors/${id}`, { addr: await verified('56 Different Rd', 'Tampa', '33602') }, office); c = await comp(id); assert.equal(c.verified, false);   // a changed address needs a new look
-  await call('POST', `/api/admin/subcontractors/${id}/confirm-address`, {}, office); assert.equal((await comp(id)).verified, true); await call('POST', `/api/admin/subcontractors/${id}/confirm-address`, { confirm: false }, office); assert.equal((await comp(id)).verified, false);
-  // AI down: the file is saved, the address cannot be compared, a person must confirm
-  w9Read = 'down'; const id2 = (await call('POST', '/api/admin/subcontractors', { name: 'No Reading LLC', addr: await verified('9 Oak Ave', 'Miami', '33101') }, office)).body.id;
-  assert.equal((await call('POST', `/api/documents/upload?category=W-9&subcontractorId=${id2}`, PDF, office, 'w9.pdf')).status, 200); await call('POST', `/api/documents/upload?category=COI&subcontractorId=${id2}&expiresOn=2099-01-01`, PDF, office, 'coi.pdf');
-  c = await comp(id2); assert.deepEqual([c.docsOk, c.addressMatch, c.verified], [true, 'Unread', false]); assert.match(c.blockers[0], /has not been checked against this one/);
-  await call('POST', `/api/admin/subcontractors/${id2}/confirm-address`, {}, office); assert.equal((await comp(id2)).verified, true);
-  // an address that was never verified cannot be confirmed
-  const id3 = (await call('POST', '/api/admin/subcontractors', { name: 'No Address Inc' }, office)).body.id; assert.equal((await call('POST', `/api/admin/subcontractors/${id3}/confirm-address`, {}, office)).status, 400);
+test('the Super Admin can verify a subcontractor by hand (and take it back); nobody else can; the Admin list says who still needs it', async () => {
+  const none = (await q(`SELECT id FROM subcontractors WHERE name='Nothing On File'`))[0].id;
+  let row = (await call('GET', '/api/admin/subcontractors', null, office)).body.find((r) => r.id === none); assert.deepEqual([row.verified, row.override], [false, false]);   // the Verify button shows for this one
+  assert.equal((await call('POST', `/api/admin/subcontractors/${none}/verify`, {}, office)).status, 403); assert.equal((await call('POST', `/api/admin/subcontractors/${none}/verify`, {}, pm)).status, 403);
+  assert.equal((await call('POST', `/api/admin/subcontractors/${none}/verify`, {}, owner)).status, 200);
+  row = (await call('GET', '/api/admin/subcontractors', null, office)).body.find((r) => r.id === none); assert.deepEqual([row.verified, row.override, row.blockers], [true, true, []]);   // no Verify button any more
+  const c = await comp(none); assert.deepEqual([c.verified, c.override, c.canPay], [true, true, true]);
+  const com = (await call('POST', `/api/projects/${pid}/commitments`, { projectTradeId: ptId, subcontractorId: none, contractAmount: 1000 }, office)); const bill = (await call('POST', `/api/projects/${pid}/commitments/${com.body.id}/bills`, { number: 'X1', date: '2026-11-01', amount: 500 }, office)).body.id;
+  assert.equal((await call('POST', `/api/projects/${pid}/sub-bills/${bill}/payments`, { date: '2026-11-02', amount: 50 }, owner)).status, 200);   // payable
+  assert.equal((await call('POST', `/api/admin/subcontractors/${none}/verify`, { override: false }, office)).status, 403);
+  assert.equal((await call('POST', `/api/admin/subcontractors/${none}/verify`, { override: false }, owner)).status, 200); assert.equal((await comp(none)).verified, false);
+  assert.equal((await call('POST', `/api/projects/${pid}/sub-bills/${bill}/payments`, { date: '2026-11-02', amount: 50 }, owner)).status, 409);
+  assert.equal((await call('POST', `/api/admin/subcontractors/00000000-0000-4000-8000-000000000000/verify`, {}, owner)).status, 404);
 });

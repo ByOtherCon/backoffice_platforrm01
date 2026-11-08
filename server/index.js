@@ -167,6 +167,7 @@ route('POST', '/api/time/recalculate', async ({ user }) => { auth.requireRole(us
 route('GET', '/api/compliance/vendors', async ({ user }) => { manage(user); return cp.vendorCompliance(); });
 route('POST', '/api/admin/subcontractors/:id/documents', async ({ user, params, body }) => { manage(user); return cp.setVendorDoc(uuid(params.id), body); });
 route('POST', '/api/admin/subcontractors/:id/confirm-address', async ({ user, params, body }) => { manage(user); await cp.confirmAddress(uuid(params.id), user.id, body.confirm !== false); return { ok: true }; });
+route('POST', '/api/admin/subcontractors/:id/verify', async ({ user, params, body }) => { auth.requireRole(user, auth.SUPER); await cp.setVerifyOverride(uuid(params.id), user.id, body.override !== false); return { ok: true }; });
 route('POST', '/api/admin/employees/:id/confirm-address', async ({ user, params, body }) => { manage(user); await cp.confirmEmployeeAddress(uuid(params.id), user.id, body.confirm !== false); return { ok: true }; });
 // 1099 readiness: who needs a 1099 for a year, what they were paid (crew pay for the Super Admin only), and whose address / W-9 is still missing or does not match.
 route('GET', '/api/tax/1099', async ({ req, user }) => { manage(user); const y = new URL(req.url, 'http://x').searchParams.get('year'); return { year: y ? Number(y) : null, rows: await cp.taxSummary(y || null, { showCrewPay: auth.SUPER.includes(user.role) }) }; });

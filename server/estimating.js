@@ -104,7 +104,25 @@ export async function knownGcs() {
   const rows = await q(`SELECT g.name FROM gcs g WHERE NOT g.archived UNION SELECT gc_name FROM opportunities WHERE gc_name <> '' ORDER BY 1`);
   const latest = await q(`SELECT DISTINCT ON (lower(gc_name)) gc_name, gc_street, gc_city, gc_state, gc_zip, gc_address_verified, contact_name, contact_email, contact_phone, client_name FROM opportunities ORDER BY lower(gc_name), (gc_street IS NOT NULL) DESC, (contact_email IS NOT NULL) DESC, created_at DESC`);
   const by = new Map(latest.map((l) => [l.gc_name.toLowerCase(), l]));
-  return rows.map((r) => { const l = by.get(r.name.toLowerCase()); return { name: r.name, addr: l && l.gc_street ? { street: l.gc_street, city: l.gc_city, state: l.gc_state, zip: l.gc_zip, verified: l.gc_address_verified } : null, contact: l?.contact_name ?? '', email: l?.contact_email ?? '', phone: l?.contact_phone ?? '' }; });
+  const saved = new Map((await q('SELECT name, address, city, state, zip, address_verified, contact_name, email, phone FROM gcs')).map((g) => [g.name.toLowerCase(), g]));
+  // the GC's own saved record comes first; the latest lead fills whatever it lacks
+  return rows.map((r) => {
+    const g = saved.get(r.name.toLowerCase()), l = by.get(r.name.toLowerCase());
+    const addr = g?.address ? { street: g.address, city: g.city, state: g.state, zip: g.zip, verified: g.address_verified } : l?.gc_street ? { street: l.gc_street, city: l.gc_city, state: l.gc_state, zip: l.gc_zip, verified: l.gc_address_verified } : null;
+    return { name: r.name, addr, contact: g?.contact_name || l?.contact_name || '', email: g?.email || l?.contact_email || '', phone: g?.phone || l?.contact_phone || '' };
+  });
+}
+// Remember what was entered for a GC on a lead (address, contact) on the GC itself, creating the GC when it is new.
+async function rememberGc(t, o) {
+  const name = String(o.gc_name || '').trim(); if (!name) return;
+  const [g] = await t('SELECT id FROM gcs WHERE lower(name)=lower($1)', [name]);
+  const id = g?.id ?? (await t('INSERT INTO gcs(name) VALUES ($1) RETURNING id', [name]))[0].id;
+  await t(`UPDATE gcs SET
+      address=CASE WHEN $2::text IS NOT NULL THEN $2 ELSE address END, city=CASE WHEN $2::text IS NOT NULL THEN $3 ELSE city END, state=CASE WHEN $2::text IS NOT NULL THEN $4 ELSE state END,
+      zip=CASE WHEN $2::text IS NOT NULL THEN $5 ELSE zip END, address_verified=CASE WHEN $2::text IS NOT NULL THEN $6 ELSE address_verified END,
+      contact_name=COALESCE($7, contact_name), email=COALESCE($8, email), phone=COALESCE($9, phone) WHERE id=$1`,
+    [id, o.gc_street || null, o.gc_city ?? null, o.gc_state ?? null, o.gc_zip ?? null, !!o.gc_address_verified, o.contact_name || null, o.contact_email || null, o.contact_phone || null]);
+  await t('UPDATE opportunities SET gc_id=$2 WHERE id=$1 AND gc_id IS NULL', [o.id, id]);
 }
 
 // ------------------------------------------------------------------ the one form
@@ -131,7 +149,10 @@ async function readForm(b, old, user, creating) {
     if (W.addrEmpty(b.gcAddr)) Object.assign(v, { gc_street: null, gc_city: null, gc_state: null, gc_zip: null, gc_address_verified: false });
     else {
       const a = W.cleanAddr(b.gcAddr), cur = { street: old?.gc_street, city: old?.gc_city, state: old?.gc_state, zip: old?.gc_zip };
-      if (!(old && old.gc_address_verified && W.sameAddr(a, cur))) requireVerified(a, b.gcAddr.token, { label: 'GC address' });
+      // already checked on this lead, or the address this GC already has on file (checked when it was saved)
+      const name = String(b.gc ?? old?.gc_name ?? '').trim(), [onFile] = name ? await q('SELECT address, city, state, zip, address_verified FROM gcs WHERE lower(name)=lower($1)', [name]) : [];
+      const fromGc = onFile?.address_verified && W.sameAddr(a, { street: onFile.address, city: onFile.city, state: onFile.state, zip: onFile.zip });
+      if (!fromGc && !(old && old.gc_address_verified && W.sameAddr(a, cur))) requireVerified(a, b.gcAddr.token, { label: 'GC address' });
       Object.assign(v, { gc_street: a.street, gc_city: a.city, gc_state: a.state, gc_zip: a.zip, gc_address_verified: true });
     }
   }
@@ -175,8 +196,9 @@ export async function create(user, b) {
   const key = E.leadKey(v.gc_name, v.name, v.due_date ?? null);
   try {
     return await tx(async (t) => {
-      const [r] = await insert(t, { ...v, source: 'Manual', source_key: key, added_by: user.id });
+      const [r] = await insert(t, { ...v, keep_past_due: !!v.due_date && v.due_date < E.todayEastern(), source: 'Manual', source_key: key, added_by: user.id });
       await saveTrades(t, r.id, ids);
+      await rememberGc(t, { ...v, id: r.id });
       await sys(t, r.id, user, `Opportunity added manually by ${who(user)} on ${when()}. Source: ${v.source_type}.`);
       const n = text(b.note, 'Note', { max: 2000, required: false }); if (n) await addNote(t, r.id, user, 'User', n);
       return { id: r.id };
@@ -188,12 +210,14 @@ export async function update(user, id, b) {
   const v = await readForm(b, old, user, false), ids = await readTrades(b);
   if (!Object.keys(v).length && ids === undefined && !b.note) throw bad('Nothing to save.');
   await tx(async (t) => {
+    if (v.due_date !== undefined && v.due_date !== old.due_date) v.keep_past_due = !!v.due_date && v.due_date < E.todayEastern();   // a past date typed in by hand stays open
     const keys = Object.keys(v);
     if (keys.length) await t(`UPDATE opportunities SET ${keys.map((k, i) => `${k}=$${i + 2}`).join(',')} WHERE id=$1`, [id, ...keys.map((k) => v[k])]);
     const changes = TRACKED.filter(([c]) => c in v && String(v[c] ?? '') !== String(old[c] ?? '')).map(([c, l]) => `${l}: ${show(old[c])} → ${show(v[c])}`);
     if (v.estimator_id !== undefined && v.estimator_id !== old.estimator_id) { const nm = async (x) => (x ? (await t('SELECT name FROM app_users WHERE id=$1', [x]))[0]?.name : null); changes.push(`Estimator: ${show(await nm(old.estimator_id))} → ${show(await nm(v.estimator_id))}`); }
     if (ids !== undefined) { const before = (await t('SELECT t.name FROM opportunity_considered_trades c JOIN trades t ON t.id=c.trade_id WHERE c.opportunity_id=$1 ORDER BY t.name', [id])).map((x) => x.name); await saveTrades(t, id, ids);
       const after = (await t('SELECT t.name FROM opportunity_considered_trades c JOIN trades t ON t.id=c.trade_id WHERE c.opportunity_id=$1 ORDER BY t.name', [id])).map((x) => x.name); if (before.join('|') !== after.join('|')) changes.push(`Trades considered: ${before.join(', ') || '—'} → ${after.join(', ') || '—'}`); }
+    await rememberGc(t, { ...old, ...v, id });
     if (changes.length) await sys(t, id, user, `Edited by ${who(user)}. ${changes.join('; ')}`);
     const n = text(b.note, 'Note', { max: 2000, required: false }); if (n) await addNote(t, id, user, 'User', n);
   }).catch((e) => { throw e.code === '23505' ? new HttpError(409, 'Another opportunity already has that GC, project and bid date.') : e; });
@@ -259,7 +283,7 @@ export async function transition(user, id, b = {}) {
     if (to === 'Reviewing') { /* no proposal number or folders yet */ }
     if (to === 'Declined' || to === 'Decided Not To Submit') { set.declined_reason = reason; set.declined_at = new Date(); set.auto_declined = false; }
     if (to === 'New') {
-      if (W.autoDeclineDue('New', o.due_date, today, rl)) throw bad('That bid date has already passed, so it would decline again. Change the due date first, or leave it declined.');
+      if (W.autoDeclineDue('New', o.due_date, today, rl, o.keep_past_due)) throw bad('That bid date has already passed, so it would decline again. Change the due date first, or leave it declined.');
       set.declined_reason = null; set.auto_declined = false;
     }
     if (to === 'Started' && from === 'Submitted') {

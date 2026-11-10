@@ -88,7 +88,7 @@ export const deleteClientPayment = (projectId, invoiceId, payId) => run(async (t
 
 // ------------------------------------------------------------------ vendors = subcontractors
 export async function getCosts(projectId, { rates = false } = {}) {
-  const subs = await q(`SELECT sc.*, s.name AS vendor, t.name AS trade FROM sub_commitments sc JOIN subcontractors s ON s.id=sc.subcontractor_id
+  const subs = await q(`SELECT sc.*, s.name AS vendor, s.contact_name, s.phone AS contact_phone, t.name AS trade FROM sub_commitments sc JOIN subcontractors s ON s.id=sc.subcontractor_id
                         LEFT JOIN project_trades pt ON pt.id=sc.project_trade_id LEFT JOIN trades t ON t.id=pt.trade_id WHERE sc.project_id=$1 ORDER BY t.name NULLS LAST, s.name`, [projectId]);
   const bills = subs.length ? await q('SELECT * FROM sub_invoices WHERE commitment_id = ANY($1::uuid[]) ORDER BY invoice_date, number', [subs.map((s) => s.id)]) : [];
   const spay = bills.length ? await q('SELECT * FROM sub_payments WHERE sub_invoice_id = ANY($1::uuid[]) ORDER BY paid_date', [bills.map((b) => b.id)]) : [];
@@ -100,17 +100,17 @@ export async function getCosts(projectId, { rates = false } = {}) {
     });
     const invoiced = r2(mine.reduce((n, b) => n + b.amount, 0)), paid = r2(mine.reduce((n, b) => n + b.paid, 0));
     const held = s.hold_released ? 0 : Math.min(s.hold_amount, r2(invoiced - paid));
-    return { id: s.id, vendor: s.vendor, subcontractorId: s.subcontractor_id, trade: s.trade, projectTradeId: s.project_trade_id, contract: s.contract_amount, invoiced, paid, balance: r2(invoiced - paid),
+    return { id: s.id, vendor: s.vendor, contact: s.contact_name ?? null, contactPhone: s.contact_phone ?? null, subcontractorId: s.subcontractor_id, trade: s.trade, projectTradeId: s.project_trade_id, contract: s.contract_amount, invoiced, paid, balance: r2(invoiced - paid),
       remaining: Math.max(0, r2(s.contract_amount - invoiced)), holdAmount: s.hold_amount, holdReason: s.hold_reason, holdReleased: s.hold_released, held, availableToPay: r2(invoiced - paid - held), materialsIncluded: s.materials_included, bills: mine, compliance: { status: comp.get(s.subcontractor_id)?.status, canPay: comp.get(s.subcontractor_id)?.canPay, verified: !!comp.get(s.subcontractor_id)?.verified, reasons: comp.get(s.subcontractor_id)?.blockers ?? [] } };
   });
-  const sup = await q(`SELECT sa.id AS alloc_id, sa.amount, sa.project_trade_id, t.name AS trade, si.id AS invoice_id, si.reference, si.invoice_date, si.total, s.name AS supplier,
+  const sup = await q(`SELECT sa.id AS alloc_id, sa.amount, sa.project_trade_id, t.name AS trade, si.id AS invoice_id, si.reference, si.description, si.invoice_date, si.total, s.name AS supplier,
                          COALESCE((SELECT SUM(amount) FROM supplier_payments WHERE supplier_invoice_id=si.id),0) paid_total
                        FROM supplier_allocations sa JOIN supplier_invoices si ON si.id=sa.supplier_invoice_id JOIN suppliers s ON s.id=si.supplier_id
                        LEFT JOIN project_trades pt ON pt.id=sa.project_trade_id LEFT JOIN trades t ON t.id=pt.trade_id
                        WHERE sa.project_id=$1 ORDER BY t.name NULLS LAST, si.invoice_date, si.reference`, [projectId]);
   const suppliers = sup.map((r) => {
     const paid = r.total > 0 ? toDollars(Math.round((toCents(r.amount) * toCents(r.paid_total)) / toCents(r.total))) : 0;
-    return { allocId: r.alloc_id, invoiceId: r.invoice_id, supplier: r.supplier, reference: r.reference, date: r.invoice_date, trade: r.trade, projectTradeId: r.project_trade_id, amount: r.amount, paid, balance: r2(r.amount - paid), invoiceTotal: r.total };
+    return { allocId: r.alloc_id, invoiceId: r.invoice_id, supplier: r.supplier, reference: r.reference, description: r.description, date: r.invoice_date, trade: r.trade, projectTradeId: r.project_trade_id, amount: r.amount, paid, balance: r2(r.amount - paid), invoiceTotal: r.total };
   });
   const lab = await q(`SELECT t.name AS trade, e.name AS employee, SUM(l.hours) hours, SUM(COALESCE(l.pay, ROUND(l.hours*l.rate,2))) pay FROM labor_entries l JOIN employees e ON e.id=l.employee_id
                        LEFT JOIN project_trades pt ON pt.id=l.project_trade_id LEFT JOIN trades t ON t.id=pt.trade_id WHERE l.project_id=$1 GROUP BY t.name, e.name ORDER BY t.name NULLS LAST, e.name`, [projectId]);
@@ -198,7 +198,8 @@ export async function addSupplierInvoice(b) {
   const diff = toCents(total) - allocs.reduce((n, a) => n + toCents(a.amount), 0);
   if (diff !== 0) throw bad(`Allocations differ from the invoice total by ${toDollars(Math.abs(diff)).toFixed(2)}.`);
   return run(async (t) => {
-    const [inv] = await t('INSERT INTO supplier_invoices(supplier_id,reference,invoice_date,total) VALUES ($1,$2,$3,$4) RETURNING id', [b.supplierId, text(b.reference, 'Invoice reference', { max: 80 }), dateStr(b.date, 'Invoice date'), total]);
+    const [inv] = await t('INSERT INTO supplier_invoices(supplier_id,reference,invoice_date,total,description) VALUES ($1,$2,$3,$4,$5) RETURNING id', [b.supplierId, text(b.reference, 'Invoice reference', { max: 80 }), dateStr(b.date, 'Invoice date'), total, text(b.description, 'Description', { max: 500, required: false }) || null]);
+    if (b.paid) await t('INSERT INTO supplier_payments(supplier_invoice_id,paid_date,amount) VALUES ($1,$2,$3)', [inv.id, dateStr(b.paidDate, 'Paid date', true), total]);   // already paid (a website purchase, a card charge): recorded as paid when it is added
     for (const a of allocs) {
       if (a.projectTradeId) await ownsTrade(t, a.projectId, a.projectTradeId);
       await t('INSERT INTO supplier_allocations(supplier_invoice_id,project_id,project_trade_id,amount) VALUES ($1,$2,$3,$4)', [inv.id, a.projectId, a.projectTradeId, a.amount]);

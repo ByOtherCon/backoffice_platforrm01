@@ -39,6 +39,10 @@ export const cls = (n) => (n < 0 ? 'neg' : '');
 
 export const notice = (box, msg, kind = 'err') => { box.replaceChildren(msg ? h('div', { class: kind }, msg) : ''); };
 
+// A second click while the first is still working is ignored (a double click on a folder button must open one picker, not two).
+export const oneAtATime = (fn) => { let busy = false; return async (...a) => { if (busy) return; busy = true; try { return await fn(...a); } finally { busy = false; } }; };
+// The browser's folder picker complains in a few cases that are not the person's fault; say what to do instead.
+export const folderError = (e) => (e?.name === 'AbortError' ? new Error('No folder was chosen.') : /user gesture|already active/i.test(e?.message || '') ? new Error('Press the button once and choose the folder in the window that opens.') : e);
 export const guard = (box, fn) => async (...a) => { try { notice(box, ''); await fn(...a); } catch (e) { notice(box, e.message); } };
 
 export function modal(title, content) {

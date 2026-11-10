@@ -180,13 +180,13 @@ const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 export async function sweepDeclines(rl) {
   if (!rl) { const v = (await q(`SELECT value FROM app_settings WHERE key='estimating'`))[0]?.value ?? {}; rl = { declineNewDays: Number(v.declineNewDays ?? 2), declineReviewingDays: Number(v.declineReviewingDays ?? 2) }; }
   const today = todayEastern(); let n = 0;
-  const rows = await q(`SELECT o.id, o.status, o.tier, o.due_date::text AS due, (o.created_at AT TIME ZONE 'America/New_York')::date::text AS created,
+  const rows = await q(`SELECT o.id, o.status, o.tier, o.keep_past_due, o.due_date::text AS due, (o.created_at AT TIME ZONE 'America/New_York')::date::text AS created,
       EXISTS (SELECT 1 FROM submissions s WHERE s.opportunity_id=o.id AND s.voided_at IS NULL) AS submitted
     FROM opportunities o WHERE o.status IN ('New','Reviewing','Accepted','Started')`);
   for (const o of rows) {
     let to = null, why = null, reason = null;
     if (['New', 'Reviewing'].includes(o.status)) {
-      if (W.autoDeclineDue(o.status, o.due, today, rl)) why = 'its bid due date has passed';
+      if (W.autoDeclineDue(o.status, o.due, today, rl, o.keep_past_due)) why = 'its bid due date has passed';
       else if (o.status === 'New') { const x = W.newLeadExpiry(o.created, o.tier, today); if (x) why = x.replace(/\.$/, '').replace(/^N/, 'n'); }
       if (why) { to = 'Declined'; reason = 'Auto-declined: ' + (/due date/.test(why) ? 'past its bid date' : why); }
     } else if (W.workExpiry(o.status, o.due, o.submitted, today) === 'expired') { to = 'Decided Not To Submit'; reason = W.EXPIRED_REASON; why = `no proposal was submitted within 5 days of the bid due date (${o.due})`; }

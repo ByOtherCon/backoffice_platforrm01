@@ -47,8 +47,11 @@ export const resultFor = (s: string) => (s === 'Awarded' ? 'Awarded' : s === 'No
 export type Rules = { declineNewDays: number; declineReviewingDays: number };
 export const DEFAULT_RULES: Rules = { declineNewDays: 2, declineReviewingDays: 2 };
 export const declineAfterDays = (status: string, rules: Rules = DEFAULT_RULES): number | null => (status === 'New' ? rules.declineNewDays : status === 'Reviewing' ? rules.declineReviewingDays : null);
-export function autoDeclineDue(status: string, due: string | null, today = todayEastern(), rules: Rules = DEFAULT_RULES): boolean {
+// A lead someone adds by hand after its bid date has passed is not declined for that date (the keep flag is set only for those leads).
+export function autoDeclineDue(status: string, due: string | null, today = todayEastern(), rules: Rules = DEFAULT_RULES, keepPastDue = false): boolean {
   const d = declineAfterDays(status, rules); if (d === null || !due) return false;
+  if (keepPastDue) return false;   // note: only set on leads entered by hand
+
   return today >= shift(due, d);
 }
 

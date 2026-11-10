@@ -97,7 +97,7 @@ export function projectStats(trades: TradeInput[], unallocated?: Partial<Pick<Tr
     totalOwed: add('totalOwed'), currentlyDue: add('currentlyDue'), unbilled: toDollars(rows.reduce((n, r) => n + toCents(r.unbilled), 0)),
     subPayable: add('subPayable'), supplierPayable: add('supplierPayable'), subHeld: add('subHeld'), totalPayable: add('totalPayable'),
     actualCost: add('actualCost'), projectedCost: add('projectedCost'), laborCost: add('laborCost'), hours: add('hours'),
-    subInvoiced: add('subInvoiced'), supplierCost: add('supplierCost'), subRemaining: add('subRemaining'),
+    subInvoiced: add('subInvoiced'), supplierCost: add('supplierCost'), subRemaining: add('subRemaining'), subContract: add('subContract'), subPaid: add('subPaid'), supplierPaid: add('supplierPaid'),
     projectedProfit, marginPct: contract > 0 ? Math.round((projectedProfit / contract) * 10000) / 100 : null,
     unallocatedCost: u.actualCost,
   };

@@ -39,5 +39,5 @@ export function addressBlock(api, { kind, init, label, readonly = false }) {
     if (!verified) throw new Error('Press "Verify address" on the address (or clear it) before saving.');
     return { addr: get() };
   };
-  return { el: box, head, set: (a, t) => { set(a, t); first = snap(); }, verifyNow: () => verify(true), empty, ok: () => verified, get, payload };
+  return { el: box, head, set: (a, t, send = false) => { set(a, t); first = send ? '' : snap(); }, verifyNow: () => verify(true), empty, ok: () => verified, get, payload };
 }

@@ -1,6 +1,6 @@
 // Estimating screens: Bid Opportunities, Proposal Tracker, Submittal Tracker, Follow Ups, Insights, and the one opportunity form
 // that every tracker uses. Everything is inserted with textContent (never innerHTML).
-import { h, usd, notice, guard, modal, formModal, field, todayStr, num } from '/ui.js';
+import { h, usd, notice, guard, oneAtATime, folderError, modal, formModal, field, todayStr, num } from '/ui.js';
 import { addressBlock as makeAddressBlock } from '/address.js';
 let C;
 export const init = (c) => { C = c; };
@@ -104,7 +104,7 @@ function buildOpportunityForm(full, op, known, { readonly = false } = {}) {
   const sync = () => { linkLabel.replaceChildren('Invitation link', f.source.value === 'Building Connected' && !readonly ? star() : ''); f.link.required = f.source.value === 'Building Connected'; }; f.source.onchange = sync; sync();
   const hint = h('div', { class: 'muted wide', style: 'font-size:13px' });
   f.gc.onchange = () => { if (readonly) return; const g = known.find((x) => x.name.toLowerCase() === f.gc.value.trim().toLowerCase()); if (!g) { hint.textContent = f.gc.value.trim() ? 'A new GC. It joins the list when you save.' : ''; return; } hint.textContent = 'A GC we already work with. Its details were filled in.';
-    f.gc.value = g.name; if (gcb.empty() && g.addr) gcb.set(g.addr); if (!f.contact.value) f.contact.value = g.contact; if (!f.email.value) f.email.value = g.email; if (!f.phone.value) f.phone.value = g.phone; };
+    f.gc.value = g.name; if (gcb.empty() && g.addr) gcb.set(g.addr, null, true); if (!f.contact.value) f.contact.value = g.contact; if (!f.email.value) f.email.value = g.email; if (!f.phone.value) f.phone.value = g.phone; };
   const req = (t) => (readonly ? t : lbl(t, true));
   const nodes = [h('datalist', { id: 'gc-list' }, known.map((g) => h('option', { value: g.name }))),
     field(req('Project name'), f.name), field(req('Client name'), f.client), field(req('GC name'), f.gc), hint,
@@ -153,7 +153,7 @@ async function statusModal(o, to) {
 function acceptedModal(o, r) {
   const msg = h('div');
   modal(`Accepted · ${r.proposalId}`, h('div', {}, h('p', {}, 'This is the standard folder tree for the proposal:'), h('pre', { class: 'draft' }, r.folderPlan.root + '\n' + r.folderPlan.folders.map((x) => '  ' + x).join('\n')),
-    C.hasFolderAccess() ? h('button', { type: 'button', onclick: guard(msg, async () => { const where = await C.createProposalFolders(r.folderPlan); notice(msg, `Created in ${where}`, 'ok'); }) }, 'Create these folders on my computer…') : '', C.folderNote(), msg, h('p', { class: 'muted' }, 'Paste the OneDrive folder link on the opportunity (Edit) so it is one click away.')));
+    C.hasFolderAccess() ? h('button', { type: 'button', onclick: guard(msg, oneAtATime(async () => { try { const where = await C.createProposalFolders(r.folderPlan); notice(msg, `Created in ${where}`, 'ok'); } catch (e) { throw folderError(e); } })) }, 'Create these folders on my computer…') : '', C.folderNote(), msg, h('p', { class: 'muted' }, 'Paste the OneDrive folder link on the opportunity (Edit) so it is one click away.')));
 }
 
 // ---------------------------------------------------------------- submitting: the proposal PDF is required, read, and checked by a person

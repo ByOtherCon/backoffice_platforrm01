@@ -69,3 +69,9 @@ test('message templates fill from the record and report what is missing instead 
   const m = W.followupDrafts({ project: 'X', address: '', proposalId: 'P1', submittedDate: '2026-10-23', trades: '', gcContact: '', estimator: 'J', estimatorPhone: '' });
   assert.deepEqual(m.missing, ['GC contact name', 'project address', 'submitted trades', 'estimator phone']);
 });
+
+test('a lead added after its bid date had passed is not auto-declined for that date', () => {
+  const r = { declineNewDays: 2, declineReviewingDays: 2 };
+  assert.equal(W.autoDeclineDue('New', '2026-10-01', '2026-10-30', r, true), false);   // entered by hand with a past date
+  assert.equal(W.autoDeclineDue('New', '2026-10-01', '2026-10-30', r, false), true);
+});

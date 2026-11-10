@@ -71,3 +71,25 @@ test('moving a lead to another past date by hand keeps it open; a future date go
   assert.equal((await call('PUT', `/api/opportunities/${r.body.id}`, { due: shift(today, 4) }, est)).status, 200);
   assert.equal((await q('SELECT keep_past_due FROM opportunities WHERE id=$1', [r.body.id]))[0].keep_past_due, false);
 });
+
+test('lead files (plans, proposal) stay with the job: shown on the project, downloadable by people on the project, and the lead shows the project documents', async () => {
+  const [tr] = await q(`INSERT INTO trades(name,sort) VALUES ('Demo',1) RETURNING id`);
+  const id = (await lead({ name: 'Doc Job', gc: 'Doc GC' })).body.id;
+  const up = await fetch(`${base}/api/opportunities/${id}/plans`, { method: 'POST', headers: { cookie: est, 'x-file-name': 'Plans.pdf' }, body: Buffer.from('%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF') }); assert.equal(up.status, 200, await up.clone().text());
+  const [gc] = await q(`INSERT INTO gcs(name) VALUES ('Doc GC2') RETURNING id`);
+  const [p] = await q(`INSERT INTO projects(name,gc_id,client,address,retainage_pct,opportunity_id) VALUES ('Doc Job',$1,'C','1 A St',10,$2) RETURNING id`, [gc.id, id]); void tr;
+  await q('UPDATE opportunities SET project_id=$2 WHERE id=$1', [id, p.id]);
+  const h = await hashPassword('correct horse battery');
+  await q(`INSERT INTO app_users(email,name,role,password_hash) VALUES ('asst@x.net','asst','Exec Assistant',$1), ('pm@x.net','pm','Project Manager',$1)`, [h]);
+  const login = async (e) => (await fetch(base + '/api/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: e, password: 'correct horse battery' }) })).headers.get('set-cookie').split(';')[0];
+  const asst = await login('asst@x.net'), pm = await login('pm@x.net');
+  const lf = (await call('GET', `/api/projects/${p.id}/lead-files`, null, asst)).body; assert.deepEqual(lf.files.map((f) => [f.name, f.kind]), [['Plans.pdf', 'Plans']]);
+  const dl = await fetch(`${base}/api/projects/${p.id}/lead-files/${lf.files[0].id}`, { headers: { cookie: asst } }); assert.equal(dl.status, 200);
+  assert.equal((await call('GET', `/api/projects/${p.id}/lead-files`, null, pm)).status, 403);   // a PM who is not on the project
+  await q(`INSERT INTO project_members(project_id,user_id) SELECT $1, id FROM app_users WHERE email='pm@x.net'`, [p.id]);
+  assert.equal((await call('GET', `/api/projects/${p.id}/lead-files`, null, pm)).status, 200);
+  await q(`INSERT INTO documents(category,name,url,project_id) VALUES ('Contract','Signed contract','https://example.com/c.pdf',$1)`, [p.id]);
+  const detail = (await call('GET', `/api/opportunities/${id}`, null, asst)).body; assert.deepEqual(detail.projectDocs.map((d) => d.name), ['Signed contract']);
+  assert.equal((await call('GET', `/api/opportunities/${id}`, null, est)).body.projectDocs, undefined);   // estimators do not see the project's papers
+  assert.equal((await call('GET', `/api/projects/${p.id}/lead-files/${lf.files[0].id}`, null, undefined)).status, 401);
+});

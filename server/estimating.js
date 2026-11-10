@@ -458,6 +458,19 @@ export async function projectOrigin(projectId) {
     consideredTrades: d.consideredTrades, submissions: d.submissions, files: d.files, folderUrl: d.folderUrl, notes: d.notes, communications: d.communications, plannedStart: d.plannedStart };
 }
 
+// One set of documents for a job, whatever stage it is in. The lead's files (plans, proposals, submittals) show on the project once it exists,
+// and the project's documents (contract, change orders, COIs) show on the lead.
+export async function leadFilesForProject(projectId) {
+  const [o] = await q('SELECT id, name, proposal_id, folder_url, status FROM opportunities WHERE project_id=$1', [projectId]); if (!o) return null;
+  const files = await q('SELECT id, kind, name, size, sp_url, (storage_key IS NOT NULL) AS local, created_at AS at FROM opportunity_files WHERE opportunity_id=$1 ORDER BY created_at', [o.id]);
+  return { opportunityId: o.id, name: o.name, proposalId: o.proposal_id, folderUrl: o.folder_url, files: files.map((f) => ({ id: f.id, kind: f.kind, name: f.name, size: f.size, local: f.local, spUrl: f.sp_url, at: f.at })) };
+}
+export async function leadFileForProject(projectId, fid) {
+  const [f] = await q('SELECT f.id FROM opportunity_files f JOIN opportunities o ON o.id=f.opportunity_id WHERE f.id=$1 AND o.project_id=$2', [fid, projectId]); if (!f) throw new HttpError(404, 'File not found.');
+  return fileForDownload(fid);
+}
+export const projectDocsForLead = (projectId) => q(`SELECT d.id, d.category, d.name, d.url, (d.storage_key IS NOT NULL) AS has_file, d.created_at AS at FROM documents d WHERE d.project_id=$1 AND d.category <> 'Employee ID' AND NOT d.restricted ORDER BY d.created_at DESC`, [projectId]);
+
 // ------------------------------------------------------------------ learning from results
 export async function insights() {
   const all = await loadAll(); const [{ value: set }] = await q(`SELECT value FROM app_settings WHERE key='estimating'`); const target = Number(set.targetMargin ?? 20);

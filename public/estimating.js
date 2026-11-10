@@ -48,7 +48,9 @@ function filesPanel(o, canWrite, err) {
   api('GET', `/opportunities/${o.id}/folder-files`).then((r) => live.replaceChildren(r.plans.length ? h('div', { class: 'row', style: 'flex-wrap:wrap;gap:.4rem;margin:.4rem 0' }, r.plans.map((p, i) => h('a', { class: 'small', href: p.webUrl, target: '_blank', rel: 'noopener', title: p.name }, i === 0 ? 'Open Plans' : 'Open Plans · ' + p.name.slice(0, 30)))) : '',
     r.proposals.length ? h('div', {}, h('label', {}, 'Proposal PDFs in the job folder'), r.proposals.map((p) => h('div', {}, h('a', { href: p.webUrl, target: '_blank', rel: 'noopener', style: 'font-size:14px' }, p.name)))) : '')).catch(() => {});
   return h('div', {}, h('div', { class: 'row spread' }, h('label', {}, 'Plans and files'), canWrite ? h('span', {}, plans, h('button', { type: 'button', class: 'small primary', onclick: () => plans.click(), title: 'The zip from the BuildingConnected Files tab (Download All)' }, 'Upload plans')) : ''), live,
-    mine || h('p', { class: 'muted' }, 'Nothing uploaded in the app yet. The proposal PDF is added when the bid is submitted.'));
+    mine || h('p', { class: 'muted' }, 'Nothing uploaded in the app yet. The proposal PDF is added when the bid is submitted.'),
+    // once the job is a project, its own documents (contract, change orders, insurance) show here too
+    o.projectDocs?.length ? h('div', { style: 'margin-top:.6rem' }, h('label', {}, 'Project documents'), o.projectDocs.map((d) => h('div', {}, h('a', { href: d.has_file ? `/api/documents/${d.id}/file` : d.url, target: '_blank', rel: 'noopener' }, d.name), ' ', h('span', { class: 'pill' }, d.category)))) : '');
 }
 
 // ---------------------------------------------------------------- the shared folder: open it in SharePoint or in File Explorer

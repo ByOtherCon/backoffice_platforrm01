@@ -34,6 +34,7 @@ import { projectsHome } from './projectsHome.js';
 import * as qbc from './qbCosts.js';
 import * as sv from './subVerify.js';
 import * as qbo from './quickbooks.js';
+import * as qbr from './qbReset.js';
 import * as qbi from './qbImport.js';
 import * as acc from './access.js';
 import * as gl from './googleLogin.js';
@@ -217,12 +218,21 @@ route('POST', '/api/address/verify', async ({ user, body }) => {
 route('GET', '/api/opportunities', async ({ req, user }) => { estRead(user); return es.list({ tab: q1(req, 'tab'), search: q1(req, 'q'), showAll: q1(req, 'all') === '1', filter: q1(req, 'filter'), scope: q1(req, 'scope'), userId: user.id }); });
 route('POST', '/api/opportunities', async ({ user, body }) => es.create(estWrite(user), body));
 route('POST', '/api/opportunities/import', async ({ user, body }) => es.importLeads(estWrite(user), body));
-route('GET', '/api/opportunities/:id', async ({ user, params }) => { estRead(user); return es.get(uuid(params.id)); });
+route('GET', '/api/opportunities/:id', async ({ user, params }) => { estRead(user); const d = await es.get(uuid(params.id)); return d.projectId && auth.MANAGE.includes(user.role) ? { ...d, projectDocs: await es.projectDocsForLead(d.projectId) } : d; });
+// The same lead files and job-folder listing, seen from the project (people on the project do not need Estimating access).
+route('GET', '/api/projects/:id/lead-files', async ({ user, params }) => { await auth.requireProject(user, uuid(params.id)); return es.leadFilesForProject(params.id); });
+route('GET', '/api/projects/:id/lead-files/:fid', async ({ res, user, params }) => {
+  await auth.requireProject(user, uuid(params.id)); const d = await es.leadFileForProject(params.id, uuid(params.fid)); if (!fs.existsSync(d.file)) throw new HttpError(404, 'File is missing from storage.');
+  const inline = /^(application\/pdf|image\/)/.test(d.mime);
+  res.writeHead(200, { ...SEC, 'content-type': d.mime, 'content-disposition': `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(d.name)}`, 'cache-control': 'private, no-store', 'content-security-policy': "default-src 'none'; sandbox" });
+  fs.createReadStream(d.file).pipe(res); return 'sent';
+});
+route('GET', '/api/projects/:id/lead-folder-files', async ({ user, params }) => { await auth.requireProject(user, uuid(params.id)); const [o] = await q('SELECT id FROM opportunities WHERE project_id=$1', [params.id]); return o ? folders.folderFiles(o.id) : { enabled: false, plans: [], proposals: [] }; });
 route('PUT', '/api/opportunities/:id', async ({ user, params, body }) => { await es.update(estWrite(user), uuid(params.id), body); return { ok: true }; });
 route('GET', '/api/opportunities/:id/folder-files', async ({ user, params }) => { estRead(user); return folders.folderFiles(uuid(params.id)); });
 route('POST', '/api/opportunities/:id/folder', async ({ user, params }) => { estWrite(user); return folders.ensureOpportunityFolder(uuid(params.id)); });
 route('POST', '/api/projects/:id/folder', async ({ user, params }) => { manage(user); return folders.ensureProjectFolder(uuid(params.id)); });
-route('GET', '/api/quickbooks/status', async ({ user }) => { auth.requireRole(user, auth.SUPER); return { ...(await qbo.status()), lastSync: await qbi.lastSync(), counts: await qbi.counts(), settings: await qbi.getSettings() }; });
+route('GET', '/api/quickbooks/status', async ({ user }) => { auth.requireRole(user, auth.SUPER); return { ...(await qbo.status()), lastSync: await qbi.lastSync(), counts: await qbi.counts(), settings: await qbi.getSettings(), testData: await qbr.summary() }; });
 // What the invoice-matching page needs to know, for anyone with that area (no keys, no connection controls).
 route('GET', '/api/quickbooks/review', async ({ user }) => { manage(user); const st = await qbo.status(); return { configured: st.configured, connected: st.connected, company: st.company, environment: st.environment, connectedEnvironment: st.connectedEnvironment, lastSync: await qbi.lastSync(), counts: await qbi.counts(), settings: await qbi.getSettings() }; });
 route('GET', '/api/quickbooks/invoices', async ({ req, user }) => { manage(user); return qbi.list(q1(req, 'status') || 'New', q1(req, 'search') || ''); });
@@ -254,6 +264,7 @@ route('GET', '/api/quickbooks/callback', async ({ req, res, user }) => {
   if (p.get('error')) throw bad('Intuit did not allow the connection (' + p.get('error') + ').');
   await qbo.finishConnect(p.get('code'), p.get('state'), p.get('realmId')); qbi.sync().catch((e) => console.error('QuickBooks first sync', e.message)); res.writeHead(302, { location: '/#/admin/connections', 'cache-control': 'no-store' }); res.end(); return 'sent';
 });
+route('POST', '/api/quickbooks/clear-test-data', async ({ user, body }) => { auth.requireRole(user, auth.SUPER); return qbr.clearTestData(user, body); });
 route('DELETE', '/api/quickbooks', async ({ user }) => { auth.requireRole(user, auth.SUPER); await qbo.disconnect(); return { ok: true }; });
 route('GET', '/api/sharepoint/status', async ({ req, user }) => { auth.requireRole(user, [...auth.MANAGE, 'Estimator']); return q1(req, 'test') === '1' && auth.SUPER.includes(user.role) ? sharepoint.status() : { configured: sharepoint.configured() }; });
 route('POST', '/api/opportunities/:id/status', async ({ user, params, body }) => es.transition(estWrite(user), uuid(params.id), body));

@@ -617,7 +617,17 @@ async function docsTab(p, canEdit, reload) {
       h('div', { class: 'kpi' }, h('div', { class: 'l' }, 'First furnished'), h('div', { class: 'v', style: 'font-size:1.2rem' }, n.firstFurnished || 'Not set')), h('div', { class: 'kpi' }, h('div', { class: 'l' }, 'Deadline (45 days)'), h('div', { class: 'v', style: 'font-size:1.2rem' }, n.due || '—')),
       h('div', { class: 'kpi' }, h('div', { class: 'l' }, 'Days left'), h('div', { class: 'v' }, n.status === 'Sent' ? 'Sent' : n.daysLeft ?? '—'))),
     n.status === 'Sent' ? h('p', { class: 'muted' }, `Sent ${n.sentDate}${n.method ? ' by ' + n.method : ''}${n.recipient ? ' to ' + n.recipient : ''}.`, n.documentUrl ? [' ', h('a', { href: n.documentUrl, target: '_blank', rel: 'noopener' }, 'View notice')] : '') : h('p', { class: 'muted' }, 'The deadline counts 45 days from the first day labor or materials were furnished. Confirm the rule for your situation with your attorney.')),
-    await projectDocs(p, canEdit, reload));
+    await leadDocsCard(p), await projectDocs(p, canEdit, reload));
+}
+// Everything gathered while this job was a lead (plans, proposal, submittals), kept with the project so the whole job's paperwork is in one place.
+async function leadDocsCard(p) {
+  const id = p.project.id, lead = await api('GET', `/projects/${id}/lead-files`).catch(() => null); if (!lead) return '';
+  const live = h('div'), KINDS = ['Plans', 'Proposal', 'Submittal', 'Other'];
+  api('GET', `/projects/${id}/lead-folder-files`).then((r) => { const rows = [...(r.plans || []).map((x) => ['Plans', x]), ...(r.proposals || []).map((x) => ['Proposal', x])]; if (rows.length) live.replaceChildren(h('label', { style: 'margin-top:.6rem' }, 'In the job folder in SharePoint'), rows.map(([k, x]) => h('div', {}, h('a', { href: x.webUrl, target: '_blank', rel: 'noopener' }, x.name), ' ', h('span', { class: 'pill' }, k)))); }).catch(() => {});
+  const link = (f) => h('a', { href: f.local === false ? f.spUrl || '#' : `/api/projects/${id}/lead-files/${f.id}`, target: '_blank', rel: 'noopener' }, f.name);
+  return h('div', { class: 'card' }, h('div', { class: 'row spread' }, h('h2', {}, 'From the lead'), lead.folderUrl ? h('a', { href: lead.folderUrl, target: '_blank', rel: 'noopener', class: 'small' }, 'Open the job folder') : ''),
+    h('p', { class: 'muted' }, `Files from estimating${lead.proposalId ? ` (proposal ${lead.proposalId})` : ''}. They stay with the job from the first bid to the finished project.`),
+    lead.files.length ? h('table', {}, h('tbody', {}, KINDS.flatMap((k) => lead.files.filter((f) => f.kind === k).map((f) => h('tr', {}, h('td', {}, h('span', { class: 'pill' }, f.kind)), h('td', {}, link(f), f.local === false ? h('span', { class: 'muted', style: 'font-size:12px' }, '  (in SharePoint)') : ''), h('td', { class: 'muted' }, String(f.at).slice(0, 10))))))) : h('p', { class: 'muted' }, 'No files were added to the lead.'), live);
 }
 
 // ------------------------------------------------------------------ compliance page
@@ -768,6 +778,21 @@ async function googleSigninCard() {
       h('p', { class: 'muted', style: 'font-size:13px' }, 'Where: console.cloud.google.com → the project you made for Gmail → APIs & Services → Credentials → your OAuth client → Authorized redirect URIs → Add URI → Save.')) : h('p', { class: 'err' }, 'The server does not know its own address (PUBLIC_URL).'),
     h('p', { class: o.google ? 'ok' : 'err' }, o.google ? `Ready: the "Sign in with Google" button is on the sign-in page for @${o.domain} accounts.` : 'The Google keys are not on the server yet (GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET).'));
 }
+// Going live: what to change at Intuit and on Render (only the owner can), then clearing the test figures read from the sandbox company.
+function qboGoLive(s, err) {
+  const t = s.testData || {}, sandbox = s.environment === 'sandbox', step = (n, body) => h('li', { style: 'margin:.35rem 0' }, body);
+  const clear = () => formModal('Clear QuickBooks Test Data', [h('p', { class: 'wide' }, `This permanently removes everything that came from the QuickBooks test company: ${t.invoices} invoice${t.invoices === 1 ? '' : 's'} (with their ${t.payments} payment${t.payments === 1 ? '' : 's'}), ${t.costs} cost${t.costs === 1 ? '' : 's'}, and ${t.waiting} row${t.waiting === 1 ? '' : 's'} waiting for review. Projects, vendors, subcontractors and everything you typed in yourself stay.`), field('Type CLEAR to confirm', (clear.box = h('input', { autocomplete: 'off' })), 'wide')],
+    async () => { await api('POST', '/quickbooks/clear-test-data', { confirm: clear.box.value }); render(); }, 'Clear Test Data');
+  return h('details', { class: 'card', style: 'margin-top:.8rem', open: sandbox && !!t.total ? true : null }, h('summary', { style: 'cursor:pointer;font-weight:600' }, 'Go Live With Your Real Company'),
+    h('ol', { style: 'padding-left:1.2rem' },
+      step(1, ['At developer.intuit.com open your app, then ', h('b', {}, 'Production Settings'), ' (Intuit asks for the app details, your privacy and terms links, and a short questionnaire). When it is approved you get a ', h('b', {}, 'Production'), ' Client ID and Client Secret. Add the redirect address shown above under the ', h('b', {}, 'Production'), ' Redirect URIs.']),
+      step(2, ['On Render, open the service, then ', h('b', {}, 'Environment'), '. Replace ', h('code', {}, 'QBO_CLIENT_ID'), ' and ', h('code', {}, 'QBO_CLIENT_SECRET'), ' with the Production values, ', h('b', {}, 'delete'), ' ', h('code', {}, 'QBO_ENVIRONMENT'), ' (or set it to ', h('code', {}, 'production'), '), and save. Render redeploys.']),
+      step(3, ['Back here: press ', h('b', {}, 'Disconnect'), ' on the test connection, then ', h('b', {}, 'Clear test data'), ' below.']),
+      step(4, ['Press ', h('b', {}, 'Connect QuickBooks'), ', sign in and choose your real company. Set the start date, and keep automatic logging off until you have looked over the first batch.'])),
+    sandbox ? h('p', { class: 'muted', style: 'font-size:13px' }, 'The server is still on the sandbox, so everything here is test data.') : h('p', { class: 'ok', style: 'font-size:13px' }, 'The server is on your live QuickBooks keys.'),
+    t.total ? h('div', { class: 'row' }, h('span', {}, `${t.invoices} invoices, ${t.costs} costs and ${t.waiting} waiting rows came from QuickBooks.`), t.allowed ? h('button', { class: 'danger', onclick: clear }, 'Clear Test Data') : h('span', { class: 'muted' }, t.why))
+      : h('p', { class: 'muted', style: 'font-size:13px' }, 'No QuickBooks data is stored right now.'));
+}
 async function quickbooksCard() {
   const s = await api('GET', '/quickbooks/status'), err = h('div'); const live = s.connected && s.connectedEnvironment === s.environment; const rows = live ? await api('GET', '/quickbooks/invoices?status=' + qbFilter + (qbSearch ? '&search=' + encodeURIComponent(qbSearch) : '')) : []; const here = location.origin + '/api/quickbooks/callback';
   const copy = (text) => h('button', { class: 'small', onclick: guard(err, async () => { await navigator.clipboard.writeText(text); notice(err, 'Copied. Paste it into the Intuit developer site exactly as it is.', 'ok'); }) }, 'Copy');
@@ -782,7 +807,8 @@ async function quickbooksCard() {
           h('div', { class: 'row' }, h('button', { onclick: guard(err, async () => { if (confirm('Disconnect QuickBooks? Anything already imported stays.')) { await api('DELETE', '/quickbooks'); render(); } }) }, 'Disconnect')),
           live ? qboInvoices(s, rows, err) : '')
       : h('div', {}, h('p', { class: 'muted' }, `Keys found. The server is set to talk to Intuit's ${s.environment === 'sandbox' ? 'SANDBOX (test companies only)' : 'LIVE (real companies only)'} servers (${s.apiHost}). Press Connect, sign in to QuickBooks and choose the company.`), h('p', { class: s.environment === 'sandbox' ? 'muted' : 'err', style: 'font-size:13px' }, 'Render setting QBO_ENVIRONMENT: ' + (s.environmentSetting === null ? 'NOT SET' : JSON.stringify(s.environmentSetting)) + (s.environment === 'sandbox' ? '' : '. For a sandbox (test) company it must be exactly: sandbox')),
-          h('div', { class: 'row' }, h('button', { class: 'primary', onclick: guard(err, async () => { location.href = (await api('GET', '/quickbooks/connect')).url; }) }, 'Connect QuickBooks'))));
+          h('div', { class: 'row' }, h('button', { class: 'primary', onclick: guard(err, async () => { location.href = (await api('GET', '/quickbooks/connect')).url; }) }, 'Connect QuickBooks'))),
+    qboGoLive(s, err));
 }
 // QuickBooks invoices waiting for review, and the review screen. Importing only happens when a person presses Import (or when a match is
 // strong enough and automatic logging is on).

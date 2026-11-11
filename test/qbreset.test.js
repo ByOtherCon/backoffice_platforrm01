@@ -51,3 +51,7 @@ test('go-live: clearing QuickBooks test data removes only what came from QuickBo
   const st = (await q(`SELECT value FROM app_settings WHERE key='qbo_sync'`))[0].value; assert.deepEqual([st.startDate, st.autoImport, st.since, st.lastRun], ['2026-01-01', false, undefined, undefined]);   // choices kept, sync position reset
   assert.equal(r.body.now.total, 0);
 });
+
+test('the license agreement and privacy policy pages are public, for Intuit\'s app review', async () => {
+  for (const [path, text] of [['/terms', 'End-User License Agreement'], ['/privacy', 'Privacy Policy']]) { const r = await fetch(base + path); assert.equal(r.status, 200); assert.match(await r.text(), new RegExp(text)); }
+});

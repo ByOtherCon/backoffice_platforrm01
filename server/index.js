@@ -394,6 +394,8 @@ function serveStatic(req, res) {
   let rel = decodeURIComponent(new URL(req.url, 'http://x').pathname);
   if (rel === '/') rel = '/index.html';
   if (rel === '/clock') rel = '/clock.html';
+  if (rel === '/terms') rel = '/terms.html';       // public pages Intuit asks for when an app goes live
+  if (rel === '/privacy') rel = '/privacy.html';
   const file = path.normalize(path.join(PUBLIC, rel));
   if (!file.startsWith(PUBLIC + path.sep) || !fs.existsSync(file) || !fs.statSync(file).isFile()) { res.writeHead(404, SEC); return res.end('Not found'); }
   res.writeHead(200, { ...SEC, 'content-type': TYPES[path.extname(file)] || 'application/octet-stream', 'cache-control': 'no-cache' });

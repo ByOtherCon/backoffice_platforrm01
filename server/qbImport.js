@@ -145,15 +145,8 @@ export async function importInvoice(invoiceId, b) {
       if (a.projectTradeId) { if (!ptIds.has(a.projectTradeId)) throw bad('A line is set to a trade that is not on that project.'); return a.projectTradeId; }
       return null;
     };
-    const override = b.retainageHeld === undefined || b.retainageHeld === '' || b.retainageHeld === null ? null : money(b.retainageHeld, 'Retainage held');
-    // No retainage line and none typed in: the project's default percent applies, but never more than is still unpaid. An invoice QuickBooks shows as paid in full has no retainage held back.
-    if (override === null && !lines.some((l) => l.retainage)) {
-      const paid = Number((await t('SELECT COALESCE(SUM(amount),0) AS n FROM qb_payments WHERE invoice_qb_id=$1', [inv.qb_id]))[0].n);
-      const room = Math.max(0, Math.round((Number(inv.total) - paid) * 100) / 100), wanted = Math.round(Number(inv.total) * Number(proj.retainage_pct)) / 100;
-      if (paid > 0 && wanted > room) b = { ...b, retainageHeld: room };
-    }
     const heldIn = b.retainageHeld === undefined || b.retainageHeld === '' || b.retainageHeld === null ? null : money(b.retainageHeld, 'Retainage held');
-    const { splits, unassigned, badSplit } = splitByTrade(lines, assignOf, Number(proj.retainage_pct), heldIn, weights);
+    const { splits, unassigned, badSplit } = splitByTrade(lines, assignOf, 0, heldIn, weights)   // no retainage unless the invoice has a retainage line or one is typed in;
     if (badSplit.length) throw bad(`The amounts you split must add up to the line: ${badSplit.slice(0, 3).map((i) => lines[i].description || lines[i].itemName || 'line ' + (i + 1)).join('; ')}`);
     if (unassigned.length) throw bad(`Choose a trade for: ${unassigned.slice(0, 3).map((i) => lines[i].description || lines[i].itemName || 'line ' + (i + 1)).join('; ')}${unassigned.length > 3 ? '…' : ''}`);
     if (!splits.length) throw bad('There is nothing to bill on this invoice.');

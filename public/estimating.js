@@ -53,25 +53,7 @@ function filesPanel(o, canWrite, err) {
     o.projectDocs?.length ? h('div', { style: 'margin-top:.6rem' }, h('label', {}, 'Project documents'), o.projectDocs.map((d) => h('div', {}, h('a', { href: d.has_file ? `/api/documents/${d.id}/file` : d.url, target: '_blank', rel: 'noopener' }, d.name), ' ', h('span', { class: 'pill' }, d.category)))) : '');
 }
 
-// ---------------------------------------------------------------- the shared folder: open it in SharePoint or in File Explorer
-// A web page cannot open File Explorer by itself. So "Lead Folder" gives a small shortcut file that Windows opens in Explorer,
-// pointing at the folder where the SharePoint library is synced on this PC (set once, remembered in this browser).
-const SYNC_KEY = 'byother.syncRoot';
-const syncRoot = () => { try { return localStorage.getItem(SYNC_KEY) || ''; } catch { return ''; } };
-const setSyncRoot = (v) => { try { localStorage.setItem(SYNC_KEY, v); } catch { /* private window: asked again next time */ } };
-function askSyncRoot() {
-  const cur = syncRoot(), v = prompt('Where is the shared library on this PC?\n\nIn File Explorer, find the folder OneDrive made when you pressed Sync in SharePoint (for example C:\\Users\\Benny\\by Other Construction\\ByOther Projects - Documents) and paste its full path.', cur || '');
-  if (v === null) return null; const t = v.trim().replace(/[\\/]+$/, ''); if (!t) return null; setSyncRoot(t); return t;
-}
-const localPath = (root, spPath) => root + '\\' + String(spPath).split('/').join('\\');
-function openInExplorer(name, spPath) {
-  const root = syncRoot() || askSyncRoot(); if (!root) return; const path = localPath(root, spPath);
-  const url = 'file:///' + path.replace(/\\/g, '/').split('/').map((seg, i) => (i === 0 && /^[A-Za-z]:$/.test(seg) ? seg : encodeURIComponent(seg))).join('/');
-  const blob = new Blob([`[InternetShortcut]\r\nURL=${url}\r\n`], { type: 'application/octet-stream' }), a = document.createElement('a');
-  a.href = URL.createObjectURL(blob); a.download = String(name).replace(/[\\/:*?"<>|]/g, ' ').slice(0, 80) + '.url'; document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-}
-// The one-click version used in the lists.
-const leadFolderButton = (o) => (o.spPath ? h('button', { type: 'button', class: 'small', title: 'Opens the lead\'s folder in File Explorer', onclick: () => openInExplorer(o.name, o.spPath) }, 'Lead Folder') : h('span', { class: 'muted' }, '—'));
+// ---------------------------------------------------------------- the shared folder: opened in SharePoint
 // Opens the first BID SET plan PDF from the job's 01. DL folder (or says there is none yet).
 const openPlansButton = (o) => h('button', { type: 'button', class: 'small', onclick: async () => { const win = window.open('', '_blank'); try { const r = await api('GET', `/opportunities/${o.id}/folder-files`); if (r.plans.length) win.location = r.plans[0].webUrl; else { win.close(); alert('There is no BID SET PDF in the 01. DL folder yet.'); } } catch (e) { win.close(); alert(e.message); } } }, 'Open Plans');
 // For one record's page: SharePoint link, File Explorer shortcut, the path to copy. (A project that has no folder can still be given one.)
@@ -234,7 +216,7 @@ function bidFeedBar(feed, err, w) {
   return bar;
 }
 const weekLabel = (n) => (n.startsWith('Week Of ') ? fmtDay(n.slice(8)) : n === 'Due This Week — Too Tight To Bid' ? 'This week — too tight to bid' : n === 'Missed / Past Due' ? 'Missed / past due' : n === 'No Bid Due Date Provided' ? 'No bid due date provided' : n);
-const BID_COLS = [['week', 'Week Of'], ['project', 'Project / Location'], ['gc', 'General Contractors / Contact'], ['due', 'Bid Due'], ['status', 'Status'], ['invitation', 'Invitation'], ['onedrive', 'Lead Folder']];
+const BID_COLS = [['week', 'Week Of'], ['project', 'Project / Location'], ['gc', 'General Contractors / Contact'], ['due', 'Bid Due'], ['status', 'Status'], ['invitation', 'Invitation'], ['onedrive', 'Plans']];
 function inviteCell(o) {
   const inv = (o.invitations || []).filter((i) => i.link), list = inv.length ? inv : o.link ? [{ gc: o.gc, link: o.link }] : [];
   return h('td', { style: 'white-space:nowrap' }, list.length ? list.map((i) => h('div', {}, h('a', { href: i.link, target: '_blank', rel: 'noopener', title: `Open the ${i.gc} invitation on BuildingConnected` }, list.length > 1 ? `View · ${i.gc.split(/[ ,]/)[0]}` : 'View Invitation'))) : '—', o.emailLink ? h('div', {}, h('a', { href: o.emailLink, target: '_blank', rel: 'noopener', class: 'muted', style: 'font-size:13px' }, 'Email')) : '');
@@ -257,7 +239,7 @@ function bidsPanel(data, err, w, feed) {
           h('td', { style: 'white-space:normal;min-width:240px' }, h('strong', {}, o.name), o.client && o.client !== o.gc ? sub('Client: ' + o.client) : '', sub([addrLine(o), o.mall ? 'Shopping center' : '', o.type, o.sourceType].filter(Boolean).join(' · '))),
           h('td', { style: 'white-space:normal;min-width:200px' }, contactBlock(o)), dueCell(o),
           h('td', {}, statusSelect(o, w), o.autoDeclined ? sub('Auto-declined') : o.declinedReason ? sub(o.declinedReason) : ''),
-          inviteCell(o), h('td', {}, h('div', { class: 'stack' }, leadFolderButton(o), o.spPath ? openPlansButton(o) : '')),
+          inviteCell(o), h('td', {}, h('div', { class: 'stack' }, o.spPath ? openPlansButton(o) : h('span', { class: 'muted' }, '—'))),
           h('td', {}, h('div', { class: 'stack' }, h('button', { class: 'small', onclick: () => (location.hash = '#/estimating/' + o.id) }, 'Open'), w ? h('button', { class: 'small', onclick: () => (location.hash = `#/estimating/${o.id}/edit`) }, 'Edit') : ''))))))) : h('p', { class: 'muted', style: 'padding:1rem 0' }, feed.connected ? 'No new opportunities. They appear after the next refresh (8:00 AM and 1:00 PM), or press Refresh now.' : 'No opportunities yet. Connect Gmail in Admin, or add one with + Opportunity.')));
 }
 
@@ -269,12 +251,12 @@ function proposalsPanel(data, err, w) {
   const open = (o) => (location.hash = '#/estimating/' + o.id);
   const filters = ['Active', 'Reviewing', 'Accepted', 'Started', 'Submitted', 'Decided Not To Submit', 'All'];
   return h('div', { class: 'card' }, h('h2', {}, 'Proposal Tracker'), filterChips(filters, data.filter, data.counts, (k) => { state.propFilter = k; render(); }), LEGEND,
-    data.rows.length ? h('div', { class: 'scroll' }, h('table', { class: 'biglist' }, h('thead', {}, h('tr', {}, ['Proposal / Project', 'General Contractors', 'Estimator / Scope', 'Due', 'Status', 'Proposed Price By Trade', 'Invitation', 'Lead Folder', 'Actions'].map((t) => h('th', {}, t)))),
+    data.rows.length ? h('div', { class: 'scroll' }, h('table', { class: 'biglist' }, h('thead', {}, h('tr', {}, ['Proposal / Project', 'General Contractors', 'Estimator / Scope', 'Due', 'Status', 'Proposed Price By Trade', 'Invitation', 'Plans', 'Actions'].map((t) => h('th', {}, t)))),
       h('tbody', {}, data.rows.map((o) => h('tr', { class: 'tone-' + (o.tone || 'none') },
         h('td', { style: 'white-space:normal;min-width:220px' }, o.proposalId ? h('strong', {}, o.proposalId) : pill('Reviewing'), h('div', { class: 'edit', onclick: () => open(o) }, o.name), sub(addrLine(o)), o.expiry === 'expiring' ? h('div', { class: 'neg', style: 'font-size:12px;font-weight:600' }, 'Lead is expiring') : ''),
         h('td', { style: 'white-space:normal;min-width:180px' }, contactBlock(o)), h('td', { style: 'white-space:normal' }, o.estimator || '—', o.consideredTrades.length ? sub(o.consideredTrades.map((t) => t.name).join(', ')) : ''),
         h('td', {}, fmtDay(o.due), sub(o.countdown)), h('td', {}, statusSelect(o, w)), h('td', {}, tradeList(o)),
-        inviteCell(o), h('td', {}, h('div', { class: 'stack' }, leadFolderButton(o), o.spPath ? openPlansButton(o) : '')),
+        inviteCell(o), h('td', {}, h('div', { class: 'stack' }, o.spPath ? openPlansButton(o) : h('span', { class: 'muted' }, '—'))),
         h('td', {}, h('div', { class: 'stack' }, w && ['Accepted', 'Started'].includes(o.status) ? h('button', { class: 'small primary', onclick: () => submitModal(o) }, 'Submit') : '', w && o.tone === 'red' ? h('button', { class: 'small danger', title: 'The due date has arrived and nothing was submitted: submit it, or say why not', onclick: () => statusModal(o, 'Decided Not To Submit').catch((e) => alert(e.message)) }, 'Decide now') : '', w ? h('button', { class: 'small', onclick: () => (location.hash = `#/estimating/${o.id}/edit`) }, 'Edit') : ''))))))) : h('p', { class: 'muted', style: 'padding:1rem 0' }, 'Nothing here yet. Mark a New opportunity Reviewing or Accepted from Bid Opportunities.'));
 }
 

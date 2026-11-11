@@ -862,7 +862,7 @@ async function qboReview(inv) {
       return h('tr', {}, h('td', {}, l.description || l.itemName || 'Line ' + (i + 1)), h('td', { class: 'n' }, usd(l.amount)), h('td', {}, sel, box));
     });
     body.replaceChildren(h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'On the QuickBooks invoice'), h('th', { class: 'n' }, 'Amount'), h('th', {}, 'Goes to'))), h('tbody', {}, rowsEl))),
-      h('p', { class: 'muted', style: 'font-size:13px' }, info.trades.length ? `A line can go to one trade, to the entire project (shared across the trades by contract amount), or be split by hand. Retainage: leave the box blank to use the invoice's own retainage line, or this project's ${info.retainagePct}%.` : 'This project has no trades yet. Add them (or apply the contract) first.'));
+      h('p', { class: 'muted', style: 'font-size:13px' }, info.trades.length ? `A line can go to one trade, to the entire project (shared across the trades by contract amount), or be split by hand. Retainage: leave the box blank for none (or the invoice's own retainage line, if it has one). Type an amount to hold some back.` : 'This project has no trades yet. Add them (or apply the contract) first.'));
   };
   proj.onchange = guard(err, draw); draw().catch((e) => notice(err, e.message));
   const pays = inv.payments.length ? h('p', { class: 'muted wide' }, `Payments already received in QuickBooks: ${inv.payments.map((p) => `${usd(p.amount)} on ${p.date}`).join(', ')}. They are added with the invoice.`) : '';

@@ -141,7 +141,7 @@ test("a project's own page can list the invoices that look like it", async () =>
   assert.equal((await call('GET', `/api/projects/${pid}/qb-suggestions`, null, pm)).status, 403);
 });
 
-test('an invoice QuickBooks shows as paid in full is imported with no retainage held back, and a part-paid one holds back no more than is unpaid', async () => {
+test('no retainage is added by the import: only an invoice retainage line or an amount typed in holds any back', async () => {
   const mk = (id, num, total) => invoices.push({ Id: id, DocNumber: num, TxnDate: '2026-11-26', TotalAmt: total, CustomerRef: { value: '97', name: 'Paid Job' }, MetaData: { LastUpdatedTime: LU }, Line: [{ DetailType: 'SalesItemLineDetail', Amount: total, Description: 'Demolition deposit', SalesItemLineDetail: { ItemRef: { name: 'Demolition' } } }] });
   mk('140', 'PAID-1', 3409); mk('141', 'PART-1', 1000);
   payments.push({ Id: '950', TxnDate: '2026-11-27', TotalAmt: 3409, MetaData: { LastUpdatedTime: LU }, Line: [{ Amount: 3409, LinkedTxn: [{ TxnId: '140', TxnType: 'Invoice' }] }] });
@@ -151,5 +151,12 @@ test('an invoice QuickBooks shows as paid in full is imported with no retainage 
   const a = await call('POST', `/api/quickbooks/invoices/${full.id}/import`, { projectId: pid, lines: [{ index: 0, projectTradeId: ptDemo }] }, asst); assert.equal(a.status, 200, JSON.stringify(a.body));
   const b = await call('POST', `/api/quickbooks/invoices/${part.id}/import`, { projectId: pid, lines: [{ index: 0, projectTradeId: ptDemo }] }, asst); assert.equal(b.status, 200, JSON.stringify(b.body));
   const rows = (await q(`SELECT number, amount::float8 AS amount, retainage_held::float8 AS ret FROM client_invoices WHERE number IN ('PAID-1','PART-1') ORDER BY number`));
-  assert.deepEqual(rows.map((r) => [r.number, r.amount, r.ret]), [['PAID-1', 3409, 0], ['PART-1', 1000, 50]]);   // 10% would be 100, but only $50 is unpaid
+  assert.deepEqual(rows.map((r) => [r.number, r.amount, r.ret]), [['PAID-1', 3409, 0], ['PART-1', 1000, 0]]);   // the project's 10% is not applied on its own
+});
+
+test('retainage typed on the review screen is used', async () => {
+  invoices.push({ Id: '142', DocNumber: 'TYPED-1', TxnDate: '2026-11-28', TotalAmt: 2000, CustomerRef: { value: '98', name: 'Typed Job' }, MetaData: { LastUpdatedTime: LU }, Line: [{ DetailType: 'SalesItemLineDetail', Amount: 2000, Description: 'Demolition', SalesItemLineDetail: { ItemRef: { name: 'Demolition' } } }] });
+  await call('POST', '/api/quickbooks/sync', {}, asst); const t = await staged('TYPED-1');
+  const r = await call('POST', `/api/quickbooks/invoices/${t.id}/import`, { projectId: pid, lines: [{ index: 0, projectTradeId: ptDemo }], retainageHeld: 150 }, asst); assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal((await q(`SELECT retainage_held::float8 AS r FROM client_invoices WHERE number='TYPED-1'`))[0].r, 150);
 });

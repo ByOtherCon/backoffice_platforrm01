@@ -1192,12 +1192,54 @@ function recordForm(sec, rec, done) {
     return { employee: true, el: h('div', { class: 'wide', style: 'border-top:1px solid var(--line);margin-top:.4rem;padding-top:.6rem' }, h('label', {}, 'W-9 (Needed For The 1099)'), field('W-9 File', h('div', {}, w9, h('div', {}, have ? h('span', { class: 'ok', style: 'font-size:13px' }, 'W-9 on file. Choose a file to replace it.') : h('span', { class: 'muted', style: 'font-size:13px' }, 'No W-9 on file yet.')))), h('p', { class: 'muted', style: 'font-size:12px' }, 'It holds a tax number, so it stays private in the platform (not copied to SharePoint) and only the owner and Sub Admin can open it. The address you verify above must match the address on the W-9.')), w9 }; })() : sec.kind === 'subcontractors' ? (() => {
     const oerr = h('div'), have = rec?.docs || {}, w9 = h('input', { type: 'file', accept: '.pdf,.png,.jpg,.jpeg' }), kind = h('select', {}, h('option', { value: '' }, rec ? 'Leave as it is' : 'Add the insurance later'), h('option', { value: 'COI' }, 'Certificate Of Insurance (COI)'), h('option', { value: 'Exemption' }, 'Workers Comp Exemption')), file = h('input', { type: 'file', accept: '.pdf,.png,.jpg,.jpeg' }), exp = h('input', { type: 'date' });
     const status = (c, l) => (have[c] ? h('span', { class: 'ok', style: 'font-size:13px' }, `${l} on file${have[c].expires ? ' (expires ' + have[c].expires + ')' : ''}. Choose a file to replace it.`) : h('span', { class: 'muted', style: 'font-size:13px' }, `No ${l} on file yet.`));
+    // Each file is read the moment it is chosen (one at a time): the W-9's address is checked against the one entered, and insurance fills in its type, expiry and coverages.
+    const notes = { w9: h('div', { style: 'font-size:13px;margin:.3rem 0' }), insurance: h('div', { style: 'font-size:13px;margin:.3rem 0' }) }, polNote = h('div', { class: 'muted', style: 'font-size:11px;line-height:1.4;margin-top:.25rem' });
+    let busy = false;
+    const showPolicies = (policies, kindName, expires) => polNote.replaceChildren(...(policies?.length ? [h('div', {}, policies.map((p) => `${p.coverage}${p.expires ? ' · ends ' + p.expires : ' · date not found'}`).join('  |  ')), expires ? h('div', {}, `Expiration used: ${expires} (the earliest of these)`) : ''] : expires ? [h('div', {}, `${kindName === 'Exemption' ? 'Workers comp exemption' : 'Coverage'} · ends ${expires}`)] : []));
+    showPolicies(have.COI?.policies || have.Exemption?.policies, have.COI ? 'COI' : 'Exemption', have.COI?.policies?.length ? have.COI.expires : have.Exemption?.expires);
+    const say = (which, ...nodes) => notes[which].replaceChildren(...nodes.filter(Boolean));
+    const line = (a) => [a.street, a.city, [a.state, a.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+    const lock = (on) => { busy = on; w9.disabled = file.disabled = kind.disabled = on; };
+    const readFile = async (input, which) => {
+      const f = input.files[0]; if (!f) return; if (busy) { input.value = ''; return; }
+      lock(true); say(which, h('span', { class: 'muted' }, `Reading ${f.name}…`));
+      try {
+        const e = addr ? addr.get() : {}, qs = new URLSearchParams({ name: inputs.name.value || '', street: e.street || '', city: e.city || '', state: e.state || '', zip: e.zip || '' });
+        const r = await uploadFile(`/subcontractors/read-document?${qs}`, f);
+        if (r.error) { say(which, h('span', { class: 'err' }, `Could not read ${f.name} automatically (${r.error}). Fill it in by hand.`)); return; }
+        const out = [];
+        if (which === 'w9') {
+          if (r.kind !== 'W-9') out.push(h('div', { class: 'err' }, `This does not look like a W-9 (it looks like ${r.kind === 'COI' ? 'an insurance certificate' : r.kind === 'Exemption' ? 'a workers comp exemption' : 'another kind of document'}). Check that you chose the right file.`));
+          else if (addr && r.address) {
+            if (r.addressMatch === 'same') { addr.verifyNow(); out.push(h('div', { class: 'ok' }, `The address on the W-9 matches the address entered (${line(r.address)}). Checked.`)); }
+            else if (r.addressMatch === 'none-entered') { addr.set(r.address, null, true); addr.verifyNow(); out.push(h('div', { class: 'ok' }, `Address filled in from the W-9: ${line(r.address)}.`)); }
+            else { const before = addr.get(); addr.set(r.address, null, true); addr.verifyNow();
+              out.push(h('div', { class: 'err' }, `The W-9 shows a different address than the one entered. The W-9 address is now filled in: ${line(r.address)}. ${before.street ? ` (You had entered: ${line(before)}.)` : ''}`, ' ', h('button', { type: 'button', class: 'small', onclick: () => { addr.set(before, null, true); addr.verifyNow(); say(which, h('span', { class: 'muted' }, 'Back to the address you entered.')); } }, 'Use The Address I Entered'))); }
+          } else if (addr) out.push(h('div', { class: 'err' }, 'The address could not be read from the W-9. Enter it by hand.'));
+          if (r.nameDiffers) out.push(h('div', { class: 'err' }, `The name on the W-9 (${r.name}) is different from the name entered.`));
+        } else {
+          if (r.kind === 'COI' || r.kind === 'Exemption') kind.value = r.kind; else out.push(h('div', { class: 'err' }, `This does not look like insurance or an exemption (it looks like ${r.kind === 'W-9' ? 'a W-9' : 'another kind of document'}). Check that you chose the right file.`));
+          if (r.kind === 'COI' || r.kind === 'Exemption') {
+            exp.value = r.expires || ''; showPolicies(r.policies, r.kind, r.expires);
+            out.push(r.expires ? h('div', { class: 'ok' }, `${r.kind === 'COI' ? 'Certificate' : 'Exemption'} read. Expiration set to ${r.expires}${r.policies.length > 1 ? ' (the earliest of the coverages)' : ''}.`) : h('div', { class: 'err' }, 'The expiration date could not be read. Enter it.'));
+            if (addr && r.address) {
+              if (r.addressMatch === 'none-entered') { addr.set(r.address, null, true); addr.verifyNow(); out.push(h('div', { class: 'ok' }, `Address filled in from the document: ${line(r.address)}.`)); }
+              else if (r.addressMatch === 'different') out.push(h('div', { class: 'err' }, `The address on this document (${line(r.address)}) is different from the address above. The address above was kept.`));
+            }
+          }
+        }
+        for (const wmsg of (r.warnings || []).slice(0, 2)) out.push(h('div', { class: 'muted' }, wmsg));
+        say(which, ...out);
+      } catch (e) { say(which, h('span', { class: 'err' }, e.message)); } finally { lock(false); }
+    };
+    w9.onchange = () => readFile(w9, 'w9'); file.onchange = () => readFile(file, 'insurance');
     const overrideRow = isSuper() && rec?.override ? h('div', { class: 'wide' }, h('p', { class: 'muted', style: 'margin:.2rem 0' }, 'This subcontractor was verified by hand (an override), not by its documents.'), h('button', { type: 'button', class: 'small', onclick: guard(oerr, async () => { await api('POST', `/admin/subcontractors/${rec.id}/verify`, { override: false }); render(); }) }, 'Remove The Override')) : '';
-    return { el: h('div', { class: 'wide', style: 'border-top:1px solid var(--line);margin-top:.4rem;padding-top:.6rem' }, overrideRow, h('label', {}, 'Documents (needed before this subcontractor can be paid)'), h('div', { class: 'form' }, field('W-9', h('div', {}, w9, h('div', {}, status('W-9', 'W-9')))), field('Insurance', kind), field('Insurance File', h('div', {}, file, h('div', {}, status('COI', 'Certificate'), ' ', status('Exemption', 'Exemption')))), field('Insurance Expires', exp)),
-      h('p', { class: 'muted', style: 'font-size:12px' }, 'A W-9 and an insurance certificate that has not expired (or a workers comp exemption) make a subcontractor verified. The files are also saved in SharePoint under ByOther / Subcontractors / this company or person.'), oerr),
-      w9, kind, file, exp }; })() : null;
+    return { el: h('div', { class: 'wide', style: 'border-top:1px solid var(--line);margin-top:.4rem;padding-top:.6rem' }, overrideRow, h('label', {}, 'Documents (needed before this subcontractor can be paid)'), h('div', { class: 'form' }, field('W-9', h('div', {}, w9, h('div', {}, status('W-9', 'W-9')), notes.w9)), field('Insurance', h('div', {}, kind, polNote)), field('Insurance File', h('div', {}, file, h('div', {}, status('COI', 'Certificate'), ' ', status('Exemption', 'Exemption')))), field('Insurance Expires', exp), h('div', { class: 'wide' }, notes.insurance)),
+      h('p', { class: 'muted', style: 'font-size:12px' }, 'Choose a file and it is read right away: the address on the W-9 is compared with the one above, and an insurance certificate fills in its type and the earliest date any coverage ends. One file at a time.'), h('p', { class: 'muted', style: 'font-size:12px' }, 'A W-9 and an insurance certificate that has not expired (or a workers comp exemption) make a subcontractor verified. The files are also saved in SharePoint under ByOther / Subcontractors / this company or person.'), oerr),
+      w9, kind, file, exp, busy: () => busy }; })() : null;
   const pin = sec.kind === 'employees' && !rec ? h('input', { type: 'password', inputmode: 'numeric', maxlength: 8, autocomplete: 'new-password', placeholder: '4 to 8 digits (optional now)' }) : null;
   formModal(rec ? `Edit ${rec.name}` : `Add ${sec.one}`, [...visibleFields(sec).filter(([, , t]) => t !== 'address').map(([k, l]) => field(l, inputs[k])), addr ? h('div', { class: 'wide' }, addr.head, addr.el) : '', docs ? docs.el : '', pin ? field('Time clock PIN', pin) : ''], async () => {
+    if (docs && docs.busy && docs.busy()) throw new Error('Wait for the document to finish reading.');
     const body = {}; if (addr) Object.assign(body, addr.payload()); for (const [k, , t] of visibleFields(sec).filter(([, , t]) => t !== 'address')) { const v = inputs[k].value; if (t === 'number') { if (v !== '') body[k] = Number(v); } else if (v !== '' || rec) body[k] = v; }
     const saved = await api(rec ? 'PUT' : 'POST', `/admin/${sec.kind}${rec ? '/' + rec.id : ''}`, body);
     if (pin && pin.value) await api('PUT', `/admin/employees/${saved.id}/pin`, { pin: pin.value });

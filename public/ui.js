@@ -45,19 +45,34 @@ export const oneAtATime = (fn) => { let busy = false; return async (...a) => { i
 export const folderError = (e) => (e?.name === 'AbortError' ? new Error('No folder was chosen.') : /user gesture|already active/i.test(e?.message || '') ? new Error('Press the button once and choose the folder in the window that opens.') : e);
 export const guard = (box, fn) => async (...a) => { try { notice(box, ''); await fn(...a); } catch (e) { notice(box, e.message); } };
 
-export function modal(title, content) {
-  const bg = h('div', { class: 'modal-bg', onclick: (e) => { if (e.target === bg) bg.remove(); } }, h('div', { class: 'modal' }, h('div', { class: 'row spread' }, h('h2', {}, title), h('button', { class: 'small', onclick: () => bg.remove() }, 'Close')), content));
-  document.body.append(bg); return bg;
+// A snapshot of everything typed or chosen in a window, to tell whether anything was entered.
+const formState = (root) => [...root.querySelectorAll('input, select, textarea')].map((el) => (el.type === 'file' ? [...(el.files || [])].map((f) => f.name + f.size).join(',') : el.type === 'checkbox' || el.type === 'radio' ? String(el.checked) : el.value)).join('\u0001');
+// mode: 'info' closes on a click outside; 'new' (a record being added) closes on a click outside, but asks first when something was entered;
+// 'edit' (data that already exists) only closes with Close, Cancel or Save, so a stray click never loses the changes.
+export function modal(title, content, opts = {}) {
+  const mode = opts.mode ?? (isNewForm(title) ? 'new' : content?.querySelector?.('form') ? 'edit' : 'info');
+  let downOnBackdrop = false, start = '';
+  const box = h('div', { class: 'modal' }, h('div', { class: 'row spread' }, h('h2', {}, title), h('button', { class: 'small', type: 'button', onclick: () => bg.remove() }, 'Close')), content);
+  const bg = h('div', { class: 'modal-bg', onmousedown: (e) => { downOnBackdrop = e.target === bg; }, onclick: (e) => {
+    const real = e.target === bg && downOnBackdrop; downOnBackdrop = false;   // a drag that began inside the window (selecting text) never counts
+    if (!real || mode === 'edit') return;
+    if (mode === 'new' && formState(box) !== start && !confirm('Close without saving what you entered?')) return;
+    bg.remove();
+  } }, box);
+  document.body.append(bg); start = formState(box); return bg;
 }
 
 export const todayStr = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 
 export const field = (label, input, cls2 = '') => h('div', { class: cls2 }, h('label', {}, label), input);
 
+// New records (a title starting with Add, New, Enter, Vendor invoice, Review or Import) can be dismissed by clicking outside, after a check when something was typed.
+// Everything else, every form for data that already exists, has to be saved, cancelled or closed on purpose.
+function isNewForm(title) { return /^(add|new|enter|vendor invoice|review receipt|import|change order from a document)\b/i.test(String(title).trim()); }
 export function formModal(title, fields, onSave, saveLabel = 'Save') {
   const err = h('div');
   const bg = modal(title, h('form', { onsubmit: guard(err, async (e) => { e.preventDefault(); await onSave(); bg.remove(); }) },
-    h('div', { class: 'form' }, fields), err, h('div', { class: 'row', style: 'margin-top:1rem;justify-content:flex-end' }, h('button', { class: 'primary', type: 'submit' }, saveLabel))));
+    h('div', { class: 'form' }, fields), err, h('div', { class: 'row', style: 'margin-top:1rem;justify-content:flex-end;gap:.5rem' }, h('button', { type: 'button', onclick: () => bg.remove() }, 'Cancel'), h('button', { class: 'primary', type: 'submit' }, saveLabel))), { mode: isNewForm(title) ? 'new' : 'edit' });
   return bg;
 }
 

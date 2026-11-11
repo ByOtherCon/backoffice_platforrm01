@@ -35,6 +35,7 @@ import * as qbc from './qbCosts.js';
 import * as sv from './subVerify.js';
 import * as qbo from './quickbooks.js';
 import * as qbr from './qbReset.js';
+import * as vr from './vendorRead.js';
 import * as qbi from './qbImport.js';
 import * as acc from './access.js';
 import * as gl from './googleLogin.js';
@@ -363,6 +364,8 @@ route('GET', '/api/records/:kind/:id/attached', async ({ user, params }) => { st
 route('GET', '/api/trade-options', async ({ user }) => { manage(user); const ps = await q('SELECT id, name FROM projects WHERE active ORDER BY name'); const ts = ps.length ? await q('SELECT pt.id, pt.project_id, t.name FROM project_trades pt JOIN trades t ON t.id=pt.trade_id WHERE pt.project_id = ANY($1::uuid[]) ORDER BY t.sort, t.name', [ps.map((p) => p.id)]) : []; return ps.map((p) => ({ ...p, trades: ts.filter((t) => t.project_id === p.id).map((t) => ({ id: t.id, name: t.name })) })); });
 const q1 = (req, k) => new URL(req.url, 'http://x').searchParams.get(k) || undefined;
 const fname = (req) => decodeURIComponent(String(req.headers['x-file-name'] || 'upload'));
+// The subcontractor form reads each file as it is chosen (nothing is saved yet) and says how its address compares with what was typed.
+route('POST', '/api/subcontractors/read-document', async ({ req, user }) => { manage(user); return vr.previewRead(user, await readRaw(req), fname(req), { name: q1(req, 'name') || '', address: { street: q1(req, 'street') || '', city: q1(req, 'city') || '', state: q1(req, 'state') || '', zip: q1(req, 'zip') || '' } }); }, { raw: true });
 route('POST', '/api/documents/upload', async ({ req, user }) => { manage(user); return dc.uploadDocument(user, { category: q1(req, 'category'), name: q1(req, 'name'), filename: fname(req), projectId: q1(req, 'projectId'), subcontractorId: q1(req, 'subcontractorId'), employeeId: q1(req, 'employeeId'), expiresOn: q1(req, 'expiresOn'), bytes: await readRaw(req) }); }, { raw: true });
 route('POST', '/api/documents', async ({ user, body }) => { manage(user); return dc.addLink(user, body); });
 route('GET', '/api/documents', async ({ req, user }) => { const pid = q1(req, 'projectId'); if (pid) await auth.requireProject(user, uuid(pid)); else manage(user); return dc.listDocuments({ projectId: pid, category: q1(req, 'category') }); });

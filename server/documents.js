@@ -20,6 +20,14 @@ const TYPES = {
 };
 export const mimeOf = (name) => TYPES[path.extname(name).toLowerCase()]?.[0] ?? null;
 
+// The same checks saveFile makes (type, contents), without saving anything: used when a file is only being read.
+export function checkFile(bytes, filename) {
+  const t = TYPES[path.extname(String(filename || '')).toLowerCase()];
+  if (!t) throw bad('That file type is not allowed. Use PDF, PNG, JPG, DOCX, XLSX, CSV or TXT.');
+  if (!bytes.length) throw bad('The file is empty.');
+  if (!t[1](bytes)) throw bad('The file contents do not match its type.');
+  return { mime: t[0] };
+}
 export const sha256 = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
 // The earlier copy of a file with this fingerprint: a document (any project) or a file kept on a lead.
 export async function findDuplicate(sha) {

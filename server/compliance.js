@@ -8,7 +8,7 @@ const today = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_Yo
 const DOC_COL = { 'W-9': 'w9_document_id', COI: 'coi_document_id', Exemption: 'exemption_document_id' };
 
 // ------------------------------------------------------------------ vendor documents and status
-const SELECT = `SELECT s.id, s.name, s.email, s.archived, s.verified_override, s.address AS a_street, s.city AS a_city, s.state AS a_state, s.zip AS a_zip, s.address_verified, s.address_confirmed_key, s.address_confirmed_at, s.folder_url, w.read_address AS w9_read, w.read_name AS w9_read_name, c.read_address AS coi_read, w.id AS w9_id, w.name AS w9_name, w.url AS w9_url, w.storage_key AS w9_key,
+const SELECT = `SELECT s.id, s.name, s.email, s.archived, s.verified_override, s.address AS a_street, s.city AS a_city, s.state AS a_state, s.zip AS a_zip, s.address_verified, s.address_confirmed_key, s.address_confirmed_at, s.folder_url, w.read_address AS w9_read, w.read_name AS w9_read_name, c.read_address AS coi_read, c.read_policies AS coi_policies, x.read_policies AS ex_policies, w.id AS w9_id, w.name AS w9_name, w.url AS w9_url, w.storage_key AS w9_key,
     c.id AS coi_id, c.name AS coi_name, c.url AS coi_url, c.storage_key AS coi_key, c.expires_on AS coi_expires,
     x.id AS ex_id, x.name AS ex_name, x.url AS ex_url, x.storage_key AS ex_key, x.expires_on AS ex_expires
   FROM subcontractors s LEFT JOIN documents w ON w.id=s.w9_document_id LEFT JOIN documents c ON c.id=s.coi_document_id LEFT JOIN documents x ON x.id=s.exemption_document_id`;
@@ -20,7 +20,7 @@ const shape = (r, asOf) => {
   const verified = ev.canPay || !!r.verified_override, blockers = verified ? [] : ev.reasons;
   return { id: r.id, name: r.name, email: r.email, archived: r.archived, ...ev, docsOk: ev.canPay, canPay: verified, verified, override: !!r.verified_override && !ev.canPay, blockers, addressMatch: ac.match, address: addr, addressChecked: !!r.address_verified, folderUrl: r.folder_url ?? null,
     addressOnDocs: { w9: r.w9_read ?? null, w9Name: r.w9_read_name ?? null, coi: r.coi_read ?? null }, confirmedAt: ac.match === 'Confirmed' ? r.address_confirmed_at : null,
-    docs: { 'W-9': r.w9_id ? { id: r.w9_id, name: r.w9_name, url: r.w9_url, file: !!r.w9_key } : null, COI: r.coi_id ? { id: r.coi_id, name: r.coi_name, url: r.coi_url, file: !!r.coi_key, expires: r.coi_expires } : null, Exemption: r.ex_id ? { id: r.ex_id, name: r.ex_name, url: r.ex_url, file: !!r.ex_key, expires: r.ex_expires } : null } };
+    docs: { 'W-9': r.w9_id ? { id: r.w9_id, name: r.w9_name, url: r.w9_url, file: !!r.w9_key } : null, COI: r.coi_id ? { id: r.coi_id, name: r.coi_name, url: r.coi_url, file: !!r.coi_key, expires: r.coi_expires, policies: r.coi_policies ?? null } : null, Exemption: r.ex_id ? { id: r.ex_id, name: r.ex_name, url: r.ex_url, file: !!r.ex_key, expires: r.ex_expires, policies: r.ex_policies ?? null } : null } };
 };
 export async function vendorCompliance(asOf = today()) {
   const rows = (await q(`${SELECT} ORDER BY s.name`)).map((r) => shape(r, asOf));

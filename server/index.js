@@ -265,6 +265,7 @@ route('GET', '/api/quickbooks/callback', async ({ req, res, user }) => {
   await qbo.finishConnect(p.get('code'), p.get('state'), p.get('realmId')); qbi.sync().catch((e) => console.error('QuickBooks first sync', e.message)); res.writeHead(302, { location: '/#/admin/connections', 'cache-control': 'no-store' }); res.end(); return 'sent';
 });
 route('POST', '/api/quickbooks/clear-test-data', async ({ user, body }) => { auth.requireRole(user, auth.SUPER); return qbr.clearTestData(user, body); });
+route('POST', '/api/quickbooks/clear-leftover', async ({ user, body }) => { auth.requireRole(user, auth.SUPER); return qbr.clearLeftover(user, body); });
 route('DELETE', '/api/quickbooks', async ({ user }) => { auth.requireRole(user, auth.SUPER); await qbo.disconnect(); return { ok: true }; });
 route('GET', '/api/sharepoint/status', async ({ req, user }) => { auth.requireRole(user, [...auth.MANAGE, 'Estimator']); return q1(req, 'test') === '1' && auth.SUPER.includes(user.role) ? sharepoint.status() : { configured: sharepoint.configured() }; });
 route('POST', '/api/opportunities/:id/status', async ({ user, params, body }) => es.transition(estWrite(user), uuid(params.id), body));

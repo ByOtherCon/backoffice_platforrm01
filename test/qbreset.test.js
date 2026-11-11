@@ -55,3 +55,18 @@ test('go-live: clearing QuickBooks test data removes only what came from QuickBo
 test('the license agreement and privacy policy pages are public, for Intuit\'s app review', async () => {
   for (const [path, text] of [['/terms', 'End-User License Agreement'], ['/privacy', 'Privacy Policy']]) { const r = await fetch(base + path); assert.equal(r.status, 200); assert.match(await r.text(), new RegExp(text)); }
 });
+
+test('after connecting the real company, rows read before that moment (the sandbox ones) can be removed and the real ones stay', async () => {
+  await q('DELETE FROM qb_invoices'); await q('DELETE FROM qb_costs'); await q('DELETE FROM client_invoices');
+  const t0 = new Date(Date.now() - 3600e3).toISOString();
+  await q(`INSERT INTO integrations(name,data) VALUES ('quickbooks',$1) ON CONFLICT (name) DO UPDATE SET data=$1`, [{ realmId: '9', environment: 'production', company: 'Real Co', connectedAt: t0 }]);
+  await q(`INSERT INTO qb_invoices(qb_id,doc_number,total,status,customer_id,synced_at) VALUES ('old1','FAKE',10,'New','c1', now() - interval '2 days'), ('new1','REAL',20,'New','c2', now())`);
+  await q(`INSERT INTO client_invoices(project_id,number,invoice_date,amount,qb_invoice_id) VALUES ($1,'FAKE','2026-01-01',10,'old1')`, [pid]);
+  const s = (await call('GET', '/api/quickbooks/status', null, owner)).body.testData; assert.deepEqual([s.leftover.invoices, s.leftover.costs], [1, 0]);
+  assert.equal((await call('POST', '/api/quickbooks/clear-leftover', {}, owner)).status, 400);
+  assert.equal((await call('POST', '/api/quickbooks/clear-leftover', { confirm: 'CLEAR' }, asst)).status, 403);
+  assert.equal((await call('POST', '/api/quickbooks/clear-leftover', { confirm: 'CLEAR' }, owner)).status, 200);
+  assert.deepEqual((await q('SELECT doc_number FROM qb_invoices')).map((x) => x.doc_number), ['REAL']);
+  assert.equal((await q('SELECT count(*)::int n FROM client_invoices'))[0].n, 0);   // what was imported from the fake one goes too
+  assert.equal((await call('GET', '/api/quickbooks/status', null, owner)).body.testData.leftover.total, 0);
+});

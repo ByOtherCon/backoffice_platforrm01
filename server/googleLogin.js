@@ -6,7 +6,7 @@ import { HttpError, parseCookies } from './http.js';
 import { baseUrl, sign } from './bids.js';
 import { createSession } from './auth.js';
 
-let gfetch = (...a) => fetch(...a);
+let gfetch = (u, init = {}) => fetch(u, { signal: AbortSignal.timeout(20000), ...init });
 export const setLoginFetch = (f) => { gfetch = f; };   // tests stand in for Google
 export const configured = () => !!(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
 export const domain = () => String(process.env.GOOGLE_LOGIN_DOMAIN || 'byother.net').trim().toLowerCase().replace(/^@/, '');

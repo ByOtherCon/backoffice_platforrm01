@@ -198,3 +198,6 @@ table tr.grp th{text-align:center;border-bottom:1px solid var(--line);padding-bo
 .mini .n{text-align:right}
 
 @media (max-width:700px){header.top{flex-wrap:wrap;row-gap:.3rem;padding-top:.4rem;padding-bottom:.4rem}header.top nav{flex:1 1 100%;order:3;flex-wrap:nowrap;overflow-x:auto;margin-left:0}}
+/* on a phone, nothing is allowed to push the whole page wider than the screen */
+@media (max-width:700px){.card{overflow-x:auto}select,input,textarea{max-width:100%}}
+@media (max-width:700px){.row{flex-wrap:wrap}.row>select,.row>input{min-width:0;flex:1 1 10rem}}

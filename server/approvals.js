@@ -1,5 +1,5 @@
 // Vendor payments: request -> approve -> pay. The requester cannot approve their own request (the Super Admin may).
-import { q, tx } from './db.js';
+import { q, tx, lockProjects } from './db.js';
 import { bad, money, text, dateStr, HttpError } from './http.js';
 import { APPROVERS, MANAGE } from './auth.js';
 import { assertCanPay, notifyRoles, notifyUser } from './compliance.js';
@@ -22,6 +22,7 @@ export async function listRequests({ status, projectId } = {}) {
 export async function requestPayment(user, projectId, billId, b) {
   const amount = money(b.amount, 'Amount'); if (!(amount > 0)) throw bad('Amount must be greater than zero.');
   const id = await tx(async (t) => {
+    await lockProjects(t, [projectId]);
     const [bill] = await t(`SELECT si.id, si.amount, sc.subcontractor_id, sc.hold_amount, sc.hold_released,
         COALESCE((SELECT SUM(si2.amount) FROM sub_invoices si2 WHERE si2.commitment_id=sc.id),0) invoiced,
         COALESCE((SELECT SUM(sp.amount) FROM sub_payments sp JOIN sub_invoices si3 ON si3.id=sp.sub_invoice_id WHERE si3.commitment_id=sc.id),0) paid_all,
@@ -44,6 +45,7 @@ export async function requestPayment(user, projectId, billId, b) {
 export async function requestPaymentWithoutInvoice(user, projectId, commitmentId, b) {
   const p = readNoInvoice(b);
   const id = await tx(async (t) => {
+    await lockProjects(t, [projectId]);
     const [c] = await t(`SELECT sc.subcontractor_id, sc.contract_amount,
         COALESCE((SELECT SUM(si.amount) FROM sub_invoices si WHERE si.commitment_id=sc.id),0) invoiced,
         COALESCE((SELECT SUM(pr.amount) FROM payment_requests pr WHERE pr.commitment_id=sc.id AND pr.sub_invoice_id IS NULL AND pr.status IN ('Requested','Approved')),0) reserved

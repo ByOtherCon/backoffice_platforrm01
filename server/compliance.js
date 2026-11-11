@@ -62,6 +62,12 @@ export async function notifyRoles(roles, { kind, title, body, link, dedupe }) {
 }
 export const notifyUser = (userId, { kind, title, body, link, dedupe }) => q(`INSERT INTO notifications(user_id,kind,title,body,link,dedupe_key) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (user_id, dedupe_key) DO NOTHING`, [userId, kind, title, body ?? null, link ?? null, dedupe ?? null]);
 export const listNotifications = (userId) => q('SELECT id, kind, title, body, link, created_at, read_at FROM notifications WHERE user_id=$1 AND cleared_at IS NULL ORDER BY (read_at IS NULL) DESC, created_at DESC LIMIT 60', [userId]);
+// Housekeeping: old sessions, sign-in attempt records and cleared alerts are not kept forever.
+export async function purgeOld() {
+  await q(`DELETE FROM sessions WHERE expires_at < now() - interval '1 day'`);
+  await q(`DELETE FROM login_attempts WHERE attempted_at < now() - interval '30 days'`);
+  await q(`DELETE FROM notifications WHERE cleared_at IS NOT NULL AND cleared_at < now() - interval '180 days'`);
+}
 export const markRead = (userId, ids) => ids === 'all' ? q('UPDATE notifications SET read_at=now() WHERE user_id=$1 AND read_at IS NULL', [userId]) : q('UPDATE notifications SET read_at=now() WHERE user_id=$1 AND id = ANY($2::uuid[])', [userId, ids]);
 // Clearing hides an alert for good (the row stays so the same alert is not raised again).
 export const clearNotifications = (userId, ids) => ids === 'all' ? q(`UPDATE notifications SET cleared_at=now(), read_at=COALESCE(read_at, now()) WHERE user_id=$1 AND cleared_at IS NULL`, [userId]) : q(`UPDATE notifications SET cleared_at=now(), read_at=COALESCE(read_at, now()) WHERE user_id=$1 AND id = ANY($2::uuid[])`, [userId, ids]);

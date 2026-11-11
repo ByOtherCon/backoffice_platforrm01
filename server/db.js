@@ -12,3 +12,11 @@ export async function tx(fn) {
     return out;
   } catch (e) { await c.query('ROLLBACK'); throw e; } finally { c.release(); }
 }
+
+// Money rules (never pay more than is owed, never bill past the contract) are checked by reading the totals first and writing after, so two people
+// working on the same project at the same moment could both pass. Each money-changing transaction takes this lock first, so they take turns.
+// Ids are locked in a fixed order so two projects locked together can never wait on each other.
+export async function lockProjects(t, ids) {
+  const u = [...new Set((ids || []).filter(Boolean))].sort(); if (!u.length) return;
+  await t('SELECT id FROM projects WHERE id = ANY($1::uuid[]) ORDER BY id FOR UPDATE', [u]);
+}

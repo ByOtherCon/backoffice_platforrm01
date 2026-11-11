@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { q, tx } from './db.js';
+import { q, tx, lockProjects } from './db.js';
 import { bad, money, text, dateStr, HttpError } from './http.js';
 import { assertValid } from './projectApi.js';
 import { readReceipt } from './ai.js';
@@ -47,6 +47,7 @@ export async function createReceipt(user, b, outer = null) {
   const total = toDollars(alloc.reduce((n, a) => n + toCents(a.amount), 0));
   if (b.total !== undefined && b.total !== null && b.total !== '' && Math.abs(money(b.total, 'Total') - total) > 0.01) throw bad(`The lines plus tax come to ${total.toFixed(2)}, not ${Number(b.total).toFixed(2)}.`);
   return (outer ? (fn) => fn(outer) : tx)(async (t) => {
+    await lockProjects(t, alloc.map((a) => a.projectId));
     const supplierId = await resolveSupplier(t, { supplierId: b.supplierId, supplierName: b.supplierName, saveVendor: b.saveVendor });
     for (const a of alloc) if (a.projectId) {
       if (!(await t('SELECT 1 FROM projects WHERE id=$1', [a.projectId])).length) throw bad('A project was not found.');

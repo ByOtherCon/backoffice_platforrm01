@@ -1,4 +1,4 @@
-import { q, tx } from './db.js';
+import { q, tx, lockProjects } from './db.js';
 import { bad, money, text, dateStr, HttpError } from './http.js';
 import { assertValid } from './projectApi.js';
 import { resolveSupplier } from './vendors.js';
@@ -42,6 +42,7 @@ export async function addInvoice(projectId, b) {
   const date = dateStr(b.date, 'Invoice date', true), due = dateStr(b.dueDate, 'Due date');
   if (due && due < date) throw bad('Due date cannot precede the invoice date.');
   return run(async (t) => {
+    await lockProjects(t, [projectId]);
     await ownsTrade(t, projectId, b.projectTradeId);
     const [{ retainage_pct }] = await t('SELECT retainage_pct FROM projects WHERE id=$1', [projectId]);
     const held = b.retainageHeld === undefined || b.retainageHeld === '' || b.retainageHeld === null ? 0 : money(b.retainageHeld, 'Retainage');   // none unless one is entered
@@ -52,6 +53,7 @@ export async function addInvoice(projectId, b) {
 }
 export async function updateInvoice(projectId, id, b) {
   return run(async (t) => {
+    await lockProjects(t, [projectId]);
     const [cur] = await t('SELECT * FROM client_invoices WHERE id=$1 AND project_id=$2', [id, projectId]);
     if (!cur) throw new HttpError(404, 'Invoice not found.');
     const v = {};
@@ -70,6 +72,7 @@ export async function updateInvoice(projectId, id, b) {
   });
 }
 export const deleteInvoice = (projectId, id) => run(async (t) => {
+  await lockProjects(t, [projectId]);
   if (!(await t('DELETE FROM client_invoices WHERE id=$1 AND project_id=$2 RETURNING id', [id, projectId])).length) throw new HttpError(404, 'Invoice not found.');
   await assertValid(t, projectId);
 });
@@ -77,12 +80,14 @@ export async function addClientPayment(projectId, invoiceId, b) {
   const amount = money(b.amount, 'Amount'); if (!(amount > 0)) throw bad('Amount must be greater than zero.');
   const kind = b.kind === 'Retainage Release' ? 'Retainage Release' : 'Payment', date = dateStr(b.date, 'Payment date', true);
   return run(async (t) => {
+    await lockProjects(t, [projectId]);
     if (!(await t('SELECT 1 FROM client_invoices WHERE id=$1 AND project_id=$2', [invoiceId, projectId])).length) throw new HttpError(404, 'Invoice not found.');
     await t('INSERT INTO client_payments(client_invoice_id,paid_date,amount,kind) VALUES ($1,$2,$3,$4)', [invoiceId, date, amount, kind]);
     await assertValid(t, projectId);
   });
 }
 export const deleteClientPayment = (projectId, invoiceId, payId) => run(async (t) => {
+  await lockProjects(t, [projectId]);
   if (!(await t(`DELETE FROM client_payments WHERE id=$1 AND client_invoice_id=$2 AND client_invoice_id IN (SELECT id FROM client_invoices WHERE project_id=$3) RETURNING id`, [payId, invoiceId, projectId])).length) throw new HttpError(404, 'Payment not found.');
   await assertValid(t, projectId);
 });
@@ -123,6 +128,7 @@ export async function addCommitment(projectId, b) {
   const contract = money(b.contractAmount, 'Subcontract amount'), hold = b.holdAmount === undefined || b.holdAmount === '' ? 0 : money(b.holdAmount, 'Final-payment hold');
   if (!b.subcontractorId) throw bad('Choose a vendor.');
   return run(async (t) => {
+    await lockProjects(t, [projectId]);
     if (b.projectTradeId) await ownsTrade(t, projectId, b.projectTradeId);
     const [r] = await t(`INSERT INTO sub_commitments(project_id,project_trade_id,subcontractor_id,contract_amount,hold_amount,hold_reason,materials_included,scope) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
       [projectId, b.projectTradeId || null, b.subcontractorId, contract, hold, text(b.holdReason, 'Hold reason', { max: 200, required: false }) || null, !!b.materialsIncluded, text(b.scope, 'Scope', { max: 300, required: false }) || null]);
@@ -132,6 +138,7 @@ export async function addCommitment(projectId, b) {
 }
 export async function updateCommitment(projectId, id, b) {
   return run(async (t) => {
+    await lockProjects(t, [projectId]);
     const [cur] = await t('SELECT * FROM sub_commitments WHERE id=$1 AND project_id=$2', [id, projectId]);
     if (!cur) throw new HttpError(404, 'Subcontract not found.');
     const v = {};
@@ -149,24 +156,28 @@ export async function updateCommitment(projectId, id, b) {
   });
 }
 export const deleteCommitment = (projectId, id) => run(async (t) => {
+  await lockProjects(t, [projectId]);
   if (!(await t('DELETE FROM sub_commitments WHERE id=$1 AND project_id=$2 RETURNING id', [id, projectId])).length) throw new HttpError(404, 'Subcontract not found.');
   await assertValid(t, projectId);
 });
 export async function addSubBill(projectId, commitmentId, b) {
   const amount = money(b.amount, 'Bill amount'); if (!(amount > 0)) throw bad('Bill amount must be greater than zero.');
   return run(async (t) => {
+    await lockProjects(t, [projectId]);
     if (!(await t('SELECT 1 FROM sub_commitments WHERE id=$1 AND project_id=$2', [commitmentId, projectId])).length) throw new HttpError(404, 'Subcontract not found.');
     const [r] = await t('INSERT INTO sub_invoices(commitment_id,number,invoice_date,amount) VALUES ($1,$2,$3,$4) RETURNING id', [commitmentId, text(b.number, 'Bill #', { max: 60 }), dateStr(b.date, 'Bill date'), amount]);
     await assertValid(t, projectId); return { id: r.id };
   });
 }
 export const deleteSubBill = (projectId, commitmentId, id) => run(async (t) => {
+  await lockProjects(t, [projectId]);
   if (!(await t(`DELETE FROM sub_invoices WHERE id=$1 AND commitment_id=$2 AND commitment_id IN (SELECT id FROM sub_commitments WHERE project_id=$3) RETURNING id`, [id, commitmentId, projectId])).length) throw new HttpError(404, 'Bill not found.');
   await assertValid(t, projectId);
 });
 // Records a vendor payment inside a transaction. Compliance (W-9 + valid insurance) and the held final payment are enforced here,
 // so every path that pays a vendor (direct entry by an approver, or an approved request) obeys the same rules.
 export async function recordSubPayment(t, projectId, billId, amount, date, how = {}) {
+  await lockProjects(t, [projectId]);   // take turns with anyone else paying or billing on this project
   const [bill] = await t(`SELECT si.amount, si.id, sc.subcontractor_id, sc.hold_amount, sc.hold_released,
       COALESCE((SELECT SUM(si2.amount) FROM sub_invoices si2 WHERE si2.commitment_id=sc.id),0) invoiced,
       COALESCE((SELECT SUM(sp.amount) FROM sub_payments sp JOIN sub_invoices si3 ON si3.id=sp.sub_invoice_id WHERE si3.commitment_id=sc.id),0) paid_all,
@@ -200,6 +211,7 @@ export async function makeNoInvoiceBill(t, commitmentId, { amount, date, memo, m
 export async function addPaymentWithoutInvoice(projectId, commitmentId, b, opts = {}) {
   const p = readNoInvoice(b);
   return run(async (t) => {
+    await lockProjects(t, [projectId]);
     if (!(await t('SELECT 1 FROM sub_commitments WHERE id=$1 AND project_id=$2 FOR UPDATE', [commitmentId, projectId])).length) throw new HttpError(404, 'Subcontract not found.');
     const billId = await makeNoInvoiceBill(t, commitmentId, p);
     await recordSubPayment(t, projectId, billId, p.amount, p.date, { method: p.method, memo: p.memo, allowUnverified: opts.allowUnverified });   // the same rules as any payment: paperwork on file, the held final payment, the contract amount
@@ -211,6 +223,7 @@ export async function addSubPayment(projectId, billId, b, opts = {}) {
   return run((t) => recordSubPayment(t, projectId, billId, amount, dateStr(b.date, 'Payment date', true), { allowUnverified: opts.allowUnverified }).then((id) => ({ id })));
 }
 export const deleteSubPayment = (projectId, payId) => run(async (t) => {
+  await lockProjects(t, [projectId]);
   if (!(await t(`DELETE FROM sub_payments WHERE id=$1 AND sub_invoice_id IN (SELECT si.id FROM sub_invoices si JOIN sub_commitments sc ON sc.id=si.commitment_id WHERE sc.project_id=$2) RETURNING id`, [payId, projectId])).length) throw new HttpError(404, 'Payment not found.');
   await assertValid(t, projectId);
 });
@@ -224,6 +237,7 @@ export async function addSupplierInvoice(b) {
   const diff = toCents(total) - allocs.reduce((n, a) => n + toCents(a.amount), 0);
   if (diff !== 0) throw bad(`Allocations differ from the invoice total by ${toDollars(Math.abs(diff)).toFixed(2)}.`);
   return run(async (t) => {
+    await lockProjects(t, allocs.map((x) => x.projectId));
     const supplierId = await resolveSupplier(t, { supplierId: b.supplierId, supplierName: b.supplierName, saveVendor: b.saveVendor });
     const [inv] = await t('INSERT INTO supplier_invoices(supplier_id,reference,invoice_date,total,description) VALUES ($1,$2,$3,$4,$5) RETURNING id', [supplierId, text(b.reference, 'Invoice reference', { max: 80 }), dateStr(b.date, 'Invoice date'), total, text(b.description, 'Description', { max: 500, required: false }) || null]);
     if (b.paid) await t('INSERT INTO supplier_payments(supplier_invoice_id,paid_date,amount) VALUES ($1,$2,$3)', [inv.id, dateStr(b.paidDate, 'Paid date', true), total]);   // already paid (a website purchase, a card charge): recorded as paid when it is added
@@ -237,12 +251,15 @@ export async function addSupplierInvoice(b) {
 }
 export const deleteSupplierInvoice = (id) => run(async (t) => {
   const projects = await t('SELECT DISTINCT project_id FROM supplier_allocations WHERE supplier_invoice_id=$1 AND project_id IS NOT NULL', [id]);
+  await lockProjects(t, projects.map((x) => x.project_id));
   if (!(await t('DELETE FROM supplier_invoices WHERE id=$1 RETURNING id', [id])).length) throw new HttpError(404, 'Invoice not found.');
   for (const p of projects) await assertValid(t, p.project_id);
 });
 export async function addSupplierPayment(invoiceId, b) {
   const amount = money(b.amount, 'Amount'); if (!(amount > 0)) throw bad('Amount must be greater than zero.');
   return run(async (t) => {
+    await lockProjects(t, (await t('SELECT DISTINCT project_id FROM supplier_allocations WHERE supplier_invoice_id=$1 AND project_id IS NOT NULL', [invoiceId])).map((x) => x.project_id));
+    await t('SELECT id FROM supplier_invoices WHERE id=$1 FOR UPDATE', [invoiceId]);
     const [inv] = await t('SELECT total, COALESCE((SELECT SUM(amount) FROM supplier_payments WHERE supplier_invoice_id=si.id),0) paid FROM supplier_invoices si WHERE id=$1', [invoiceId]);
     if (!inv) throw new HttpError(404, 'Invoice not found.');
     if (toCents(inv.paid) + toCents(amount) > toCents(inv.total)) throw bad('Payments cannot exceed the invoice total.');

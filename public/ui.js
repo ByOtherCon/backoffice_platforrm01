@@ -21,6 +21,7 @@ export const h = (tag, attrs = {}, ...kids) => {
     if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
     else if (k === 'class') el.className = v;
     else if (k === 'value') el.value = v;
+    else if ((k === 'href' || k === 'src' || k === 'action' || k === 'formaction') && /^\s*(javascript|vbscript|data):/i.test(String(v))) continue;   // never a script link, whatever the data says
     else el.setAttribute(k, v === true ? '' : v);
   }
   const only = kids.flat(Infinity).filter((x) => x != null && x !== false);
@@ -70,8 +71,8 @@ export const field = (label, input, cls2 = '') => h('div', { class: cls2 }, h('l
 // Everything else, every form for data that already exists, has to be saved, cancelled or closed on purpose.
 function isNewForm(title) { return /^(add|new|enter|vendor invoice|review receipt|import|change order from a document)\b/i.test(String(title).trim()); }
 export function formModal(title, fields, onSave, saveLabel = 'Save') {
-  const err = h('div');
-  const bg = modal(title, h('form', { onsubmit: guard(err, async (e) => { e.preventDefault(); await onSave(); bg.remove(); }) },
+  const err = h('div'); let saving = false;   // a second press of Save while the first is still working does nothing, so nothing is entered twice
+  const bg = modal(title, h('form', { onsubmit: guard(err, async (e) => { e.preventDefault(); if (saving) return; saving = true; const b = e.target.querySelector('button[type=submit]'); if (b) b.disabled = true; try { await onSave(); bg.remove(); } finally { saving = false; if (b) b.disabled = false; } }) },
     h('div', { class: 'form' }, fields), err, h('div', { class: 'row', style: 'margin-top:1rem;justify-content:flex-end;gap:.5rem' }, h('button', { type: 'button', onclick: () => bg.remove() }, 'Cancel'), h('button', { class: 'primary', type: 'submit' }, saveLabel))), { mode: isNewForm(title) ? 'new' : 'edit' });
   return bg;
 }

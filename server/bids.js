@@ -10,7 +10,7 @@ import { todayEastern, normalizeDate, leadKey } from '../src/lib/estimating.ts';
 import { verifyAddress } from './address.js';
 import * as W from '../src/lib/workflow.ts';
 
-let gfetch = (...a) => fetch(...a);
+let gfetch = (u, init = {}) => fetch(u, { signal: AbortSignal.timeout(45000), ...init });   // never wait forever on Google
 export const setGoogleFetch = (f) => { gfetch = f; };   // tests stand in for Google
 
 // ------------------------------------------------------------------ keeping the Google login safe

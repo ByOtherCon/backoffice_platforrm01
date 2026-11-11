@@ -1,4 +1,4 @@
-import { q, tx } from './db.js';
+import { q, tx, lockProjects } from './db.js';
 import { bad, money, text, dateStr, httpsUrl, HttpError } from './http.js';
 import { loadInputs, summarize } from './projects.js';
 import { validateTrade } from '../src/lib/costing.ts';
@@ -129,6 +129,7 @@ export async function addTrade(projectId, b) {
 export async function setTradeAmount(projectId, ptId, b) {
   const amount = money(b.amount, 'Contract amount');
   await tx(async (t) => {
+    await lockProjects(t, [projectId]);
     const r = await t('UPDATE project_trades SET original_amount=$1 WHERE id=$2 AND project_id=$3 RETURNING id', [amount, ptId, projectId]);
     if (!r.length) throw new HttpError(404, 'Trade not found on this project.');
     const loaded = await loadInputsWith(t, projectId);
@@ -172,6 +173,7 @@ export async function addChangeOrder(projectId, b) {
   const v = parseCO(b, true); needApprovedDate(v);
   try {
     return await tx(async (t) => {
+      await lockProjects(t, [projectId]);
       const own = await t('SELECT 1 FROM project_trades WHERE id=$1 AND project_id=$2', [v.project_trade_id, projectId]);
       if (!own.length) throw bad('That trade is not on this project.');
       const [c] = await t(`INSERT INTO change_orders(project_id,project_trade_id,number,description,status,approved_date,amount) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
@@ -192,6 +194,7 @@ export async function addChangeOrdersFromDocument(projectId, b) {
   const seen = new Set(); for (const l of lines) { if (!l.tradeId) throw bad('Choose a trade for every line.'); if (seen.has(l.tradeId)) throw bad('Each trade can be on this change order only once. Combine the lines for the same trade.'); seen.add(l.tradeId); }
   try {
     return await tx(async (t) => {
+      await lockProjects(t, [projectId]);
       if (b.documentId) { const d = await t('SELECT 1 FROM documents WHERE id=$1 AND project_id=$2', [b.documentId, projectId]); if (!d.length) throw bad('That file is not on this project.'); }
       const made = [];
       for (const l of lines) {
@@ -212,6 +215,7 @@ export async function updateChangeOrder(projectId, id, b) {
   const v = parseCO(b, false);
   try {
     await tx(async (t) => {
+      await lockProjects(t, [projectId]);
       const [cur] = await t('SELECT * FROM change_orders WHERE id=$1 AND project_id=$2', [id, projectId]);
       if (!cur) throw new HttpError(404, 'Change order not found.');
       const merged = { status: cur.status, approved_date: cur.approved_date, ...v };
@@ -229,6 +233,7 @@ export async function updateChangeOrder(projectId, id, b) {
 export async function deleteChangeOrder(projectId, id) {
   let doc = null;
   await tx(async (t) => {
+    await lockProjects(t, [projectId]);
     const [cur] = await t('DELETE FROM change_orders WHERE id=$1 AND project_id=$2 RETURNING project_trade_id, document_id', [id, projectId]);
     if (!cur) throw new HttpError(404, 'Change order not found.');
     const tr = (await loadInputsWith(t, projectId)).find((x) => x.ptId === cur.project_trade_id);

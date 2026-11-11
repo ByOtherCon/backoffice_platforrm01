@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import { HttpError } from './http.js';
 import { cleanName, FOLDERS } from '../src/lib/estimating.ts';
 
-let gfetch = (...a) => fetch(...a);
+let gfetch = (u, init = {}) => fetch(u, { signal: AbortSignal.timeout(180000), ...init });   // big uploads go in pieces; a piece that stalls for three minutes gives up
 export const setGraphFetch = (f) => { gfetch = f; };   // tests stand in for Microsoft
 
 export const settings = () => ({

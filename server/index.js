@@ -45,7 +45,8 @@ import { bootstrapOwner } from './bootstrap.js';
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const SECURE = process.env.NODE_ENV === 'production';
 const routes = [];
-const route = (method, pattern, handler, opts = {}) => routes.push({ ...opts, method, re: new RegExp('^' + pattern.replace(/:[a-z]+/gi, '([^/]+)') + '$'), names: [...pattern.matchAll(/:([a-z]+)/gi)].map((m) => m[1]), handler });
+export const _routes = routes;   // for the access tests
+const route = (method, pattern, handler, opts = {}) => routes.push({ ...opts, method, pattern, re: new RegExp('^' + pattern.replace(/:[a-z]+/gi, '([^/]+)') + '$'), names: [...pattern.matchAll(/:([a-z]+)/gi)].map((m) => m[1]), handler });
 const uuid = (v) => { if (!/^[0-9a-f-]{36}$/i.test(v)) throw new HttpError(404, 'Not found.'); return v; };
 const manage = (u) => { auth.requireRole(u, auth.MANAGE); };
 const adminOnly = (u) => { auth.requireRole(u, auth.SUPER); };
@@ -76,7 +77,8 @@ route('POST', '/api/password/reset', async ({ body }) => pw.finishReset(body.tok
 
 // Admin: master records
 for (const kind of Object.keys(admin.KINDS)) {
-  route('GET', `/api/admin/${kind}`, async ({ user }) => { auth.requireRole(user, [...auth.MANAGE, 'Project Manager']); return admin.list(kind, { rates: auth.SUPER.includes(user.role) }); });
+  // A project manager picks from these lists but does not need contact details, addresses or tax and insurance status: they get names only.
+  route('GET', `/api/admin/${kind}`, async ({ user }) => { auth.requireRole(user, [...auth.MANAGE, 'Project Manager']); const rows = await admin.list(kind, { rates: auth.SUPER.includes(user.role) }); return auth.MANAGE.includes(user.role) ? rows : rows.map((r) => Object.fromEntries(['id', 'name', 'archived', 'active', 'sort', 'provider_type', 'position'].filter((k) => k in r).map((k) => [k, r[k]]))); });
   route('POST', `/api/admin/${kind}`, async ({ user, body }) => { manage(user); if (admin.touchesPay(kind, body)) auth.requireRole(user, auth.SUPER); return admin.create(kind, body); });
   route('PUT', `/api/admin/${kind}/:id`, async ({ user, body, params }) => { manage(user); if (admin.touchesPay(kind, body)) auth.requireRole(user, auth.SUPER); return admin.update(kind, uuid(params.id), body); });
   route('DELETE', `/api/admin/${kind}/:id`, async ({ user, params }) => { manage(user); await admin.remove(kind, uuid(params.id)); return { ok: true }; });
@@ -186,9 +188,9 @@ route('POST', '/api/payment-requests/:id/reject', async ({ user, params, body })
 route('POST', '/api/payment-requests/:id/pay', async ({ user, params, body }) => { manage(user); await ap.pay(user, uuid(params.id), body); return { ok: true }; });
 route('DELETE', '/api/payment-requests/:id', async ({ user, params }) => { manage(user); await ap.cancel(user, uuid(params.id)); return { ok: true }; });
 route('GET', '/api/notifications', async ({ user }) => { if (!user?.id) throw new HttpError(401, 'Sign in required.'); return cp.listNotifications(user.id); });
-route('POST', '/api/notifications/clear', async ({ user, body }) => { if (!user?.id) throw new HttpError(401, 'Sign in required.'); await cp.clearNotifications(user.id, body.all ? 'all' : (body.ids || []).map(uuid)); return { ok: true }; });
+route('POST', '/api/notifications/clear', async ({ user, body }) => { if (!user?.id) throw new HttpError(401, 'Sign in required.'); await cp.clearNotifications(user.id, body.all ? 'all' : (Array.isArray(body.ids) ? body.ids : []).map(uuid)); return { ok: true }; });
 route('POST', '/api/projects/home/alerts/clear', async ({ user, body }) => { auth.requireRole(user, [...auth.MANAGE, 'Project Manager']); return ph.clearAlerts(user, body); });
-route('POST', '/api/notifications/read', async ({ user, body }) => { if (!user?.id) throw new HttpError(401, 'Sign in required.'); await cp.markRead(user.id, body.all ? 'all' : (body.ids || []).map(uuid)); return { ok: true }; });
+route('POST', '/api/notifications/read', async ({ user, body }) => { if (!user?.id) throw new HttpError(401, 'Sign in required.'); await cp.markRead(user.id, body.all ? 'all' : (Array.isArray(body.ids) ? body.ids : []).map(uuid)); return { ok: true }; });
 route('GET', '/api/outbox', async ({ user }) => { manage(user); return { connected: cp.emailConnected(), emails: await cp.listOutbox() }; });
 route('POST', '/api/outbox/send', async ({ user }) => { auth.requireRole(user, auth.APPROVERS); return cp.sendQueued(); });
 route('POST', '/api/outbox/:id/retry', async ({ user, params }) => { auth.requireRole(user, auth.APPROVERS); await cp.retryEmail(uuid(params.id)); return { ok: true }; });
@@ -375,6 +377,8 @@ route('POST', '/api/documents/upload', async ({ req, user }) => { manage(user); 
 route('POST', '/api/documents', async ({ user, body }) => { manage(user); return dc.addLink(user, body); });
 route('GET', '/api/documents', async ({ req, user }) => { const pid = q1(req, 'projectId'); if (pid) await auth.requireProject(user, uuid(pid)); else manage(user); return dc.listDocuments({ projectId: pid, category: q1(req, 'category') }); });
 route('GET', '/api/documents/:id/file', async ({ res, user, params }) => {
+  if (!user) throw new HttpError(401, 'Sign in required.');   // sign in first, so a missing file and a private one look the same to a stranger
+  if (user.role === 'Employee') throw new HttpError(403, 'Your role does not permit this.');   // a time-clock session has no business with documents
   const d = await dc.getFile(uuid(params.id));
   if (d.category === 'Employee ID' || d.restricted) auth.requireRole(user, auth.APPROVERS); else if (d.project_id) await auth.requireProject(user, d.project_id); else manage(user);
   const inline = /^(application\/pdf|image\/)/.test(d.mime);
@@ -397,10 +401,12 @@ route('PUT', '/api/settings/overhead', async ({ user, body }) => { auth.requireR
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.ico': 'image/x-icon' };
 const SEC = {
   'x-content-type-options': 'nosniff', 'x-frame-options': 'DENY', 'referrer-policy': 'same-origin',
-  'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'",
+  'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+  'permissions-policy': 'geolocation=(self), camera=(), microphone=(), payment=()',   // the time clock uses the location; nothing else needs these
+  ...(SECURE ? { 'strict-transport-security': 'max-age=31536000' } : {}),
 };
 function serveStatic(req, res) {
-  let rel = decodeURIComponent(new URL(req.url, 'http://x').pathname);
+  let rel; try { rel = decodeURIComponent(new URL(req.url, 'http://x').pathname); } catch { res.writeHead(400, SEC); return res.end('Bad request'); }
   if (rel === '/') rel = '/index.html';
   if (rel === '/clock') rel = '/clock.html';
   if (rel === '/terms') rel = '/terms.html';       // public pages Intuit asks for when an app goes live
@@ -426,7 +432,8 @@ export const server = http.createServer(async (req, res) => {
     if (result !== 'sent') send(res, 200, result);
   } catch (e) {
     if (e instanceof HttpError) return send(res, e.status, { error: e.message });
-    if (e.code === '22P02') return send(res, 400, { error: 'Invalid value.' }); // bad uuid/number format from Postgres
+    // a value the database cannot take (bad uuid or number, a zero byte, a date that does not exist, too long, out of range) is the caller's mistake, not ours
+    if (['22P02', '22021', '22003', '22007', '22008', '22001', '22023', '22P05'].includes(e.code)) return send(res, 400, { error: 'Invalid value.' });
     console.error(e);
     send(res, 500, { error: 'Something went wrong on the server.' });
   }
@@ -436,7 +443,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   if (!process.env.DATABASE_URL) { console.error('DATABASE_URL is not set.'); process.exit(1); }
   bootstrapOwner().then((r) => console.log(r.created ? `Created the owner login for ${r.email}. Remove ADMIN_PASSWORD from the host settings now.` : r.reason.startsWith('Set ') ? r.reason : 'Owner login already set up.')).catch((e) => console.error('bootstrap failed', e.message));
   server.listen(port, () => { console.log(`by Other Desk Platform on port ${port}`); bd.startScheduler(); dc.backfillHashes().then((n) => n && console.log(`Fingerprinted ${n} saved file${n === 1 ? '' : 's'}.`)).catch((e) => console.error('fingerprint', e.message)); tc.ensureDefaultPins().then((n) => n && console.log(`Gave ${n} employee${n === 1 ? '' : 's'} the automatic time clock PIN (last 4 of the phone, else 0000).`)).catch((e) => console.error('default PINs', e.message)); setTimeout(() => folders.syncGcs(), 20000); setInterval(() => folders.syncGcs(), 3600000); setInterval(() => { qbo.status().then((st) => st.connected && st.connectedEnvironment === st.environment ? qbi.sync().then(() => qbc.sync()) : null).catch((e) => console.error('QuickBooks sync', e.message)); }, 3600000); setInterval(() => fu.closeDueCases().catch((e) => console.error('follow-up sweep', e.message)), 3600000); });
-  const watch = () => cp.scan().then(() => cp.scanNtos()).then(() => cp.sendQueued()).catch((e) => console.error('compliance scan failed', e.message));
+  const watch = () => cp.scan().then(() => cp.scanNtos()).then(() => cp.sendQueued()).then(() => cp.purgeOld()).catch((e) => console.error('compliance scan failed', e.message));
   setTimeout(watch, 15_000); setInterval(watch, 6 * 3600_000);
 }
 

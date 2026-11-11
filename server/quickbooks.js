@@ -5,7 +5,7 @@ import { bad, HttpError } from './http.js';
 import { baseUrl, seal, unseal, sign } from './bids.js';
 import crypto from 'node:crypto';
 
-let ifetch = (...a) => fetch(...a);
+let ifetch = (u, init = {}) => fetch(u, { signal: AbortSignal.timeout(45000), ...init });   // never wait forever on Intuit
 export const setIntuitFetch = (f) => { ifetch = f; };   // tests stand in for Intuit
 export const settings = () => ({ clientId: process.env.QBO_CLIENT_ID, secret: process.env.QBO_CLIENT_SECRET, environment: /^sandbox$/i.test(String(process.env.QBO_ENVIRONMENT || '').trim().replace(/^["']|["']$/g, '')) ? 'sandbox' : 'production' });   // "Sandbox", " sandbox " and quoted values all count
 export const configured = () => { const s = settings(); return !!(s.clientId && s.secret); };

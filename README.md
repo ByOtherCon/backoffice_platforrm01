@@ -186,3 +186,12 @@ Pages use the whole screen width. Tables wrap their column headings, tighten the
 - **Locking.** Every money-changing step takes a lock on its project first (`lockProjects` in `server/db.js`), so two people paying, billing or changing a trade at once take turns instead of both passing the "not more than owed" check.
 - **Hardening in place.** Session cookie is HttpOnly, SameSite=Lax and Secure in production; HSTS and a strict content policy are sent; the page builder refuses `javascript:` links; a project manager sees only names in the Admin lists; malformed cookies and URLs get a clean 400; calls to Google, Intuit and Microsoft time out instead of hanging; old sessions and sign-in records are cleared out.
 - **Known trade-offs, by design.** The field clock page lists employee names without a login (so crew can pick their name) and starts each employee on a default PIN (the last four digits of their phone, or 0000). Anyone with the page address could try a PIN; five misses lock that employee for a while. Setting a PIN of their own closes this.
+
+## On a phone
+The app adapts to a phone screen (width 700 pixels or less); there is no separate phone version to keep in step.
+- **Bottom tab bar** with Dashboard, Projects, Estimating and Messages (with its unread number), and **More** for the rest plus Alerts, Change Password and Sign Out. The top menu is hidden on a phone.
+- **Dashboard** opens with four big tiles (what is owed to us, billed, follow-ups due, to-dos, and so on, depending on the person's access), then the cards in one column with the numbers two to a row.
+- **Tables become cards.** Each row shows its first column as a title and the rest as "Heading … value" lines (columns marked less important are left out). The labels are written by `public/mobile.js` whenever the page changes.
+- **Forms open as a sheet** from the bottom of the screen, fill the width, and use 16-pixel text and 44-pixel touch targets so the phone does not zoom in. Going to another page closes any open form.
+- **Add it to the home screen** (Share, then Add to Home Screen on an iPhone; the menu, then Install App on Android) and it opens full screen like an app (`public/manifest.webmanifest`).
+- The field time clock page (`/clock`) was already built for phones and is unchanged.

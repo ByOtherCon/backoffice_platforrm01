@@ -167,11 +167,22 @@ function tray() {
     hidden.length ? h('div', { class: 'row', style: 'flex-wrap:wrap;gap:.5rem' }, hidden.map((w) => h('button', { class: 'wtile', onclick: () => { w.visible = true; persist(); draw(); } }, h('strong', {}, TITLES[w.id]), h('span', { class: 'muted' }, '+ Add')))) : h('p', { class: 'muted', style: 'margin:0' }, 'Everything available to you is already on your dashboard.'),
     h('div', { class: 'row', style: 'margin-top:.8rem' }, h('button', { onclick: () => { if (confirm('Go back to the starting layout for your job? Your own sizes and order will be replaced.')) { layout = (data.defaults || []).map((w) => ({ ...w })); persist(); draw(); } } }, 'Reset To My Job\'s Layout')));
 }
+// On a phone: the four numbers worth a glance, as big tiles above the cards (hidden on a wide screen, where the cards already show them).
+function glance() {
+  const t = [], c = data.costing, e = data.estimating, td = data.todos, pr = data.presence, cp = data.compliance;
+  if (c) t.push(['Owed To Us', usd(c.currentlyDue), c.currentlyDue ? 'warn' : '', '#/projects'], ['Billed', usd(c.billed), '', '#/projects']);
+  if (e) t.push(['Follow-Ups Due', e.awaitingFollowUp, e.awaitingFollowUp ? 'warn' : '', '#/estimating'], ['Open Leads', e.openLeads, '', '#/estimating']);
+  if (td) t.push(['My To-Dos', td.length, '', '#/messages']);
+  if (pr) t.push(['Clocked In', pr.active.length, pr.active.length ? 'good' : '', '#/timepay']);
+  if (cp) t.push(['Subs Blocked', cp.vendorsBlocked.length, cp.vendorsBlocked.length ? 'bad' : 'good', '#/compliance']);
+  return t.length ? h('div', { class: 'glance' }, t.slice(0, 4).map(([l, v, c2, href]) => h('a', { class: 'gtile ' + c2, href }, h('span', { class: 'l' }, l), h('span', { class: 'v' }, String(v))))) : '';
+}
 function draw() {
   const hr = new Date().getHours(), greet = hr < 12 ? 'Good morning' : hr < 17 ? 'Good afternoon' : 'Good evening', name = C.state.user.name && !C.state.user.name.includes('@') ? ', ' + C.state.user.name.split(' ')[0] : '';
   const cards = visible().map(widgetEl).filter(Boolean);
   root.replaceChildren(
-    h('div', { class: 'row spread' }, h('h1', {}, greet + name), h('button', { class: editing ? 'primary' : '', onclick: () => { editing = !editing; draw(); } }, editing ? 'Done' : 'Edit Dashboard')),
+    h('div', { class: 'row spread dash-top' }, h('h1', {}, greet + name), h('button', { class: editing ? 'primary' : '', onclick: () => { editing = !editing; draw(); } }, editing ? 'Done' : 'Edit Dashboard')),
+    editing ? '' : glance(),
     h('div', { class: 'dash-err' }), editing ? h('p', { class: 'muted', style: 'margin:-.4rem 0 .8rem' }, 'Drag a card, or use the arrows, to move it. Pick a size and how much detail it shows. Changes save as you go and are only for you.') : '',
     cards.length ? h('div', { class: 'dash' + (editing ? ' editing' : '') }, cards) : h('div', { class: 'card soon' }, 'Nothing is turned on. Use Edit Dashboard to add cards.'), editing ? tray() : '');
 }

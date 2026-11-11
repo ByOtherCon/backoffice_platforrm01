@@ -197,7 +197,86 @@ table tr.grp th{text-align:center;border-bottom:1px solid var(--line);padding-bo
 .mini .t{height:8px;border-radius:99px;background:var(--line);overflow:hidden}.mini .t>i{display:block;height:100%;border-radius:99px}
 .mini .n{text-align:right}
 
-@media (max-width:700px){header.top{flex-wrap:wrap;row-gap:.3rem;padding-top:.4rem;padding-bottom:.4rem}header.top nav{flex:1 1 100%;order:3;flex-wrap:nowrap;overflow-x:auto;margin-left:0}}
-/* on a phone, nothing is allowed to push the whole page wider than the screen */
-@media (max-width:700px){.card{overflow-x:auto}select,input,textarea{max-width:100%}}
-@media (max-width:700px){.row{flex-wrap:wrap}.row>select,.row>input{min-width:0;flex:1 1 10rem}}
+/* ================= phone layout (one app, it adapts) ================= */
+.tabbar,.glance{display:none}
+@media (max-width:700px){
+  html{-webkit-text-size-adjust:100%}
+  body{overscroll-behavior-y:contain}
+  header.top{min-height:52px;padding:0 .9rem;gap:.6rem;justify-content:space-between}
+  header.top .logo{height:34px}
+  header.top nav,header.top .who,header.top>button:not(#bell){display:none}
+  main{padding:.9rem .85rem calc(84px + env(safe-area-inset-bottom))}
+  h1{font-size:1.45rem;margin:.1rem 0 .7rem}
+  h2{font-size:1.1rem}
+  /* bottom tab bar */
+  .tabbar{display:flex;position:fixed;left:0;right:0;bottom:0;z-index:30;background:#fff;border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom);box-shadow:0 -6px 22px rgba(20,24,40,.07)}
+  .tabbar a,.tabbar .tab-more{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;min-height:58px;padding:.35rem 0;color:var(--muted);text-decoration:none;font-size:11px;font-weight:600;background:none;border:0;border-radius:0;position:relative}
+  .tabbar .on{color:var(--navy)}
+  .tabbar .on::before{content:"";position:absolute;top:0;left:30%;right:30%;height:3px;border-radius:0 0 3px 3px;background:var(--navy)}
+  .tabbar .bubble{position:absolute;top:4px;left:calc(50% + 6px);min-width:17px;height:17px;line-height:17px;padding:0 4px;font-size:10px;text-align:center;border-radius:99px;background:var(--navy);color:#fff;font-style:normal}
+  .tabbar .bubble.hot{background:var(--red)}
+  .more-list{display:grid;gap:.15rem}
+  .more-list a{display:flex;align-items:center;gap:.9rem;padding:.85rem .4rem;border-bottom:1px solid var(--line);text-decoration:none;color:var(--ink);font-size:1.05rem}
+  .more-list a.on{color:var(--navy);font-weight:600}
+  .more-acct{display:grid;gap:.5rem;margin-top:1rem}.more-acct button{min-height:46px}
+  /* touch sizes; 16px text so the phone does not zoom in on a field */
+  input,select,textarea{font-size:16px;min-height:44px}
+  input[type=checkbox],input[type=radio]{min-height:0;width:22px!important;height:22px}
+  button{min-height:44px;font-size:15px}
+  button.small{min-height:38px;padding:.3rem .8rem;font-size:14px}
+  button.small.icon{min-height:38px;min-width:38px;justify-content:center}
+  a.small{display:inline-flex;align-items:center;min-height:38px;padding:0 .4rem}
+  .form{grid-template-columns:1fr}
+  .row{flex-wrap:wrap}.row>select,.row>input{min-width:0;width:100%;flex:1 1 10rem}main select{min-width:0}
+  /* forms open as a sheet that fills the screen */
+  .modal-bg{padding:0;align-items:flex-end;z-index:40}
+  .modal{max-width:none!important;width:100%;max-height:94vh;overflow-y:auto;border-radius:20px 20px 0 0;padding:1.1rem 1rem calc(1.2rem + env(safe-area-inset-bottom))}
+  /* tabs along the top of a page scroll sideways instead of wrapping */
+  .tabs{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;margin-left:-.85rem;margin-right:-.85rem;padding:0 .85rem}.tabs::-webkit-scrollbar{display:none}
+  .tabs a{white-space:nowrap;padding:.7rem .85rem}
+  .card{overflow-x:visible;padding:.9rem .85rem}
+  .kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.kpi{padding:.7rem .8rem}.kpi .v{font-size:1.3rem}
+  .psum .row-a{grid-template-columns:repeat(2,minmax(0,1fr))}.pcard{padding:.7rem .8rem}.pcard .v{font-size:1.3rem}.pcard.green .ring,.ring{display:none}.pcard[style*="padding-right"]{padding-right:.8rem!important}
+  .pread{grid-template-columns:1fr}
+  /* tables become cards: heading on the left of each value (child selectors only, so a table inside a cell is left alone) */
+  table.m-stack{display:block;border:0}
+  table.m-stack>thead{display:none}
+  table.m-stack>:is(tbody,tfoot){display:block}
+  table.m-stack>:is(tbody,tfoot)>tr{display:block;background:#fff;border:1px solid var(--line);border-radius:14px;padding:.55rem .85rem;margin:.55rem 0;box-shadow:0 1px 2px rgba(20,24,40,.04)}
+  table.m-stack>:is(tbody,tfoot)>tr.total{background:#f6f7fb}
+  table.m-stack>:is(tbody,tfoot)>tr>td{display:flex;justify-content:space-between;align-items:center;gap:1rem;border:0;padding:.3rem 0;white-space:normal;text-align:right;min-width:0!important}
+  table.m-stack>:is(tbody,tfoot)>tr>td::before{content:attr(data-label);color:var(--muted);font-size:11.5px;text-transform:uppercase;letter-spacing:.05em;text-align:left;flex:none;max-width:46%;font-family:"Calibri",Carlito,sans-serif}
+  table.m-stack>:is(tbody,tfoot)>tr>td[data-label=""]::before{display:none}
+  /* a cell with several lines in it (name, then contact, then scope) shows its heading above the lines */
+  table.m-stack>:is(tbody,tfoot)>tr>td:has(> div){display:block;text-align:left}
+  table.m-stack>:is(tbody,tfoot)>tr>td:has(> div)::before{display:block;max-width:none;margin-bottom:.1rem}
+  table.m-stack>:is(tbody,tfoot)>tr>td:first-child{display:block;text-align:left;font-weight:600;font-size:1.02rem;padding-bottom:.25rem;border-bottom:1px solid var(--line);margin-bottom:.25rem}
+  table.m-stack>:is(tbody,tfoot)>tr>td:first-child::before{display:none}
+  table.m-stack>:is(tbody,tfoot)>tr>td:first-child>div{font-weight:400;font-size:.92rem}
+  table.m-stack>:is(tbody,tfoot)>tr>td:is(.lo,.lo2,.lo3),table.m-stack>:is(tbody,tfoot)>tr>td:empty{display:none}
+  table.m-stack>:is(tbody,tfoot)>tr>td:has(> button),table.m-stack>:is(tbody,tfoot)>tr>td:has(> .row){justify-content:flex-start;flex-wrap:wrap;gap:.4rem}
+  table.m-stack>:is(tbody,tfoot)>tr>td:has(> button)::before{display:none}
+  table.m-stack>:is(tbody,tfoot)>tr>td input,table.m-stack>:is(tbody,tfoot)>tr>td select{max-width:60%}
+  table.m-stack>tbody>tr.sub-bills{border-style:dashed;background:#fafbfd}
+  table.minitable{display:block;overflow-x:auto;width:100%;min-width:0}
+  .scroll{overflow-x:visible}
+  /* dashboard */
+  .glance{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.65rem;margin:0 0 .9rem}
+  .gtile{display:flex;flex-direction:column;gap:.1rem;padding:.8rem .9rem;border-radius:16px;background:linear-gradient(160deg,#fff,#f4f5fb);border:1px solid var(--line);text-decoration:none;color:inherit;box-shadow:0 1px 2px rgba(20,24,40,.05)}
+  .gtile .l{font-size:11.5px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);font-weight:600;font-family:"Calibri",Carlito,sans-serif}
+  .gtile .v{font-size:1.55rem;color:var(--navy);font-weight:600;font-family:"Calibri",Carlito,sans-serif;line-height:1.15}
+  .gtile.warn .v{color:var(--amber)}.gtile.bad .v{color:var(--red)}.gtile.good .v{color:var(--green)}
+  .dash{gap:.8rem}.wcard{border-radius:18px;padding:.9rem .9rem 1rem}
+  .wbody.d-compact,.wbody.d-standard{max-height:none}
+  .kg-S,.kg-M,.kg-L,.kg-XL{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .wedit .muted{display:none}
+  .tscroll{overflow-x:visible}
+  .msg-split{grid-template-columns:1fr!important}.msg-split>.card.soon{display:none}
+  .dash-top{align-items:center;flex-wrap:nowrap!important}
+  .dash-top button{min-height:40px;flex:none}
+  .dash-top h1{font-size:1.3rem}
+  /* a page title with its buttons: title on top, controls underneath */
+  main>.row.spread{flex-direction:column;align-items:stretch;gap:.5rem}
+  main>.row.spread>.row{justify-content:space-between}
+  main>.row.spread>.row>button.primary{flex:1 1 100%}
+}

@@ -398,7 +398,7 @@ route('PUT', '/api/overhead/:id', async ({ user, params, body }) => { auth.requi
 route('DELETE', '/api/overhead/:id', async ({ user, params }) => { auth.requireRole(user, auth.SUPER); await oh.remove(uuid(params.id)); return { ok: true }; });
 route('PUT', '/api/settings/overhead', async ({ user, body }) => { auth.requireRole(user, auth.SUPER); await oh.saveBasis(body.basis); return { ok: true }; });
 
-const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.ico': 'image/x-icon' };
+const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.ico': 'image/x-icon', '.webmanifest': 'application/manifest+json' };
 const SEC = {
   'x-content-type-options': 'nosniff', 'x-frame-options': 'DENY', 'referrer-policy': 'same-origin',
   'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",

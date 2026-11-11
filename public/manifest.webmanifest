@@ -1,0 +1,10 @@
+{
+  "name": "by Other Desk Platform",
+  "short_name": "by Other",
+  "start_url": "/#/dashboard",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f7f8fa",
+  "theme_color": "#1B1462",
+  "icons": [{ "src": "/logo.png", "sizes": "any", "type": "image/png", "purpose": "any" }]
+}

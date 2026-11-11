@@ -5,6 +5,7 @@ import { addressBlock } from '/address.js';
 import { pickFromSharePoint } from '/spPicker.js';
 import { makeClockUi } from '/clockui.js';
 import * as dashboardUi from '/dashboard.js';
+import { phoneTabs, installMobile } from '/mobile.js';
 const $app = document.getElementById('app');
 const state = { user: null, trades: [], gcs: [] };
 const MANAGERS = ['Super Admin', 'Sub Admin', 'Exec Assistant'];
@@ -36,7 +37,8 @@ function shell(active, content) {
       h('span', { class: 'who' }, `${state.user.name || state.user.email} · ${state.user.role}`),
       h('button', { class: 'small', onclick: changePasswordForm, title: 'Change your password' }, 'Password'),
       h('button', { class: 'small', onclick: async () => { await api('POST', '/logout', {}); state.user = null; render(); } }, 'Sign out')),
-    h('main', {}, content));
+    h('main', {}, content),
+    phoneTabs(nav, active, { alerts: openNotifications, password: changePasswordForm, signOut: async () => { await api('POST', '/logout', {}); state.user = null; render(); } }));   // phones: a bar along the bottom
 }
 
 function changePasswordForm() {
@@ -640,14 +642,16 @@ async function clockSettingsCard() {
 
 // The number on the Messages tab: unread messages, plus to-dos that are new to you, due today or overdue.
 async function updateMessagesBadge() {
-  const el = document.getElementById('msg-bubble'); if (!el) return;
+  const els = [...document.querySelectorAll('#msg-bubble, .msg-b')]; if (!els.length) return;
   try {
     const b = await api('GET', '/messages/badge'); state.badge = b;
-    el.textContent = b.total > 99 ? '99+' : String(b.total); el.style.display = b.total ? 'inline-block' : 'none'; el.classList.toggle('hot', b.overdue > 0);
+    for (const el of els) { el.textContent = b.total > 99 ? '99+' : String(b.total); el.style.display = b.total ? 'inline-block' : 'none'; el.classList.toggle('hot', b.overdue > 0);
     el.title = [b.unread ? `${b.unread} unread message${b.unread === 1 ? '' : 's'}` : '', b.newTodos ? `${b.newTodos} new to-do${b.newTodos === 1 ? '' : 's'}` : '', b.dueToday ? `${b.dueToday} due today` : '', b.overdue ? `${b.overdue} overdue` : ''].filter(Boolean).join(' · ');
-  } catch { el.style.display = 'none'; }
+    }
+  } catch { for (const el of els) el.style.display = 'none'; }
 }
 setInterval(() => { if (state.user) updateMessagesBadge(); }, 60000);
+installMobile();
 
 // ------------------------------------------------------------------ alerts bell
 async function updateBell() {
@@ -1153,7 +1157,7 @@ async function conversationsPanel(openId, err) {
       t.todos.length ? h('div', { style: 'margin:.8rem 0' }, h('label', {}, 'To-dos from this conversation'), t.todos.map((d) => h('div', {}, `${d.status === 'Done' ? '✓' : '○'} ${d.title}${d.dueDate ? ' · due ' + d.dueDate : ''}${d.assignedTo ? ' · ' + d.assignedTo : ''}`))) : '',
       h('div', { style: 'margin-top:1rem' }, body, h('div', { style: 'margin-top:.4rem' }, lp.el), h('div', { class: 'row', style: 'margin-top:.6rem;justify-content:space-between' }, h('button', { onclick: () => todoForm(null, openId, () => render()) }, '+ To-do from this conversation'), h('button', { class: 'primary', onclick: guard(err, async () => { await api('POST', `/threads/${openId}/messages`, { body: body.value, links: lp.get() }); render(); }) }, 'Send'))));
   }
-  return h('div', {}, h('div', { class: 'row', style: 'margin-bottom:.8rem' }, h('button', { class: 'primary', onclick: compose }, '+ New message')), h('div', { style: 'display:grid;grid-template-columns:minmax(220px,300px) 1fr;gap:1rem;align-items:start' }, list, pane));
+  return h('div', {}, h('div', { class: 'row', style: 'margin-bottom:.8rem' }, h('button', { class: 'primary', onclick: compose }, '+ New message')), h('div', { class: 'msg-split', style: 'display:grid;grid-template-columns:minmax(220px,300px) 1fr;gap:1rem;align-items:start' }, list, pane));
 }
 const PRIORITY_PILL = { Urgent: 'Rejected', High: 'Pending', Normal: '', Low: '' };
 const priorityPill = (p) => (p && p !== 'Normal' ? h('span', { class: 'pill ' + (PRIORITY_PILL[p] || ''), style: 'margin-right:.4rem' }, p) : '');
@@ -1452,5 +1456,5 @@ async function render() {
     if (token === rendering) { $app.replaceChildren(view); updateBell(); updateMessagesBadge(); }
   } catch (e) { if (token === rendering && state.user) $app.replaceChildren(shell(page, h('div', { class: 'err' }, e.message))); }
 }
-addEventListener('hashchange', render);
+addEventListener('hashchange', () => { document.querySelectorAll('.modal-bg').forEach((m) => m.remove()); render(); });   // going to another page closes any open window
 boot();

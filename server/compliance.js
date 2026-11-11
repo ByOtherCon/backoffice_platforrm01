@@ -59,8 +59,10 @@ export async function notifyRoles(roles, { kind, title, body, link, dedupe }) {
   return n;
 }
 export const notifyUser = (userId, { kind, title, body, link, dedupe }) => q(`INSERT INTO notifications(user_id,kind,title,body,link,dedupe_key) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (user_id, dedupe_key) DO NOTHING`, [userId, kind, title, body ?? null, link ?? null, dedupe ?? null]);
-export const listNotifications = (userId) => q('SELECT id, kind, title, body, link, created_at, read_at FROM notifications WHERE user_id=$1 ORDER BY (read_at IS NULL) DESC, created_at DESC LIMIT 60', [userId]);
+export const listNotifications = (userId) => q('SELECT id, kind, title, body, link, created_at, read_at FROM notifications WHERE user_id=$1 AND cleared_at IS NULL ORDER BY (read_at IS NULL) DESC, created_at DESC LIMIT 60', [userId]);
 export const markRead = (userId, ids) => ids === 'all' ? q('UPDATE notifications SET read_at=now() WHERE user_id=$1 AND read_at IS NULL', [userId]) : q('UPDATE notifications SET read_at=now() WHERE user_id=$1 AND id = ANY($2::uuid[])', [userId, ids]);
+// Clearing hides an alert for good (the row stays so the same alert is not raised again).
+export const clearNotifications = (userId, ids) => ids === 'all' ? q(`UPDATE notifications SET cleared_at=now(), read_at=COALESCE(read_at, now()) WHERE user_id=$1 AND cleared_at IS NULL`, [userId]) : q(`UPDATE notifications SET cleared_at=now(), read_at=COALESCE(read_at, now()) WHERE user_id=$1 AND id = ANY($2::uuid[])`, [userId, ids]);
 
 export async function queueEmail({ to, subject, body, kind, relatedId, dedupe }) {
   return (await q(`INSERT INTO email_outbox(to_email,subject,body,kind,related_id,dedupe_key) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (dedupe_key) DO NOTHING RETURNING id`, [to, subject, body, kind ?? null, relatedId ?? null, dedupe ?? null])).length;

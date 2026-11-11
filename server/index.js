@@ -31,6 +31,7 @@ import * as ct from './contracts.js';
 import * as pd from './projectDraft.js';
 import * as cod from './changeOrderDoc.js';
 import { projectsHome } from './projectsHome.js';
+import * as ph from './projectsHome.js';
 import * as qbc from './qbCosts.js';
 import * as sv from './subVerify.js';
 import * as qbo from './quickbooks.js';
@@ -185,6 +186,8 @@ route('POST', '/api/payment-requests/:id/reject', async ({ user, params, body })
 route('POST', '/api/payment-requests/:id/pay', async ({ user, params, body }) => { manage(user); await ap.pay(user, uuid(params.id), body); return { ok: true }; });
 route('DELETE', '/api/payment-requests/:id', async ({ user, params }) => { manage(user); await ap.cancel(user, uuid(params.id)); return { ok: true }; });
 route('GET', '/api/notifications', async ({ user }) => { if (!user?.id) throw new HttpError(401, 'Sign in required.'); return cp.listNotifications(user.id); });
+route('POST', '/api/notifications/clear', async ({ user, body }) => { if (!user?.id) throw new HttpError(401, 'Sign in required.'); await cp.clearNotifications(user.id, body.all ? 'all' : (body.ids || []).map(uuid)); return { ok: true }; });
+route('POST', '/api/projects/home/alerts/clear', async ({ user, body }) => { auth.requireRole(user, [...auth.MANAGE, 'Project Manager']); return ph.clearAlerts(user, body); });
 route('POST', '/api/notifications/read', async ({ user, body }) => { if (!user?.id) throw new HttpError(401, 'Sign in required.'); await cp.markRead(user.id, body.all ? 'all' : (body.ids || []).map(uuid)); return { ok: true }; });
 route('GET', '/api/outbox', async ({ user }) => { manage(user); return { connected: cp.emailConnected(), emails: await cp.listOutbox() }; });
 route('POST', '/api/outbox/send', async ({ user }) => { auth.requireRole(user, auth.APPROVERS); return cp.sendQueued(); });

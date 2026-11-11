@@ -8,6 +8,15 @@ import { addrLine } from '../src/lib/workflow.ts';
 
 const money = (n) => (n == null ? '$0' : new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(n));
 const sev = { high: 0, medium: 1, info: 2 };
+// A cleared alert stays cleared for that kind of alert on that project, until it gets more serious (the severity is part of the key).
+const alertKey = (a) => `${a.kind}:${a.projectId || ''}:${a.severity}`;
+// keys: clear these; all: clear every alert shown now; restore: bring every cleared alert back
+export async function clearAlerts(user, b) {
+  if (b.restore) { await q('DELETE FROM dismissed_alerts WHERE user_id=$1', [user.id]); return { ok: true }; }
+  const keys = (Array.isArray(b.keys) ? b.keys : []).map((k) => String(k).slice(0, 120)).slice(0, 200);
+  for (const k of keys) await q('INSERT INTO dismissed_alerts(user_id, alert_key) VALUES ($1,$2) ON CONFLICT DO NOTHING', [user.id, k]);
+  return { ok: true, cleared: keys.length };
+}
 export async function projectsHome(user, manageAll, yearArg) {
   const today = todayEastern(), thisYear = Number(today.slice(0, 4));
   const all = await listProjects(user, manageAll); const ids = all.map((p) => p.id);
@@ -42,8 +51,11 @@ export async function projectsHome(user, manageAll, yearArg) {
   for (const s of sched) { const r = rows.find((x) => x.id === s.project_id); if (!r || !r.active) continue; const late = s.d < today;
     alerts.push({ severity: late ? 'medium' : 'info', kind: 'schedule', title: `${late ? 'Invoice Past Its Expected Date' : 'Invoice Expected Soon'}: ${r.name}`, detail: `${s.label}${s.amount != null ? ' · ' + money(s.amount) : ''} · expected ${s.d}`, date: s.d, link: link(r.id, 'contract'), projectId: r.id }); }
   alerts.sort((a, b) => sev[a.severity] - sev[b.severity] || String(a.date || '9').localeCompare(String(b.date || '9')));
+  for (const a of alerts) a.key = alertKey(a);
+  const gone = new Set((await q('SELECT alert_key FROM dismissed_alerts WHERE user_id=$1', [user.id])).map((r) => r.alert_key));
+  const shown = alerts.filter((a) => !gone.has(a.key)), clearedCount = alerts.length - shown.length;
   return { year, years,
     summary: { active: active.length, inactive: inactive.length, contractActive: sum(active, 'contract'), billedActive: sum(active, 'billed'), dueNowActive: sum(active, 'currentlyDue'), profitActive: sum(active, 'projectedProfit'),
       ntoNeeded: openNtos.length, ntoOverdue: openNtos.filter((r) => r.nto.overdue).length, ntoSent: rows.filter((r) => r.year === year && r.nto?.status === 'Sent').length },
-    alerts: alerts.slice(0, 40), alertCount: alerts.length, rows: rows.filter((r) => r.active || r.year === year) };
+    alerts: shown.slice(0, 40), alertCount: shown.length, clearedCount, rows: rows.filter((r) => r.active || r.year === year) };
 }

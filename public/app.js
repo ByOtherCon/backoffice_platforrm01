@@ -103,8 +103,8 @@ async function projectsView() {
     tile('Owed To Us Now', money0(sm.dueNowActive), 'billed to GCs, not yet paid', sm.dueNowActive > 0 ? 'warn' : ''), tile('Projected Profit', money0(sm.profitActive), 'active projects', sm.profitActive < 0 ? 'bad' : 'good'),
     tile('Notices To Owner', `${sm.ntoNeeded} needed`, sm.ntoOverdue ? `${sm.ntoOverdue} overdue · ${sm.ntoSent} sent` : `${sm.ntoSent} sent`, sm.ntoOverdue ? 'bad' : ''));
   // alerts and deadlines: the serious ones first; the rest open on request
-  let showAll = false; const alertBox = h('div'), dot = { high: '#c0392b', medium: '#d68910', info: '#8a8fa3' };
-  const drawAlerts = () => { const list = showAll ? d.alerts : d.alerts.slice(0, 6); alertBox.replaceChildren(list.length ? h('div', {}, list.map((a) => h('div', { style: 'display:flex;gap:.6rem;align-items:baseline;padding:.3rem 0;border-bottom:1px solid var(--line)' }, h('span', { style: `width:.6rem;height:.6rem;border-radius:50%;background:${dot[a.severity]};flex:none;position:relative;top:1px`, title: a.severity }), h('div', { style: 'flex:1;min-width:0' }, h('a', { href: a.link }, a.title), h('div', { class: 'muted', style: 'font-size:13px' }, a.detail))))) : h('p', { class: 'muted' }, 'Nothing needs attention right now.'),
+  let showAll = false; const alertErr = h('div'), alertBox = h('div'), dot = { high: '#c0392b', medium: '#d68910', info: '#8a8fa3' };
+  const drawAlerts = () => { const list = showAll ? d.alerts : d.alerts.slice(0, 6); alertBox.replaceChildren(list.length ? h('div', {}, list.map((a) => h('div', { style: 'display:flex;gap:.6rem;align-items:baseline;padding:.3rem 0;border-bottom:1px solid var(--line)' }, h('span', { style: `width:.6rem;height:.6rem;border-radius:50%;background:${dot[a.severity]};flex:none;position:relative;top:1px`, title: a.severity }), h('div', { style: 'flex:1;min-width:0' }, h('a', { href: a.link }, a.title), h('div', { class: 'muted', style: 'font-size:13px' }, a.detail)), h('button', { class: 'small', title: 'Clear this alert. It comes back only if it becomes more serious.', onclick: guard(alertErr, async () => { await api('POST', '/projects/home/alerts/clear', { keys: [a.key] }); render(); }) }, 'Clear')))) : h('p', { class: 'muted' }, d.clearedCount ? 'All clear. You have cleared everything that was waiting.' : 'Nothing needs attention right now.'),
     d.alerts.length > 6 ? h('button', { class: 'small', style: 'margin-top:.5rem', onclick: () => { showAll = !showAll; drawAlerts(); } }, showAll ? 'Show Fewer' : `Show All ${d.alertCount}`) : ''); };
   drawAlerts();
   // the editable list
@@ -132,7 +132,7 @@ async function projectsView() {
   }
   draw();
   return shell('projects', [h('div', { class: 'row spread' }, h('h1', {}, 'Projects'), h('div', { class: 'row', style: 'gap:.6rem' }, h('label', { style: 'margin:0' }, 'Year'), yearSel, canAdd && h('button', { class: 'primary', onclick: newProjectModal }, '+ New project'))), projectsTabs('projects'), summary,
-    h('div', { class: 'card' }, h('div', { class: 'row spread' }, h('h2', {}, `Alerts & Deadlines${d.alertCount ? ` (${d.alertCount})` : ''}`)), alertBox),
+    h('div', { class: 'card' }, h('div', { class: 'row spread' }, h('h2', {}, `Alerts & Deadlines${d.alertCount ? ` (${d.alertCount})` : ''}`), h('div', { class: 'row', style: 'gap:.4rem' }, d.alerts.length ? h('button', { class: 'small', onclick: guard(alertErr, async () => { if (confirm(`Clear all ${d.alerts.length} alerts shown? An alert comes back only if it becomes more serious.`)) { await api('POST', '/projects/home/alerts/clear', { keys: d.alerts.map((a) => a.key) }); render(); } }) }, 'Clear All') : '', d.clearedCount ? h('button', { class: 'small', onclick: guard(alertErr, async () => { await api('POST', '/projects/home/alerts/clear', { restore: true }); render(); }) }, `Show ${d.clearedCount} Cleared`) : '')), alertErr, alertBox),
     h('div', { class: 'card' }, h('div', { class: 'row spread', style: 'flex-wrap:wrap;gap:.6rem' }, h('h2', {}, 'Projects'), h('div', { class: 'row', style: 'gap:.8rem;flex-wrap:wrap' }, find, h('label', { style: 'display:flex;gap:.35rem;align-items:center;margin:0;text-transform:none;letter-spacing:0;font-weight:400;font-size:14px' }, inactiveBox, 'Show Inactive'), count)), err, table)]);
 }
 
@@ -203,13 +203,55 @@ async function projectView(id, tab = 'trades') {
   return shell('projects', [
     h('p', {}, h('a', { href: '#/projects' }, '← All projects'), canEdit ? [' ', h('button', { class: 'small', onclick: () => editProjectForm(p.project) }, 'Edit Project')] : ''),
     h('h1', {}, p.project.name, p.project.refCode ? h('span', { class: 'pill Approved', style: 'margin-left:.7rem;font-size:14px', title: 'Contract reference code: use it on every document' }, p.project.refCode) : ''), p.project.folderUrl || canEdit ? h('div', { style: 'margin:.2rem 0 .5rem' }, estimating.folderButtons({ id: p.project.id, name: p.project.name, folderUrl: p.project.folderUrl, spPath: p.project.spPath }, canEdit, 'project', true)) : '', h('p', { class: 'muted' }, `${p.project.gc} · ${p.project.client} · ${p.project.address}`, p.project.contractUrl ? [' · ', h('a', { href: p.project.contractUrl, target: '_blank', rel: 'noopener' }, 'Contract')] : ''),
-    h('div', { class: 'grid kpis', style: 'margin-bottom:1rem' },
-      h('div', { class: 'kpi' }, h('div', { class: 'l' }, 'Original contract + COs'), h('div', { class: 'v' }, usd(p.totals.contract))),
-      h('div', { class: 'kpi' }, h('div', { class: 'l' }, 'Billed'), h('div', { class: 'v' }, usd(p.totals.billed))),
-      h('div', { class: 'kpi warn' }, h('div', { class: 'l' }, 'Owed To Us Now'), h('div', { class: 'v' }, usd(p.totals.currentlyDue)), h('div', { class: 'muted', style: 'font-size:12px' }, 'billed, not yet paid')),
-      h('div', { class: 'kpi ' + (p.totals.projectedProfit < 0 ? 'bad' : 'good') }, h('div', { class: 'l' }, 'Projected profit'), h('div', { class: 'v' }, usd(p.totals.projectedProfit)))),
+    projectSummary(p),
     h('div', { class: 'tabs' }, TABS.map(([t, label]) => h('a', { class: t === tab ? 'on' : '', href: `#/projects/${id}/${t}` }, label))),
     content]);
+}
+
+// ------------------------------------------------------------------ the project summary: where the job stands, in plain numbers
+function projectSummary(p) {
+  const T = p.totals, rd = (n) => Math.round(n * 100) / 100, pct = (a, b) => (b > 0 ? Math.max(0, Math.round((a / b) * 1000) / 10) : 0), fp = (n) => (n == null ? '—' : `${(Math.round(n * 10) / 10).toFixed(1)}%`);
+  const contract = T.contract, billed = T.billed, received = T.received, unpaidBilled = rd(billed - received);   // billed and not yet paid, retainage included
+  const original = rd(p.trades.reduce((n, t) => n + t.original, 0)), cos = rd(contract - original);
+  const subs = T.subContract, vendors = T.supplierCost, labor = T.laborCost, cost = T.projectedCost, other = rd(cost - subs - vendors - labor);
+  const profit = T.projectedProfit, margin = T.marginPct;
+  const owedOut = rd(Math.max(0, subs - T.subPaid) + (vendors - T.supplierPaid));   // what we still have to pay subs and vendors, invoiced or not
+  const health = margin == null ? ['gray', '#9aa0b4', 'No contract yet'] : margin >= 20 ? ['green', 'var(--green)', 'Strong'] : margin >= 10 ? ['amber', 'var(--amber)', 'Fair'] : margin >= 0 ? ['amber', '#d9632b', 'Thin'] : ['red', 'var(--red)', 'Loss'];
+  const bar = (parts) => h('div', { class: 'pbar' }, parts.filter((x) => x[0] > 0).map(([v, c]) => h('i', { style: `width:${Math.min(100, v)}%;background:${c}` })));
+  const card = (cls, label, value, sub, extra) => h('div', { class: 'pcard ' + cls }, h('div', { class: 'l' }, label), h('div', { class: 'v' }, value), sub ? h('div', { class: 's' }, sub) : '', extra || '');
+  // the whole contract dollar, split into what it costs and what is left
+  const seg = [['Subcontractors', subs, '#4c4aa8'], ['Vendors', vendors, '#d68910'], ['Labor', labor, '#2a9d8f'], ...(other > 0.005 ? [['Other', other, '#9aa0b4']] : [])];
+  const denom = Math.max(contract, cost, 1), cents = (v) => `${Math.max(0, Math.round((v / (contract || 1)) * 100))}¢`;
+  const split = h('div', { class: 'psplit' }, h('h3', {}, 'Where Each $1.00 Of The Contract Goes'), h('div', { class: 's muted', style: 'font-size:13px' }, `Contract ${usd(contract)} · total cost ${usd(cost)} (subcontracts, vendor invoices and labor, whether paid or not)`),
+    h('div', { class: 'bar' }, [...seg.filter(([, v]) => v > 0.005).map(([n, v, c]) => h('i', { style: `width:${(Math.max(0, v) / denom) * 100}%;background:${c}`, title: `${n} ${usd(v)}` })), profit > 0 ? h('i', { style: `width:${(profit / denom) * 100}%;background:var(--green)`, title: `Profit ${usd(profit)}` }) : '']),
+    h('div', { class: 'legend' }, [...seg.filter(([, v]) => v > 0.005).map(([n, v, c]) => h('span', {}, h('b', { style: `background:${c}` }), `${n} ${usd(v)} (${cents(v)})`)), h('span', {}, h('b', { style: `background:${profit >= 0 ? 'var(--green)' : 'var(--red)'}` }), `${profit >= 0 ? 'Profit' : 'Loss'} ${usd(Math.abs(profit))} (${cents(Math.abs(profit))})`)]));
+  // the job's progress side by side: how much is billed, collected, and spent
+  const prog = (label, v, color) => h('div', { class: 'mini' }, h('span', {}, label), h('div', { class: 't' }, h('i', { style: `width:${Math.min(100, v)}%;background:${color}` })), h('span', { class: 'n' }, `${v}%`));
+  const billedPct = pct(billed, contract), costPct = pct(cost, contract), recvPct = pct(received, contract);
+  const rated = p.trades.filter((t) => t.contract > 0 && t.marginPct != null && t.projectedCost > 0), best = [...rated].sort((a, b) => b.marginPct - a.marginPct)[0], worst = [...rated].sort((a, b) => a.marginPct - b.marginPct)[0], losing = rated.filter((t) => t.projectedProfit < 0);
+  const notes = [];
+  notes.push([billedPct >= 100 ? 'ok' : '', `Billed ${billedPct}% of the contract; ${usd(T.unbilled)} still to bill.`]);
+  if (unpaidBilled > 0) notes.push(['warn', `${usd(unpaidBilled)} is billed and not paid yet (${usd(T.currentlyDue)} due now${T.retainageOutstanding ? ` plus ${usd(T.retainageOutstanding)} retainage held` : ''}).`]);
+  if (costPct > billedPct + 10) notes.push(['warn', `Cost committed (${costPct}%) is running ahead of billing (${billedPct}%). Keep an eye on cash.`]);
+  else if (billedPct > costPct + 10) notes.push(['ok', `Billing (${billedPct}%) is ahead of cost committed (${costPct}%).`]);
+  if (owedOut > 0) notes.push(['', `${usd(owedOut)} still to pay out to subcontractors and vendors, invoiced or not.`]);
+  if (T.subHeld > 0) notes.push(['', `${usd(T.subHeld)} of subcontractor payments is held until final.`]);
+  if (T.unallocatedCost > 0.005) notes.push(['warn', `${usd(T.unallocatedCost)} of cost is not tied to a trade.`]);
+  if (losing.length) notes.push(['bad', `Losing money on ${losing.map((t) => `${t.name} (${usd(t.projectedProfit)})`).join(', ')}.`]);
+  const read = h('div', { class: 'pread' },
+    h('div', { class: 'psplit' }, h('h3', {}, 'How Far Along'), prog('Billed', billedPct, 'var(--navy)'), prog('Collected', recvPct, 'var(--green)'), prog('Cost committed', costPct, '#d68910'),
+      best && worst ? h('div', { class: 's muted', style: 'font-size:13px;margin-top:.5rem' }, `Best margin: ${best.name} ${fp(best.marginPct)}`, rated.length > 1 ? ` · Lowest: ${worst.name} ${fp(worst.marginPct)}` : '') : ''),
+    h('div', { class: 'psplit' }, h('h3', {}, 'What Stands Out'), notes.length ? h('ul', {}, notes.map(([c, t]) => h('li', { class: c }, t))) : h('p', { class: 'muted' }, 'Nothing yet.')));
+  return h('div', { class: 'psum' },
+    h('div', { class: 'row-a' },
+      card('', 'Contract Value', usd(contract), `Original ${usd(original)}${cos ? ` · approved change orders ${usd(cos)}` : ''}`),
+      card('', 'Billed To Date', usd(billed), `${billedPct}% of the contract`, bar([[billedPct, 'var(--navy)']])),
+      card('amber', 'Billed, Not Paid', usd(unpaidBilled), T.retainageOutstanding ? `Retainage held ${usd(T.retainageOutstanding)} · due now ${usd(T.currentlyDue)}` : `Due now ${usd(T.currentlyDue)}`),
+      card('gray', 'Still To Bill', usd(T.unbilled), `${rd(100 - billedPct)}% of the contract remaining`),
+      card('gray', 'Total Cost', usd(cost), `Subs ${usd(subs)} · Vendors ${usd(vendors)} · Labor ${usd(labor)}`, bar([[pct(subs, cost), '#4c4aa8'], [pct(vendors, cost), '#d68910'], [pct(labor, cost), '#2a9d8f']])),
+      h('div', { class: 'pcard ' + health[0], style: 'padding-right:4.8rem' }, h('div', { class: 'l' }, 'Projected Profit'), h('div', { class: 'pprofit' }, h('div', {}, h('div', { class: 'v' }, usd(profit)), h('div', { class: 's' }, `${health[2]} margin · contract minus total cost`)),
+        h('div', { class: 'ring', style: `--p:${Math.max(0, Math.min(100, margin || 0))};--c:${health[1]}`, title: 'Projected margin' }, h('span', {}, fp(margin)))))),
+    split, read);
 }
 
 // ------------------------------------------------------------------ contract / work order
@@ -273,10 +315,10 @@ function tradeOverview(p, canEdit, reload) {
   const avail = state.trades.filter((t) => !t.archived && !used.has(t.id));
   const sel = h('select', {}, h('option', { value: '' }, 'Add trade…'), avail.map((t) => h('option', { value: t.id }, t.name))); const amt = h('input', { type: 'number', min: '0', step: '0.01', placeholder: 'Contract amount' });
   return h('div', { class: 'card' }, h('h2', {}, 'Trade performance'), err,
-    h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, th('Trade'), th('Original Contract', 1), th('Approved COs', 1, 'lo'), th('Contract Total', 1), th('Billed', 1, 'lo3'), th('Retainage', 1, 'lo2'), th('Received', 1, 'lo3'), th('Owed To Us Now', 1), th('Actual Cost', 1, 'lo3'), th('Projected Profit', 1), canEdit && th(''))),
-      h('tbody', {}, p.trades.map((t) => h('tr', {}, h('td', {}, t.name), h('td', { class: 'n' }, editAmount(t)), h('td', { class: 'n lo' }, usd(t.approvedCOs)), h('td', { class: 'n' }, usd(t.contract)), h('td', { class: 'n lo3' }, usd(t.billed)), h('td', { class: 'n lo2' }, usd(t.retainageOutstanding)), h('td', { class: 'n lo3' }, usd(t.received)), h('td', { class: 'n' }, usd(t.currentlyDue)), h('td', { class: 'n lo3' }, usd(t.actualCost)), h('td', { class: 'n ' + cls(t.projectedProfit) }, usd(t.projectedProfit)),
+    h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, th('Trade'), th('Original Contract', 1), th('Approved COs', 1, 'lo'), th('Contract Total', 1), th('Billed', 1, 'lo3'), th('Retainage', 1, 'lo2'), th('Received', 1, 'lo3'), th('Owed To Us Now', 1), th('Actual Cost', 1, 'lo3'), th('Projected Profit', 1), th('Profit %', 1), canEdit && th(''))),
+      h('tbody', {}, p.trades.map((t) => h('tr', {}, h('td', {}, t.name), h('td', { class: 'n' }, editAmount(t)), h('td', { class: 'n lo' }, usd(t.approvedCOs)), h('td', { class: 'n' }, usd(t.contract)), h('td', { class: 'n lo3' }, usd(t.billed)), h('td', { class: 'n lo2' }, usd(t.retainageOutstanding)), h('td', { class: 'n lo3' }, usd(t.received)), h('td', { class: 'n' }, usd(t.currentlyDue)), h('td', { class: 'n lo3' }, usd(t.actualCost)), h('td', { class: 'n ' + cls(t.projectedProfit) }, usd(t.projectedProfit)), h('td', { class: 'n ' + cls(t.projectedProfit) }, t.marginPct == null ? '—' : `${t.marginPct.toFixed(1)}%`),
         canEdit && h('td', {}, h('button', { class: 'small danger', onclick: guard(err, async () => { if (confirm(`Remove ${t.name} from this project?`)) { await api('DELETE', `/projects/${p.project.id}/trades/${t.id}`); reload(); } }) }, 'Remove'))))),
-      h('tfoot', {}, h('tr', { class: 'total' }, h('td', {}, 'Project'), h('td', { class: 'n' }, usd(sum('original'))), h('td', { class: 'n lo' }, usd(sum('approvedCOs'))), h('td', { class: 'n' }, usd(p.totals.contract)), h('td', { class: 'n lo3' }, usd(p.totals.billed)), h('td', { class: 'n lo2' }, usd(p.totals.retainageOutstanding)), h('td', { class: 'n lo3' }, usd(p.totals.received)), h('td', { class: 'n' }, usd(p.totals.currentlyDue)), h('td', { class: 'n lo3' }, usd(p.totals.actualCost)), h('td', { class: 'n ' + cls(p.totals.projectedProfit) }, usd(p.totals.projectedProfit)), canEdit && h('td'))))),
+      h('tfoot', {}, h('tr', { class: 'total' }, h('td', {}, 'Project'), h('td', { class: 'n' }, usd(sum('original'))), h('td', { class: 'n lo' }, usd(sum('approvedCOs'))), h('td', { class: 'n' }, usd(p.totals.contract)), h('td', { class: 'n lo3' }, usd(p.totals.billed)), h('td', { class: 'n lo2' }, usd(p.totals.retainageOutstanding)), h('td', { class: 'n lo3' }, usd(p.totals.received)), h('td', { class: 'n' }, usd(p.totals.currentlyDue)), h('td', { class: 'n lo3' }, usd(p.totals.actualCost)), h('td', { class: 'n ' + cls(p.totals.projectedProfit) }, usd(p.totals.projectedProfit)), h('td', { class: 'n ' + cls(p.totals.projectedProfit) }, p.totals.marginPct == null ? '—' : `${p.totals.marginPct.toFixed(1)}%`), canEdit && h('td'))))),
     canEdit && avail.length ? h('div', { class: 'row', style: 'margin-top:1rem' }, sel, amt, h('button', { onclick: guard(err, async () => { await api('POST', `/projects/${p.project.id}/trades`, { tradeId: sel.value, amount: amt.value }); reload(); }) }, 'Add')) : '',
     h('p', { class: 'muted', style: 'margin-top:.8rem' }, 'Projected profit = contract minus actual cost minus unbilled subcontract commitments. Only approved change orders change the contract.'));
 }
@@ -609,8 +651,8 @@ async function updateBell() {
 }
 async function openNotifications() {
   const n = await api('GET', '/notifications'); const err = h('div');
-  const bg = modal('Alerts', h('div', {}, err, n.length ? n.map((x) => h('div', { style: 'padding:.6rem 0;border-bottom:1px solid var(--line);' + (x.read_at ? 'opacity:.6' : '') }, h('div', { style: 'font-weight:600;font-family:Calibri,Carlito,sans-serif' }, x.title), x.body ? h('div', { class: 'muted' }, x.body) : '', h('div', { class: 'row', style: 'gap:.8rem' }, h('span', { class: 'muted', style: 'font-size:12px' }, new Date(x.created_at).toLocaleString()), x.link ? h('a', { href: x.link, onclick: () => bg.remove() }, 'Open') : ''))) : h('p', { class: 'muted' }, 'Nothing new.'),
-    n.some((x) => !x.read_at) ? h('div', { class: 'row', style: 'margin-top:1rem;justify-content:flex-end' }, h('button', { onclick: guard(err, async () => { await api('POST', '/notifications/read', { all: true }); bg.remove(); updateBell(); }) }, 'Mark all read')) : ''));
+  const bg = modal('Alerts', h('div', {}, err, n.length ? n.map((x) => h('div', { style: 'padding:.6rem 0;border-bottom:1px solid var(--line);' + (x.read_at ? 'opacity:.6' : '') }, h('div', { style: 'font-weight:600;font-family:Calibri,Carlito,sans-serif' }, x.title), x.body ? h('div', { class: 'muted' }, x.body) : '', h('div', { class: 'row', style: 'gap:.8rem' }, h('span', { class: 'muted', style: 'font-size:12px' }, new Date(x.created_at).toLocaleString()), x.link ? h('a', { href: x.link, onclick: () => bg.remove() }, 'Open') : '', h('button', { class: 'small', style: 'margin-left:auto', onclick: guard(err, async () => { await api('POST', '/notifications/clear', { ids: [x.id] }); bg.remove(); await updateBell(); openNotifications(); }) }, 'Clear')))) : h('p', { class: 'muted' }, 'Nothing new.'),
+    n.length ? h('div', { class: 'row', style: 'margin-top:1rem;justify-content:flex-end;gap:.5rem' }, n.some((x) => !x.read_at) ? h('button', { onclick: guard(err, async () => { await api('POST', '/notifications/read', { all: true }); bg.remove(); updateBell(); }) }, 'Mark All Read') : '', h('button', { class: 'danger', onclick: guard(err, async () => { await api('POST', '/notifications/clear', { all: true }); bg.remove(); updateBell(); }) }, 'Clear All')) : ''));
 }
 
 // ------------------------------------------------------------------ project documents tab: notice to owner (files and links come next)

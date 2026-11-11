@@ -45,9 +45,11 @@ export async function clearVendorDoc(subId, category) {
   if (!r.length) throw new HttpError(404, 'Vendor not found.');
 }
 // Used by every payment path: no W-9 + valid insurance, no payment.
-export async function assertCanPay(t, subcontractorId, asOf = today()) {
+// allowUnverified: the Super Admin has said to go ahead anyway. Returns what was bypassed (so the payment can note it), or null.
+export async function assertCanPay(t, subcontractorId, asOf = today(), { allowUnverified = false } = {}) {
   const [r] = await t(`${SELECT} WHERE s.id=$1`, [subcontractorId]); if (!r) throw bad('Vendor not found.');
   const v = shape(r, asOf);
+  if (!v.canPay && allowUnverified) return { name: v.name, blockers: v.blockers };
   if (!v.canPay) throw new HttpError(409, `${v.name} is an unverified subcontractor and cannot be paid: ${v.blockers.join('; ')}.`);
 }
 

@@ -125,8 +125,8 @@ route('PUT', '/api/projects/:id/commitments/:cid', async ({ user, params, body }
 route('DELETE', '/api/projects/:id/commitments/:cid', async ({ user, params }) => { await bl.deleteCommitment(write(user, params), uuid(params.cid)); return { ok: true }; });
 route('POST', '/api/projects/:id/commitments/:cid/bills', async ({ user, params, body }) => bl.addSubBill(write(user, params), uuid(params.cid), body));
 route('DELETE', '/api/projects/:id/commitments/:cid/bills/:bid', async ({ user, params }) => { await bl.deleteSubBill(write(user, params), uuid(params.cid), uuid(params.bid)); return { ok: true }; });
-route('POST', '/api/projects/:id/sub-bills/:bid/payments', async ({ user, params, body }) => { auth.requireRole(user, auth.APPROVERS); await bl.addSubPayment(write(user, params), uuid(params.bid), body); return { ok: true }; });
-route('POST', '/api/projects/:id/commitments/:cid/pay-without-invoice', async ({ user, params, body }) => { auth.requireRole(user, auth.APPROVERS); return bl.addPaymentWithoutInvoice(write(user, params), uuid(params.cid), body); });
+route('POST', '/api/projects/:id/sub-bills/:bid/payments', async ({ user, params, body }) => { auth.requireRole(user, auth.APPROVERS); await bl.addSubPayment(write(user, params), uuid(params.bid), body, { allowUnverified: user.role === 'Super Admin' && body?.confirmUnverified === true }); return { ok: true }; });
+route('POST', '/api/projects/:id/commitments/:cid/pay-without-invoice', async ({ user, params, body }) => { auth.requireRole(user, auth.APPROVERS); return bl.addPaymentWithoutInvoice(write(user, params), uuid(params.cid), body, { allowUnverified: user.role === 'Super Admin' && body?.confirmUnverified === true }); });
 route('POST', '/api/projects/:id/commitments/:cid/request-without-invoice', async ({ user, params, body }) => ap.requestPaymentWithoutInvoice(user, write(user, params), uuid(params.cid), body));
 route('POST', '/api/projects/:id/sub-bills/:bid/payment-requests', async ({ user, params, body }) => ap.requestPayment(user, write(user, params), uuid(params.bid), body));
 route('DELETE', '/api/projects/:id/sub-payments/:pid', async ({ user, params }) => { await bl.deleteSubPayment(write(user, params), uuid(params.pid)); return { ok: true }; });
@@ -181,7 +181,7 @@ route('POST', '/api/admin/subcontractors/:id/folder', async ({ user, params }) =
 route('DELETE', '/api/admin/subcontractors/:id/documents/:cat', async ({ user, params }) => { manage(user); await cp.clearVendorDoc(uuid(params.id), decodeURIComponent(params.cat)); return { ok: true }; });
 route('POST', '/api/compliance/scan', async ({ user }) => { manage(user); const a = await cp.scan(), b = await cp.scanNtos(); return { ...a, ntos: b, ...(await cp.sendQueued()) }; });
 route('GET', '/api/payment-requests', async ({ req, user }) => { manage(user); const u = new URL(req.url, 'http://x').searchParams; return ap.listRequests({ status: u.get('status'), projectId: u.get('projectId') }); });
-route('POST', '/api/payment-requests/:id/approve', async ({ user, params }) => { auth.requireRole(user, auth.APPROVERS); await ap.approve(user, uuid(params.id)); return { ok: true }; });
+route('POST', '/api/payment-requests/:id/approve', async ({ user, params, body }) => { auth.requireRole(user, auth.APPROVERS); await ap.approve(user, uuid(params.id), body); return { ok: true }; });
 route('POST', '/api/payment-requests/:id/reject', async ({ user, params, body }) => { auth.requireRole(user, auth.APPROVERS); await ap.reject(user, uuid(params.id), body.reason); return { ok: true }; });
 route('POST', '/api/payment-requests/:id/pay', async ({ user, params, body }) => { manage(user); await ap.pay(user, uuid(params.id), body); return { ok: true }; });
 route('DELETE', '/api/payment-requests/:id', async ({ user, params }) => { manage(user); await ap.cancel(user, uuid(params.id)); return { ok: true }; });

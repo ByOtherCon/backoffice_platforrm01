@@ -60,11 +60,13 @@ export async function requestPaymentWithoutInvoice(user, projectId, commitmentId
 }
 const load = async (t, id) => { const [r] = await t('SELECT * FROM payment_requests WHERE id=$1 FOR UPDATE', [id]); if (!r) throw new HttpError(404, 'Request not found.'); return r; };
 const subOf = async (t, r) => (await t(r.sub_invoice_id ? 'SELECT sc.subcontractor_id FROM sub_invoices si JOIN sub_commitments sc ON sc.id=si.commitment_id WHERE si.id=$1' : 'SELECT subcontractor_id FROM sub_commitments WHERE id=$1', [r.sub_invoice_id || r.commitment_id]))[0].subcontractor_id;
-export async function approve(user, id) {
+// Only the Super Admin can go ahead with an unverified subcontractor, and only when the request says they confirmed it.
+const mayBypass = (user, b) => user.role === 'Super Admin' && b?.confirmUnverified === true;
+export async function approve(user, id, b = {}) {
   const r = await tx(async (t) => {
     const r = await load(t, id); if (r.status !== 'Requested') throw bad(`This request is already ${r.status.toLowerCase()}.`);
     if (r.requested_by === user.id && user.role !== 'Super Admin') throw new HttpError(403, 'A different approver is needed. You cannot approve your own request.');
-    await assertCanPay(t, await subOf(t, r));
+    await assertCanPay(t, await subOf(t, r), undefined, { allowUnverified: mayBypass(user, b) });
     await t(`UPDATE payment_requests SET status='Approved', decided_by=$2, decided_at=now() WHERE id=$1`, [id, user.id]); return r;
   });
   await notifyUser(r.requested_by, { kind: 'approval', title: 'Your vendor payment was approved', body: 'Ready to pay.', link: '#/compliance', dedupe: `app:${id}` });
@@ -82,7 +84,7 @@ export async function pay(user, id, b) {
     const r = await load(t, id); if (r.status !== 'Approved') throw bad(r.status === 'Paid' ? 'This request is already paid.' : 'Only an approved request can be paid.');
     const date = dateStr(b.date, 'Payment date', true); let billId = r.sub_invoice_id;
     if (!billId) billId = await makeNoInvoiceBill(t, r.commitment_id, { amount: Number(r.amount), date, memo: r.memo, method: r.method });   // a request with no invoice: the bill is made now
-    const payId = await recordSubPayment(t, r.project_id, billId, Number(r.amount), date, { method: r.method, memo: r.memo });
+    const payId = await recordSubPayment(t, r.project_id, billId, Number(r.amount), date, { method: r.method, memo: r.memo, allowUnverified: mayBypass(user, b) });
     await t(`UPDATE payment_requests SET status='Paid', paid_date=$2, reference=$3, sub_payment_id=$4, sub_invoice_id=$5 WHERE id=$1`, [id, b.date, text(b.reference, 'Check / reference #', { max: 100, required: false }) || null, payId, billId]);
   });
 }

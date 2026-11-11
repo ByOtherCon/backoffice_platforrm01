@@ -173,7 +173,8 @@ export async function recordSubPayment(t, projectId, billId, amount, date, how =
       COALESCE((SELECT SUM(amount) FROM sub_payments WHERE sub_invoice_id=si.id),0) paid_bill
     FROM sub_invoices si JOIN sub_commitments sc ON sc.id=si.commitment_id WHERE si.id=$1 AND sc.project_id=$2`, [billId, projectId]);
   if (!bill) throw new HttpError(404, 'Bill not found.');
-  await assertCanPay(t, bill.subcontractor_id);
+  const bypass = await assertCanPay(t, bill.subcontractor_id, undefined, { allowUnverified: !!how.allowUnverified });
+  if (bypass) how = { ...how, memo: [how.memo, `Paid while unverified (${bypass.blockers.join('; ')}); the Super Admin chose to proceed.`].filter(Boolean).join(' | ') };
   if (toCents(bill.paid_bill) + toCents(amount) > toCents(bill.amount)) throw bad('That is more than is left on this bill.');
   const open = r2(Number(bill.invoiced) - Number(bill.paid_all));
   const available = r2(open - (bill.hold_released ? 0 : Math.min(Number(bill.hold_amount), open)));
@@ -196,18 +197,18 @@ export async function makeNoInvoiceBill(t, commitmentId, { amount, date, memo, m
   const [r] = await t('INSERT INTO sub_invoices(commitment_id,number,invoice_date,amount,no_invoice,memo) VALUES ($1,$2,$3,$4,true,$5) RETURNING id', [commitmentId, `NO-INV-${n.n + 1}`, date, amount, `${method}: ${memo}`]);
   return r.id;
 }
-export async function addPaymentWithoutInvoice(projectId, commitmentId, b) {
+export async function addPaymentWithoutInvoice(projectId, commitmentId, b, opts = {}) {
   const p = readNoInvoice(b);
   return run(async (t) => {
     if (!(await t('SELECT 1 FROM sub_commitments WHERE id=$1 AND project_id=$2 FOR UPDATE', [commitmentId, projectId])).length) throw new HttpError(404, 'Subcontract not found.');
     const billId = await makeNoInvoiceBill(t, commitmentId, p);
-    await recordSubPayment(t, projectId, billId, p.amount, p.date, { method: p.method, memo: p.memo });   // the same rules as any payment: paperwork on file, the held final payment, the contract amount
+    await recordSubPayment(t, projectId, billId, p.amount, p.date, { method: p.method, memo: p.memo, allowUnverified: opts.allowUnverified });   // the same rules as any payment: paperwork on file, the held final payment, the contract amount
     return { id: billId };
   });
 }
-export async function addSubPayment(projectId, billId, b) {
+export async function addSubPayment(projectId, billId, b, opts = {}) {
   const amount = money(b.amount, 'Amount'); if (!(amount > 0)) throw bad('Amount must be greater than zero.');
-  return run((t) => recordSubPayment(t, projectId, billId, amount, dateStr(b.date, 'Payment date', true)).then((id) => ({ id })));
+  return run((t) => recordSubPayment(t, projectId, billId, amount, dateStr(b.date, 'Payment date', true), { allowUnverified: opts.allowUnverified }).then((id) => ({ id })));
 }
 export const deleteSubPayment = (projectId, payId) => run(async (t) => {
   if (!(await t(`DELETE FROM sub_payments WHERE id=$1 AND sub_invoice_id IN (SELECT si.id FROM sub_invoices si JOIN sub_commitments sc ON sc.id=si.commitment_id WHERE sc.project_id=$2) RETURNING id`, [payId, projectId])).length) throw new HttpError(404, 'Payment not found.');

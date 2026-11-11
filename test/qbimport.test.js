@@ -140,3 +140,16 @@ test("a project's own page can list the invoices that look like it", async () =>
   const sug = (await call('GET', `/api/projects/${pid}/qb-suggestions`, null, asst)).body; assert.ok(sug.some((x) => x.number === 'C11031-20' && /contract code/.test(x.why))); assert.ok(!sug.some((x) => x.number === 'C11031-9'));   // already imported ones are not suggestions
   assert.equal((await call('GET', `/api/projects/${pid}/qb-suggestions`, null, pm)).status, 403);
 });
+
+test('an invoice QuickBooks shows as paid in full is imported with no retainage held back, and a part-paid one holds back no more than is unpaid', async () => {
+  const mk = (id, num, total) => invoices.push({ Id: id, DocNumber: num, TxnDate: '2026-11-26', TotalAmt: total, CustomerRef: { value: '97', name: 'Paid Job' }, MetaData: { LastUpdatedTime: LU }, Line: [{ DetailType: 'SalesItemLineDetail', Amount: total, Description: 'Demolition deposit', SalesItemLineDetail: { ItemRef: { name: 'Demolition' } } }] });
+  mk('140', 'PAID-1', 3409); mk('141', 'PART-1', 1000);
+  payments.push({ Id: '950', TxnDate: '2026-11-27', TotalAmt: 3409, MetaData: { LastUpdatedTime: LU }, Line: [{ Amount: 3409, LinkedTxn: [{ TxnId: '140', TxnType: 'Invoice' }] }] });
+  payments.push({ Id: '951', TxnDate: '2026-11-27', TotalAmt: 950, MetaData: { LastUpdatedTime: LU }, Line: [{ Amount: 950, LinkedTxn: [{ TxnId: '141', TxnType: 'Invoice' }] }] });
+  await call('POST', '/api/quickbooks/sync', {}, asst);
+  const full = await staged('PAID-1'), part = await staged('PART-1');
+  const a = await call('POST', `/api/quickbooks/invoices/${full.id}/import`, { projectId: pid, lines: [{ index: 0, projectTradeId: ptDemo }] }, asst); assert.equal(a.status, 200, JSON.stringify(a.body));
+  const b = await call('POST', `/api/quickbooks/invoices/${part.id}/import`, { projectId: pid, lines: [{ index: 0, projectTradeId: ptDemo }] }, asst); assert.equal(b.status, 200, JSON.stringify(b.body));
+  const rows = (await q(`SELECT number, amount::float8 AS amount, retainage_held::float8 AS ret FROM client_invoices WHERE number IN ('PAID-1','PART-1') ORDER BY number`));
+  assert.deepEqual(rows.map((r) => [r.number, r.amount, r.ret]), [['PAID-1', 3409, 0], ['PART-1', 1000, 50]]);   // 10% would be 100, but only $50 is unpaid
+});

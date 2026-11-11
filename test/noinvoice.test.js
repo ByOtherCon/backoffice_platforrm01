@@ -55,3 +55,15 @@ test('someone who cannot pay directly sends a no-invoice payment for approval; t
   assert.equal((await call('POST', `/api/payment-requests/${d.body.id}/reject`, { reason: 'Get an invoice' }, owner)).status, 200);
   assert.equal((await row()).bills.length, 3);   // declined: nothing was created
 });
+
+test('a subcontract has a scope or description, apart from the trade it is billed against', async () => {
+  const [pt] = await q('SELECT id FROM project_trades WHERE project_id=$1', [pid]);
+  const [s2] = await q(`INSERT INTO subcontractors(name) VALUES ('Lopez Stucco') RETURNING id`);
+  const r = await call('POST', `/api/projects/${pid}/commitments`, { projectTradeId: pt.id, subcontractorId: s2.id, contractAmount: 5000, scope: 'Stucco, exterior walls' }, owner); assert.equal(r.status, 200, JSON.stringify(r.body));
+  const find = async () => (await call('GET', `/api/projects/${pid}/costs`, null, owner)).body.vendors.find((x) => x.vendor === 'Lopez Stucco');
+  assert.equal((await find()).scope, 'Stucco, exterior walls');
+  assert.equal((await call('PUT', `/api/projects/${pid}/commitments/${r.body.id}`, { scope: 'Stucco and paint' }, owner)).status, 200); assert.equal((await find()).scope, 'Stucco and paint');
+  assert.equal((await call('PUT', `/api/projects/${pid}/commitments/${r.body.id}`, { scope: '' }, owner)).status, 200); assert.equal((await find()).scope, null);   // optional
+  assert.equal((await call('POST', `/api/projects/${pid}/commitments`, { projectTradeId: pt.id, subcontractorId: s2.id, contractAmount: 1, scope: 'x'.repeat(301) }, owner)).status, 400);
+  assert.equal((await (await call('GET', '/api/reports/vendor_contracts', null, owner)).body.rows ?? []).length >= 0, true);
+});

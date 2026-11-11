@@ -102,7 +102,7 @@ export async function getCosts(projectId, { rates = false } = {}) {
     const invoiced = r2(mine.reduce((n, b) => n + b.amount, 0)), paid = r2(mine.reduce((n, b) => n + b.paid, 0));
     const held = s.hold_released ? 0 : Math.min(s.hold_amount, r2(invoiced - paid));
     return { id: s.id, vendor: s.vendor, contact: s.contact_name ?? null, contactPhone: s.contact_phone ?? null, subcontractorId: s.subcontractor_id, trade: s.trade, projectTradeId: s.project_trade_id, contract: s.contract_amount, invoiced, paid, balance: r2(invoiced - paid),
-      remaining: Math.max(0, r2(s.contract_amount - invoiced)), holdAmount: s.hold_amount, holdReason: s.hold_reason, holdReleased: s.hold_released, held, availableToPay: r2(invoiced - paid - held), materialsIncluded: s.materials_included, bills: mine, compliance: { status: comp.get(s.subcontractor_id)?.status, canPay: comp.get(s.subcontractor_id)?.canPay, verified: !!comp.get(s.subcontractor_id)?.verified, reasons: comp.get(s.subcontractor_id)?.blockers ?? [] } };
+      remaining: Math.max(0, r2(s.contract_amount - invoiced)), scope: s.scope ?? null, holdAmount: s.hold_amount, holdReason: s.hold_reason, holdReleased: s.hold_released, held, availableToPay: r2(invoiced - paid - held), materialsIncluded: s.materials_included, bills: mine, compliance: { status: comp.get(s.subcontractor_id)?.status, canPay: comp.get(s.subcontractor_id)?.canPay, verified: !!comp.get(s.subcontractor_id)?.verified, reasons: comp.get(s.subcontractor_id)?.blockers ?? [] } };
   });
   const sup = await q(`SELECT sa.id AS alloc_id, sa.amount, sa.project_trade_id, t.name AS trade, si.id AS invoice_id, si.reference, si.description, si.invoice_date, si.total, s.name AS supplier,
                          COALESCE((SELECT SUM(amount) FROM supplier_payments WHERE supplier_invoice_id=si.id),0) paid_total
@@ -124,8 +124,8 @@ export async function addCommitment(projectId, b) {
   if (!b.subcontractorId) throw bad('Choose a vendor.');
   return run(async (t) => {
     if (b.projectTradeId) await ownsTrade(t, projectId, b.projectTradeId);
-    const [r] = await t(`INSERT INTO sub_commitments(project_id,project_trade_id,subcontractor_id,contract_amount,hold_amount,hold_reason,materials_included) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-      [projectId, b.projectTradeId || null, b.subcontractorId, contract, hold, text(b.holdReason, 'Hold reason', { max: 200, required: false }) || null, !!b.materialsIncluded]);
+    const [r] = await t(`INSERT INTO sub_commitments(project_id,project_trade_id,subcontractor_id,contract_amount,hold_amount,hold_reason,materials_included,scope) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+      [projectId, b.projectTradeId || null, b.subcontractorId, contract, hold, text(b.holdReason, 'Hold reason', { max: 200, required: false }) || null, !!b.materialsIncluded, text(b.scope, 'Scope', { max: 300, required: false }) || null]);
     if (hold > contract) throw bad('The hold cannot exceed the subcontract amount.');
     await assertValid(t, projectId); return { id: r.id };
   });
@@ -138,6 +138,7 @@ export async function updateCommitment(projectId, id, b) {
     if (b.contractAmount !== undefined) v.contract_amount = money(b.contractAmount, 'Subcontract amount');
     if (b.holdAmount !== undefined) v.hold_amount = money(b.holdAmount, 'Final-payment hold');
     if (b.holdReason !== undefined) v.hold_reason = text(b.holdReason, 'Hold reason', { max: 200, required: false }) || null;
+    if (b.scope !== undefined) v.scope = text(b.scope, 'Scope', { max: 300, required: false }) || null;
     if (b.holdReleased !== undefined) { if (typeof b.holdReleased !== 'boolean') throw bad('holdReleased must be true or false.'); v.hold_released = b.holdReleased; }
     if (b.materialsIncluded !== undefined) v.materials_included = !!b.materialsIncluded;
     if (b.projectTradeId !== undefined) { if (b.projectTradeId) await ownsTrade(t, projectId, b.projectTradeId); v.project_trade_id = b.projectTradeId || null; }

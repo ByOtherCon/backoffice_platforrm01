@@ -440,14 +440,14 @@ async function costsTab(p, canEdit, reload) {
 
   const addVendor = async () => {
     const subs = (await api('GET', '/admin/subcontractors')).filter((s) => !s.archived);
-    const f = { trade: tradeSelect(p, { project: true }), vendor: h('select', {}, h('option', { value: '' }, 'Choose subcontractor…'), subs.map((s) => h('option', { value: s.id }, s.name))), amount: num(), hold: num('', { placeholder: 'e.g. 500 or 1000' }), reason: h('input', { placeholder: 'Inspection, punch list…' }), mat: h('input', { type: 'checkbox' }) };
-    formModal('Add subcontractor to this project', [field('Trade', f.trade), field('Subcontractor (from Admin)', f.vendor), field('Subcontract amount', f.amount), field('Final-payment hold', f.hold), field('Hold reason', f.reason), field('Materials included', f.mat)],
-      async () => { await api('POST', `${base}/commitments`, { projectTradeId: f.trade.value || null, subcontractorId: f.vendor.value, contractAmount: f.amount.value, holdAmount: f.hold.value, holdReason: f.reason.value, materialsIncluded: f.mat.checked }); reload(); }, 'Add subcontractor');
+    const f = { trade: tradeSelect(p, { project: true }), vendor: h('select', {}, h('option', { value: '' }, 'Choose subcontractor…'), subs.map((s) => h('option', { value: s.id }, s.name))), amount: num(), hold: num('', { placeholder: 'e.g. 500 or 1000' }), reason: h('input', { placeholder: 'Inspection, punch list…' }), mat: h('input', { type: 'checkbox' }), scope: h('input', { maxlength: 300, placeholder: 'What they are doing, for example: paint, stucco, or drywall finishing' }) };
+    formModal('Add subcontractor to this project', [field('Trade', f.trade), field('Subcontractor (from Admin)', f.vendor), field('Scope Or Description', f.scope, 'wide'), field('Subcontract amount', f.amount), field('Final-payment hold', f.hold), field('Hold reason', f.reason), field('Materials included', f.mat)],
+      async () => { await api('POST', `${base}/commitments`, { projectTradeId: f.trade.value || null, subcontractorId: f.vendor.value, contractAmount: f.amount.value, scope: f.scope.value, holdAmount: f.hold.value, holdReason: f.reason.value, materialsIncluded: f.mat.checked }); reload(); }, 'Add subcontractor');
   };
   const editVendor = (v) => {
-    const f = { amount: num(v.contract), hold: num(v.holdAmount), reason: h('input', { value: v.holdReason || '' }) };
-    formModal(`Edit ${v.vendor}`, [field('Subcontract amount', f.amount), field('Final-payment hold', f.hold), field('Hold reason', f.reason)],
-      async () => { await api('PUT', `${base}/commitments/${v.id}`, { contractAmount: f.amount.value, holdAmount: f.hold.value, holdReason: f.reason.value }); reload(); });
+    const f = { amount: num(v.contract), hold: num(v.holdAmount), reason: h('input', { value: v.holdReason || '' }), scope: h('input', { maxlength: 300, value: v.scope || '', placeholder: 'What they are doing, for example: paint, stucco, or drywall finishing' }) };
+    formModal(`Edit ${v.vendor}`, [field('Scope Or Description', f.scope, 'wide'), field('Subcontract amount', f.amount), field('Final-payment hold', f.hold), field('Hold reason', f.reason)],
+      async () => { await api('PUT', `${base}/commitments/${v.id}`, { contractAmount: f.amount.value, scope: f.scope.value, holdAmount: f.hold.value, holdReason: f.reason.value }); reload(); });
   };
   const addBill = (v) => {
     const f = { number: h('input'), date: h('input', { type: 'date', value: todayStr() }), amount: num('', { placeholder: `Up to ${usd(v.remaining)} remaining` }) };
@@ -478,6 +478,7 @@ async function costsTab(p, canEdit, reload) {
       v.holdAmount > 0 && h('button', { class: 'small', onclick: run(() => api('PUT', `${base}/commitments/${v.id}`, { holdReleased: !v.holdReleased })) }, v.holdReleased ? 'Re-hold' : 'Release Hold'), h('button', { class: 'small', onclick: () => editVendor(v) }, 'Edit'),
       h('button', { class: 'small danger', onclick: guard(err, async () => { if (confirm(`Remove ${v.vendor} and all its bills from this project?`)) { await api('DELETE', `${base}/commitments/${v.id}`); reload(); } }) }, 'Remove')) : '';
     return [h('tr', { class: 'sub-main' }, h('td', {}, v.trade || 'Project-level'), h('td', {}, h('strong', {}, v.vendor), v.compliance && v.compliance.canPay === false ? h('span', { class: 'pill Expired', style: 'margin-left:.5rem', title: (v.compliance.reasons || []).join('; ') }, 'Unverified: Cannot Pay') : v.compliance?.status === 'Expiring' ? h('span', { class: 'pill Expiring', style: 'margin-left:.5rem' }, 'Insurance expiring') : '',
+        v.scope ? h('div', { style: 'font-size:13px;white-space:normal' }, v.scope) : '',
         v.contact ? h('div', { class: 'muted', style: 'font-size:12px' }, 'Contact: ' + v.contact + (v.contactPhone ? ' · ' + v.contactPhone : '')) : '', v.holdReason ? h('div', { class: 'muted', style: 'font-size:12px' }, `Hold: ${v.holdReason}${v.holdReleased ? ' (released)' : ''}`) : ''),
       h('td', { class: 'n' }, usd(v.contract)), h('td', { class: 'n' }, usd(v.invoiced)), h('td', { class: 'n' }, usd(v.paid)), h('td', { class: 'n' }, usd(v.balance)), h('td', { class: 'n' }, usd(v.remaining)), h('td', { class: 'n bm-owed' }, usd(owedTotal)), h('td', { class: 'n lo' }, usd(v.held)), h('td', { class: 'n lo2' }, usd(v.availableToPay))),
       h('tr', { class: 'sub-bills' }, h('td'), h('td', { colspan: 9 }, actions, bills))];

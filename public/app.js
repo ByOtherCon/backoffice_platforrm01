@@ -118,12 +118,13 @@ async function projectsView() {
     return cell;
   };
   const table = h('div', { class: 'scroll' }), count = h('span', { class: 'muted' });
+  const codeOf = (r) => r.refCode || (r.proposalId ? 'C' + String(r.proposalId).slice(1) : '');   // a project carries its contract code (C), the lead's proposal code (P) is history
   function draw() {
-    const t = projectsFind.trim().toLowerCase(); const rows = d.rows.filter((r) => (projectsInactive || r.active) && (!t || [r.name, r.gc, r.client, r.address, r.proposalId].some((v) => String(v || '').toLowerCase().includes(t))));
+    const t = projectsFind.trim().toLowerCase(); const rows = d.rows.filter((r) => (projectsInactive || r.active) && (!t || [r.name, r.gc, r.client, r.address, r.proposalId, r.refCode].some((v) => String(v || '').toLowerCase().includes(t))));
     count.textContent = `${rows.length} shown`;
-    table.replaceChildren(rows.length ? h('table', {}, h('thead', {}, h('tr', {}, [['Project', ''], ['GC', 'lo3'], ['Address', 'lo'], ['Start', 'lo2'], ['Notice To Owner', '']].map(([x, c]) => h('th', { class: c }, x)), [['Contract', ''], ['Billed', 'lo2'], ['Owed To Us', '']].map(([x, c]) => h('th', { class: 'n ' + c }, x)), h('th', {}, 'Active'))),
+    table.replaceChildren(rows.length ? h('table', {}, h('thead', {}, h('tr', {}, [['Project', ''], ['Start', 'lo2'], ['Notice To Owner', '']].map(([x, c]) => h('th', { class: c }, x)), [['Contract', ''], ['Billed', 'lo2'], ['Owed To Us', '']].map(([x, c]) => h('th', { class: 'n ' + c }, x)), h('th', {}, 'Active'))),
       h('tbody', {}, rows.map((r) => h('tr', { class: r.active ? '' : 'muted' },
-        h('td', { style: 'white-space:normal;min-width:12rem' }, h('a', { href: '#/projects/' + r.id }, r.name), r.proposalId ? h('div', { class: 'muted', style: 'font-size:12px' }, r.proposalId) : ''), h('td', { class: 'lo3' }, r.gc), h('td', { style: 'white-space:normal;min-width:12rem', class: 'muted lo' }, r.address || '—'),
+        h('td', { style: 'white-space:normal;min-width:14rem' }, h('a', { href: '#/projects/' + r.id }, r.name), codeOf(r) ? h('div', { class: 'muted', style: 'font-size:12px' }, codeOf(r)) : '', r.gc ? h('div', { class: 'muted', style: 'font-size:13px' }, r.gc) : '', r.address ? h('div', { class: 'muted', style: 'font-size:13px' }, r.address) : ''),
         h('td', { class: 'lo2' }, canAdd ? h('input', { type: 'date', value: r.startDate || '', style: 'width:9.5rem', onchange: (e) => guard(err, async () => { await api('PUT', `/projects/${r.id}`, { startDate: e.target.value || null }); render(); })() }) : (r.startDate || '—')),
         ntoCell(r), h('td', { class: 'n' }, usd(r.contract)), h('td', { class: 'n lo2' }, usd(r.billed)), h('td', { class: 'n' }, usd(r.currentlyDue)),
         h('td', {}, h('input', { type: 'checkbox', checked: r.active, disabled: canAdd ? null : true, title: r.active ? 'Active: untick to close the project' : 'Inactive: tick to reopen', onchange: (e) => { const on = e.target.checked; if (!on && !confirm(`Mark ${r.name} inactive? It leaves the active list; nothing is deleted.`)) { e.target.checked = true; return; } guard(err, async () => { await api('PUT', `/projects/${r.id}`, { active: on }); render(); })(); } }))))))

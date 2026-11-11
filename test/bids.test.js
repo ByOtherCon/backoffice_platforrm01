@@ -14,17 +14,17 @@ const today = todayEastern();
 let base, owner, sub, est, asst;
 const b64 = (s) => Buffer.from(s).toString('base64url');
 const THREADS = {
-  t1: { text: 'Sun Industrial Inc invited you to bid.\nProject: Aldi - Orlando (New Shell Space)\nAddress: 1401 South Hiawassee Road, Orlando, FL\nBid Due: 11/09/2026 5:00 PM EST\nContact: Brandon McMurray brandon@sunindustrial.example\nView invitation (https://app.buildingconnected.com/projects/aldi1)', hid: 'h1' },
-  t2: { text: 'MEC General Contractors invited you to bid.\nProject: Aldi Orlando New Shell Space\n1401 S Hiawassee Rd, Orlando, FL\nBid Due: 11/09/2026\nContact: Craig craig@mec.example\n(https://app.buildingconnected.com/projects/aldi2)', hid: 'h2' },
-  t3: { text: 'Big GC invited you to bid. Project: Atlanta Store, 5 Peachtree St, Atlanta, GA. Bid Due: 11/12/2026 (https://app.buildingconnected.com/projects/atl)', hid: 'h3' },
+  t1: { text: 'Sun Industrial Inc invited you to bid.\nProject: Aldi - Orlando (New Shell Space)\nAddress: 1401 South Hiawassee Road, Orlando, FL\nBid Due: 11/09/2037 5:00 PM EST\nContact: Brandon McMurray brandon@sunindustrial.example\nView invitation (https://app.buildingconnected.com/projects/aldi1)', hid: 'h1' },
+  t2: { text: 'MEC General Contractors invited you to bid.\nProject: Aldi Orlando New Shell Space\n1401 S Hiawassee Rd, Orlando, FL\nBid Due: 11/09/2037\nContact: Craig craig@mec.example\n(https://app.buildingconnected.com/projects/aldi2)', hid: 'h2' },
+  t3: { text: 'Big GC invited you to bid. Project: Atlanta Store, 5 Peachtree St, Atlanta, GA. Bid Due: 11/12/2037 (https://app.buildingconnected.com/projects/atl)', hid: 'h3' },
   t4: { text: 'Marco Contractors invited you to bid. Project: Sunglass Hut - Lutz, Premium Outlets, 2382 Grand Cypress Drive, Lutz, FL. Please send pricing soon. (https://app.buildingconnected.com/projects/sg1)', hid: 'h4' },
 };
 const CLAUDE = {
-  t1: { name: 'Aldi - Orlando (New Shell Space)', gc: 'Sun Industrial Inc', contactName: 'Brandon McMurray', email: 'brandon@sunindustrial.example', phone: '', city: 'Orlando', state: 'FL', address: '1401 South Hiawassee Road', due: '2026-11-09', dueEvidence: 'Bid Due: 11/09/2026 5:00 PM EST', dueTime: '17:00', link: 'https://app.buildingconnected.com/projects/aldi1', type: 'Retail', mall: false, nda: false, scope: 'Interior build-out', threadId: 't1' },
-  t2: { name: 'Aldi Orlando New Shell Space', gc: 'MEC General Contractors', contactName: 'Craig', email: 'craig@mec.example', phone: '', city: 'Orlando', state: 'FL', address: '1401 S Hiawassee Rd', due: '2026-11-09', dueEvidence: 'Bid Due: 11/09/2026', dueTime: '', link: 'https://app.buildingconnected.com/projects/aldi2', type: 'Retail', mall: false, nda: false, scope: '', threadId: 't2' },
-  t3: { name: 'Atlanta Store', gc: 'Big GC', contactName: '', email: '', phone: '', city: 'Atlanta', state: 'GA', address: '5 Peachtree St', due: '2026-11-12', dueEvidence: 'Bid Due: 11/12/2026', dueTime: '', link: 'https://app.buildingconnected.com/projects/atl', type: 'Retail', mall: false, nda: false, scope: '', threadId: 't3' },
+  t1: { name: 'Aldi - Orlando (New Shell Space)', gc: 'Sun Industrial Inc', contactName: 'Brandon McMurray', email: 'brandon@sunindustrial.example', phone: '', city: 'Orlando', state: 'FL', address: '1401 South Hiawassee Road', due: '2037-11-09', dueEvidence: 'Bid Due: 11/09/2037 5:00 PM EST', dueTime: '17:00', link: 'https://app.buildingconnected.com/projects/aldi1', type: 'Retail', mall: false, nda: false, scope: 'Interior build-out', threadId: 't1' },
+  t2: { name: 'Aldi Orlando New Shell Space', gc: 'MEC General Contractors', contactName: 'Craig', email: 'craig@mec.example', phone: '', city: 'Orlando', state: 'FL', address: '1401 S Hiawassee Rd', due: '2037-11-09', dueEvidence: 'Bid Due: 11/09/2037', dueTime: '', link: 'https://app.buildingconnected.com/projects/aldi2', type: 'Retail', mall: false, nda: false, scope: '', threadId: 't2' },
+  t3: { name: 'Atlanta Store', gc: 'Big GC', contactName: '', email: '', phone: '', city: 'Atlanta', state: 'GA', address: '5 Peachtree St', due: '2037-11-12', dueEvidence: 'Bid Due: 11/12/2037', dueTime: '', link: 'https://app.buildingconnected.com/projects/atl', type: 'Retail', mall: false, nda: false, scope: '', threadId: 't3' },
   // the model invents a deadline, an email address and a link that are not in the email: all three must be thrown away
-  t4: { name: 'Sunglass Hut - Lutz Premium Outlets', gc: 'Marco Contractors', contactName: '', email: 'made.up@marco.example', phone: '', city: 'Lutz', state: 'FL', address: '2382 Grand Cypress Drive', due: '2026-11-20', dueEvidence: 'Bids are due 11/20/2026', dueTime: '12:00', link: 'https://evil.example/phish', type: 'Retail', mall: false, nda: false, scope: '', threadId: 't4' },
+  t4: { name: 'Sunglass Hut - Lutz Premium Outlets', gc: 'Marco Contractors', contactName: '', email: 'made.up@marco.example', phone: '', city: 'Lutz', state: 'FL', address: '2382 Grand Cypress Drive', due: '2037-11-20', dueEvidence: 'Bids are due 11/20/2037', dueTime: '12:00', link: 'https://evil.example/phish', type: 'Retail', mall: false, nda: false, scope: '', threadId: 't4' },
 };
 let gmailCalls = [], claudeCalls = 0, extraRecords = [];
 const thread = (id) => ({ id, messages: [{ id: 'm' + id, internalDate: '1793000000000', payload: { mimeType: 'text/plain', headers: [{ name: 'From', value: 'invites@buildingconnected.com' }, { name: 'Subject', value: 'Invitation to bid' }], body: { data: b64(THREADS[id].text) } } }] });
@@ -88,7 +88,7 @@ test('city tiers: edited by approvers, used to rank', async () => {
 test('Refresh reads the emails: new leads added, the same job from two GCs merged, non-Florida skipped, made-up details thrown away', async () => {
   const r = await call('POST', '/api/bids/refresh', {}, est); assert.equal(r.status, 200); await waitIdle();
   const run = (await call('GET', '/api/bids/status', null, est)).body.last; assert.deepEqual([run.status, run.trigger, run.threads, run.added, run.updated, run.skipped], ['Done', 'Manual', 4, 2, 1, 1]);
-  const aldi = await lead('Aldi'); assert.deepEqual([aldi.gc_name, aldi.tier, aldi.status, aldi.due_date, aldi.due_time, aldi.invitation_link], ['Sun Industrial Inc', 1, 'New', '2026-11-09', '17:00', 'https://app.buildingconnected.com/projects/aldi1']);
+  const aldi = await lead('Aldi'); assert.deepEqual([aldi.gc_name, aldi.tier, aldi.status, aldi.due_date, aldi.due_time, aldi.invitation_link], ['Sun Industrial Inc', 1, 'New', '2037-11-09', '17:00', 'https://app.buildingconnected.com/projects/aldi1']);
   assert.equal(aldi.invitations.length, 2); assert.equal(aldi.additional_gcs, 'MEC General Contractors'); assert.match(aldi.email_link, /^https:\/\/mail\.google\.com\/mail\/u\/\?authuser=benny%40byother\.net#all\/t1$/);
   const sg = await lead('Sunglass'); assert.deepEqual([sg.due_date, sg.contact_email, sg.invitation_link, sg.tier, sg.mall], [null, null, null, 2, true]);   // no quoted deadline, no email or link in the mail, 'Premium Outlets' = shopping center
   assert.equal((await q(`SELECT count(*)::int n FROM opportunities WHERE name ILIKE 'Atlanta%'`))[0].n, 0);
@@ -101,18 +101,18 @@ test('the list ranks and groups the new leads; a second refresh pays for nothing
   assert.ok(g.some((x) => x.name === 'No Bid Due Date Provided' && x.rows[0].name.startsWith('Sunglass')));   // undated leads stay visible
   const before = claudeCalls; await call('POST', '/api/bids/refresh', {}, est); await waitIdle();
   assert.equal(claudeCalls, before); const run = (await call('GET', '/api/bids/status', null, est)).body.last; assert.deepEqual([run.threads, run.added, run.updated], [0, 0, 0]);
-  THREADS.t4.hid = 'h4b'; THREADS.t4.text += ' Bids are due 11/20/2026.'; CLAUDE.t4 = { ...CLAUDE.t4, email: '', link: 'https://app.buildingconnected.com/projects/sg1', due: '2026-11-20', dueEvidence: 'Bids are due 11/20/2026' };
+  THREADS.t4.hid = 'h4b'; THREADS.t4.text += ' Bids are due 11/20/2037.'; CLAUDE.t4 = { ...CLAUDE.t4, email: '', link: 'https://app.buildingconnected.com/projects/sg1', due: '2037-11-20', dueEvidence: 'Bids are due 11/20/2037' };
   await call('POST', '/api/bids/refresh', {}, est); await waitIdle();                          // new mail on a thread: read again, and now the quoted deadline and link are accepted
-  const sg = await lead('Sunglass'); assert.deepEqual([sg.due_date, sg.invitation_link], ['2026-11-20', 'https://app.buildingconnected.com/projects/sg1']);
+  const sg = await lead('Sunglass'); assert.deepEqual([sg.due_date, sg.invitation_link], ['2037-11-20', 'https://app.buildingconnected.com/projects/sg1']);
   assert.equal((await q('SELECT count(*)::int n FROM opportunities'))[0].n, 2);                // updated in place, not duplicated
 });
 
 test('a refresh never changes work that has been accepted, but keeps the lead seen', async () => {
   const aldi = await lead('Aldi'); assert.equal((await call('POST', `/api/opportunities/${aldi.id}/status`, { status: 'Accepted' }, est)).status, 200);
-  THREADS.t1.hid = 'h1b'; CLAUDE.t1 = { ...CLAUDE.t1, contactName: 'Someone Else', due: '2026-12-01', dueEvidence: 'Bid Due: 11/09/2026 5:00 PM EST' };
+  THREADS.t1.hid = 'h1b'; CLAUDE.t1 = { ...CLAUDE.t1, contactName: 'Someone Else', due: '2037-2026-12-01', dueEvidence: 'Bid Due: 11/09/2037 5:00 PM EST' };
   await q(`UPDATE opportunities SET last_seen_at = now() - interval '5 days' WHERE id=$1`, [aldi.id]);
   await call('POST', '/api/bids/refresh', {}, est); await waitIdle(); const after = await lead('Aldi');
-  assert.deepEqual([after.contact_name, after.due_date, after.status], ['Brandon McMurray', '2026-11-09', 'Accepted']); assert.ok(Date.now() - new Date(after.last_seen_at) < 60000);
+  assert.deepEqual([after.contact_name, after.due_date, after.status], ['Brandon McMurray', '2037-11-09', 'Accepted']); assert.ok(Date.now() - new Date(after.last_seen_at) < 60000);
 });
 
 test('Reviewing moves to the Proposal Tracker (and out of Bid Opportunities)', async () => {
@@ -191,21 +191,21 @@ test('NDA-locked invitations are said so, and new leads carry their audit note',
 
 test('the GC address and the job start date come from the invitation email, only when the email really says so; trades to quote are never filled in', async () => {
   const ad = await import('../server/address.js'); ad.setAddressFetch(async (url) => { const u = new URL(url), c = (k) => u.searchParams.get(k); return { ok: true, json: async () => ({ result: { addressMatches: [{ addressComponents: { city: c('city').toUpperCase(), state: c('state'), zip: c('zip') } }] } }) }; });
-  const text = 'Dunham GC invited you to bid.\nProject: Zara - Orlando\nBid Due: 11/20/2026\nStart Date: 01/12/2027\nClient Details: Dunham GC, 500 Corporate Drive, Suite 100, Tampa, FL 33602\nView this RFP (https://app.buildingconnected.com/goto/zara)';
-  const rec = { threadId: 't9', name: 'Zara - Orlando', gc: 'Dunham GC', contactName: 'Pat', email: '', phone: '', city: 'Orlando', state: 'FL', address: '9 Mall Way', gcStreet: '500 Corporate Drive, Suite 100', gcCity: 'Tampa', gcState: 'FL', gcZip: '33602', gcAddressEvidence: '500 Corporate Drive, Suite 100, Tampa, FL 33602', startDate: '2027-01-12', startEvidence: 'Start Date: 01/12/2027', due: '2026-11-20', dueEvidence: 'Bid Due: 11/20/2026', dueTime: '', link: 'https://app.buildingconnected.com/goto/zara', type: 'Retail', mall: true, nda: false, scope: 'Demolition, Painting' };
-  const invented = { ...rec, threadId: 't10', name: 'Invented - Orlando', gcStreet: '1 Made Up Road', gcAddressEvidence: '1 Made Up Road, Nowhere, FL', startDate: '2027-02-01', startEvidence: 'Start Date: 02/01/2027', address: '3 Mall Way' };
-  const late = { ...rec, threadId: 't11', name: 'Early Start - Orlando', address: '4 Mall Way', startDate: '2026-11-01', startEvidence: 'Start Date: 01/12/2027' };
+  const text = 'Dunham GC invited you to bid.\nProject: Zara - Orlando\nBid Due: 11/20/2037\nStart Date: 01/12/2038\nClient Details: Dunham GC, 500 Corporate Drive, Suite 100, Tampa, FL 33602\nView this RFP (https://app.buildingconnected.com/goto/zara)';
+  const rec = { threadId: 't9', name: 'Zara - Orlando', gc: 'Dunham GC', contactName: 'Pat', email: '', phone: '', city: 'Orlando', state: 'FL', address: '9 Mall Way', gcStreet: '500 Corporate Drive, Suite 100', gcCity: 'Tampa', gcState: 'FL', gcZip: '33602', gcAddressEvidence: '500 Corporate Drive, Suite 100, Tampa, FL 33602', startDate: '2038-01-12', startEvidence: 'Start Date: 01/12/2038', due: '2037-11-20', dueEvidence: 'Bid Due: 11/20/2037', dueTime: '', link: 'https://app.buildingconnected.com/goto/zara', type: 'Retail', mall: true, nda: false, scope: 'Demolition, Painting' };
+  const invented = { ...rec, threadId: 't10', name: 'Invented - Orlando', gcStreet: '1 Made Up Road', gcAddressEvidence: '1 Made Up Road, Nowhere, FL', startDate: '2038-02-01', startEvidence: 'Start Date: 02/01/2038', address: '3 Mall Way' };
+  const late = { ...rec, threadId: 't11', name: 'Early Start - Orlando', address: '4 Mall Way', startDate: '2037-11-01', startEvidence: 'Start Date: 01/12/2038' };
   ai.setFetch(async () => ({ ok: true, json: async () => ({ content: [{ type: 'tool_use', name: 'record_bids', input: { opportunities: [rec, invented, late] } }], usage: { input_tokens: 10, output_tokens: 5 } }) }));
   const out = await bd.extract(null, [{ id: 't9', text }, { id: 't10', text }, { id: 't11', text }]); ai.setFetch(claudeStandIn);
   const byName = (n) => out.records.find((r) => r.name === n);
-  assert.deepEqual([byName('Zara - Orlando').gcAddr.street, byName('Zara - Orlando').startDate], ['500 Corporate Drive, Suite 100', '2027-01-12']);
+  assert.deepEqual([byName('Zara - Orlando').gcAddr.street, byName('Zara - Orlando').startDate], ['500 Corporate Drive, Suite 100', '2038-01-12']);
   assert.deepEqual([byName('Invented - Orlando').gcAddr.street, byName('Invented - Orlando').startDate], ['', null]);                       // text that is not in the email is thrown away
   assert.equal(byName('Early Start - Orlando').startDate, null);                                                                               // the quoted start text does not support that date
   await bd.mergeRecords([byName('Zara - Orlando'), { ...byName('Invented - Orlando'), threadId: 't10' }], 'benny@byother.net');
   const z = await lead('Zara'), n = await lead('Invented');
-  assert.deepEqual([z.gc_street, z.gc_city, z.gc_state, z.gc_zip, z.gc_address_verified, z.planned_start], ['500 Corporate Drive, Suite 100', 'Tampa', 'FL', '33602', true, '2027-01-12']);
+  assert.deepEqual([z.gc_street, z.gc_city, z.gc_state, z.gc_zip, z.gc_address_verified, z.planned_start], ['500 Corporate Drive, Suite 100', 'Tampa', 'FL', '33602', true, '2038-01-12']);
   assert.equal((await q('SELECT count(*)::int n FROM opportunity_considered_trades WHERE opportunity_id=$1', [z.id]))[0].n, 0);               // the estimator chooses the trades, never the email
-  const zn = (await call('GET', `/api/opportunities/${z.id}`, null, est)).body.notes.map((x) => x.body).join(' | '); assert.match(zn, /GC address carried over from the email: 500 Corporate Drive/); assert.match(zn, /Job start date 2027-01-12 carried over/); assert.match(zn, /Scope in the invitation: Demolition, Painting/);
+  const zn = (await call('GET', `/api/opportunities/${z.id}`, null, est)).body.notes.map((x) => x.body).join(' | '); assert.match(zn, /GC address carried over from the email: 500 Corporate Drive/); assert.match(zn, /Job start date 2038-01-12 carried over/); assert.match(zn, /Scope in the invitation: Demolition, Painting/);
   assert.equal(n.gc_street, null); assert.match((await call('GET', `/api/opportunities/${n.id}`, null, est)).body.notes.map((x) => x.body).join(' | '), /The GC address was not in the email/);
 });
 

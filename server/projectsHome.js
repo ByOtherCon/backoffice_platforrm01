@@ -21,7 +21,7 @@ export async function projectsHome(user, manageAll, yearArg) {
   const sched = ids.length ? await q(`SELECT s.project_id, s.label, s.expected_date::text AS d, s.amount::float8 AS amount FROM invoice_schedule s WHERE s.project_id = ANY($1::uuid[]) AND s.status='Tentative' AND s.expected_date IS NOT NULL AND s.expected_date <= $2::date ORDER BY s.expected_date`, [ids, shift(today, 14)]) : [];
 
   const rows = all.map((p) => { const m = by.get(p.id) || {}, n = ntos.get(p.id);
-    return { id: p.id, name: p.name, gc: p.gc, client: p.client, address: addrLine({ street: m.address, city: m.city, state: m.state, zip: m.zip }), active: p.active, year: m.year ?? null, startDate: m.start_date ? String(m.start_date.toISOString?.().slice(0, 10) ?? m.start_date).slice(0, 10) : null, proposalId: p.proposalId ?? null,
+    return { id: p.id, name: p.name, gc: p.gc, client: p.client, address: addrLine({ street: m.address, city: m.city, state: m.state, zip: m.zip }), active: p.active, year: m.year ?? null, startDate: m.start_date ? String(m.start_date.toISOString?.().slice(0, 10) ?? m.start_date).slice(0, 10) : null, proposalId: p.proposalId ?? null, refCode: m.ref_code ?? null,
       contract: p.contract, billed: p.billed, currentlyDue: p.currentlyDue, projectedProfit: p.projectedProfit, hasContractFile: !!m.contract_document_id,
       nto: n ? { status: n.status, firstFurnished: n.firstFurnished, due: n.due, daysLeft: n.daysLeft, overdue: n.overdue, sentDate: n.sentDate } : null }; });
   const inYear = rows.filter((r) => r.year === year), active = inYear.filter((r) => r.active), inactive = inYear.filter((r) => !r.active);

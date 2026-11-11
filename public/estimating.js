@@ -76,14 +76,8 @@ const leadFolderButton = (o) => (o.spPath ? h('button', { type: 'button', class:
 const openPlansButton = (o) => h('button', { type: 'button', class: 'small', onclick: async () => { const win = window.open('', '_blank'); try { const r = await api('GET', `/opportunities/${o.id}/folder-files`); if (r.plans.length) win.location = r.plans[0].webUrl; else { win.close(); alert('There is no BID SET PDF in the 01. DL folder yet.'); } } catch (e) { win.close(); alert(e.message); } } }, 'Open Plans');
 // For one record's page: SharePoint link, File Explorer shortcut, the path to copy. (A project that has no folder can still be given one.)
 export function folderButtons(o, w, kind = 'opportunity', sharepointOn = true) {
-  const err = h('div'), path = o.spPath;
-  const where = path ? h('div', { style: 'margin:.2rem 0 .5rem' }, h('div', { class: 'muted', style: 'font-size:13px;word-break:break-all' }, 'In SharePoint: ' + path.split('/').join(' / ')),
-    syncRoot() ? h('div', { class: 'muted', style: 'font-size:13px;word-break:break-all;user-select:all' }, 'On this PC: ' + localPath(syncRoot(), path)) : h('div', { class: 'muted', style: 'font-size:13px' }, 'Press "PC folder…" once to show where it is on this PC.')) : '';
-  if (o.folderUrl) return h('div', {}, where, h('div', { class: 'row', style: 'flex-wrap:wrap;gap:.4rem' },
-    h('a', { class: 'small', href: o.folderUrl, target: '_blank', rel: 'noopener' }, 'Open in SharePoint'),
-    path ? h('button', { type: 'button', class: 'small', onclick: () => openInExplorer(o.name, path), title: 'Opens the folder in File Explorer (needs the library synced to this PC)' }, 'Lead Folder') : '',
-    path ? h('button', { type: 'button', class: 'small', onclick: (e) => { const root = syncRoot() || askSyncRoot(); if (root) copy(localPath(root, path), e.target); } }, 'Copy path') : '',
-    path ? h('button', { type: 'button', class: 'small', onclick: () => askSyncRoot(), title: syncRoot() ? 'Now: ' + syncRoot() : '' }, 'PC folder…') : ''), err);
+  const err = h('div');
+  if (o.folderUrl) return h('div', {}, h('div', { class: 'row', style: 'flex-wrap:wrap;gap:.4rem' }, h('a', { class: 'small', href: o.folderUrl, target: '_blank', rel: 'noopener' }, 'Open in SharePoint')), err);
   if (kind === 'project' && w && sharepointOn) return h('div', {}, h('button', { type: 'button', class: 'small', onclick: guard(err, async () => { await api('POST', `/projects/${o.id}/folder`, {}); render(); }) }, 'Create folder in SharePoint'), err);
   return h('span', { class: 'muted' }, !sharepointOn ? 'SharePoint is not connected yet' : kind === 'project' ? 'No folder yet' : 'The folder is created automatically when the lead is Reviewed or Accepted.');
 }

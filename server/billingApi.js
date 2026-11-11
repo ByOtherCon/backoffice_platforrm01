@@ -97,7 +97,7 @@ export async function getCosts(projectId, { rates = false } = {}) {
   const vendors = subs.map((s) => {
     const mine = bills.filter((b) => b.commitment_id === s.id).map((b) => {
       const payments = spay.filter((p) => p.sub_invoice_id === b.id);
-      return { id: b.id, number: b.number, date: b.invoice_date, amount: b.amount, paid: r2(payments.reduce((n, p) => n + p.amount, 0)), payments: payments.map((p) => ({ id: p.id, date: p.paid_date, amount: p.amount })) };
+      return { id: b.id, number: b.number, date: b.invoice_date, amount: b.amount, noInvoice: !!b.no_invoice, memo: b.memo ?? null, paid: r2(payments.reduce((n, p) => n + p.amount, 0)), payments: payments.map((p) => ({ id: p.id, date: p.paid_date, amount: p.amount, method: p.method ?? null, memo: p.memo ?? null })) };
     });
     const invoiced = r2(mine.reduce((n, b) => n + b.amount, 0)), paid = r2(mine.reduce((n, b) => n + b.paid, 0));
     const held = s.hold_released ? 0 : Math.min(s.hold_amount, r2(invoiced - paid));
@@ -165,7 +165,7 @@ export const deleteSubBill = (projectId, commitmentId, id) => run(async (t) => {
 });
 // Records a vendor payment inside a transaction. Compliance (W-9 + valid insurance) and the held final payment are enforced here,
 // so every path that pays a vendor (direct entry by an approver, or an approved request) obeys the same rules.
-export async function recordSubPayment(t, projectId, billId, amount, date) {
+export async function recordSubPayment(t, projectId, billId, amount, date, how = {}) {
   const [bill] = await t(`SELECT si.amount, si.id, sc.subcontractor_id, sc.hold_amount, sc.hold_released,
       COALESCE((SELECT SUM(si2.amount) FROM sub_invoices si2 WHERE si2.commitment_id=sc.id),0) invoiced,
       COALESCE((SELECT SUM(sp.amount) FROM sub_payments sp JOIN sub_invoices si3 ON si3.id=sp.sub_invoice_id WHERE si3.commitment_id=sc.id),0) paid_all,
@@ -177,9 +177,32 @@ export async function recordSubPayment(t, projectId, billId, amount, date) {
   const open = r2(Number(bill.invoiced) - Number(bill.paid_all));
   const available = r2(open - (bill.hold_released ? 0 : Math.min(Number(bill.hold_amount), open)));
   if (amount > available + 0.001) throw bad(`Only ${available.toFixed(2)} is available to pay. The rest is held until the hold is released.`);
-  const [pay] = await t('INSERT INTO sub_payments(sub_invoice_id,paid_date,amount) VALUES ($1,$2,$3) RETURNING id', [billId, date, amount]);
+  const [pay] = await t('INSERT INTO sub_payments(sub_invoice_id,paid_date,amount,method,memo) VALUES ($1,$2,$3,$4,$5) RETURNING id', [billId, date, amount, how.method ?? null, how.memo ?? null]);
   await assertValid(t, projectId);
   return pay.id;
+}
+// A payment with no invoice behind it: cash, Zelle, a check written on the spot, or a credit where no money moved. The person says how and why, and it
+// is kept as a bill marked "no invoice" so the subcontract, what is owed and the 1099 totals all stay right.
+export const NO_INVOICE_METHODS = ['Cash', 'Zelle', 'Check', 'Card', 'Credit / Offset (no money paid)', 'Other'];
+export function readNoInvoice(b) {
+  const amount = money(b.amount, 'Amount'); if (!(amount > 0)) throw bad('Amount must be greater than zero.');
+  const method = String(b.method || ''); if (!NO_INVOICE_METHODS.includes(method)) throw bad('Choose how it was paid.');
+  const memo = text(b.explanation, 'Explanation', { max: 500 });   // required: why there is no invoice
+  return { amount, method, memo, date: dateStr(b.date, 'Payment date', true) };
+}
+export async function makeNoInvoiceBill(t, commitmentId, { amount, date, memo, method }) {
+  const [n] = await t(`SELECT count(*)::int AS n FROM sub_invoices WHERE commitment_id=$1 AND no_invoice`, [commitmentId]);
+  const [r] = await t('INSERT INTO sub_invoices(commitment_id,number,invoice_date,amount,no_invoice,memo) VALUES ($1,$2,$3,$4,true,$5) RETURNING id', [commitmentId, `NO-INV-${n.n + 1}`, date, amount, `${method}: ${memo}`]);
+  return r.id;
+}
+export async function addPaymentWithoutInvoice(projectId, commitmentId, b) {
+  const p = readNoInvoice(b);
+  return run(async (t) => {
+    if (!(await t('SELECT 1 FROM sub_commitments WHERE id=$1 AND project_id=$2 FOR UPDATE', [commitmentId, projectId])).length) throw new HttpError(404, 'Subcontract not found.');
+    const billId = await makeNoInvoiceBill(t, commitmentId, p);
+    await recordSubPayment(t, projectId, billId, p.amount, p.date, { method: p.method, memo: p.memo });   // the same rules as any payment: paperwork on file, the held final payment, the contract amount
+    return { id: billId };
+  });
 }
 export async function addSubPayment(projectId, billId, b) {
   const amount = money(b.amount, 'Amount'); if (!(amount > 0)) throw bad('Amount must be greater than zero.');

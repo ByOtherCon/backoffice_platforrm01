@@ -407,7 +407,7 @@ async function billingTab(p, canEdit, reload) {
     h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, ['Invoice', 'Date', 'QuickBooks customer', 'Total', 'Why it matches'].map((t, i) => h('th', { class: i === 3 ? 'n' : '' }, t)))),
       h('tbody', {}, qbSug.map((x) => h('tr', {}, h('td', {}, x.number || ''), h('td', {}, x.date || ''), h('td', {}, x.customer || ''), h('td', { class: 'n' }, usd(x.total)), h('td', {}, x.why || '', x.message ? h('div', { class: 'muted', style: 'font-size:12px' }, x.message) : ''))))))) : '';
   const newInvoice = () => {
-    const f = { trade: tradeSelect(p), number: h('input'), date: h('input', { type: 'date', value: todayStr() }), due: h('input', { type: 'date' }), amount: num(), ret: num('', { placeholder: `Blank = ${p.project.retainagePct}% default` }) };
+    const f = { trade: tradeSelect(p), number: h('input'), date: h('input', { type: 'date', value: todayStr() }), due: h('input', { type: 'date' }), amount: num(), ret: num('', { placeholder: 'Blank = none' }) };
     formModal('New invoice', [field('Trade', f.trade), field('Invoice #', f.number), field('Invoice date', f.date), field('Due date', f.due), field('Invoice amount', f.amount), field('Retainage withheld by GC', f.ret)],
       async () => { await api('POST', `${base}/invoices`, { projectTradeId: f.trade.value, number: f.number.value, date: f.date.value, dueDate: f.due.value || null, amount: f.amount.value, retainageHeld: f.ret.value }); reload(); }, 'Add invoice');
   };

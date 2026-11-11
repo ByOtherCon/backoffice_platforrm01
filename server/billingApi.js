@@ -43,7 +43,7 @@ export async function addInvoice(projectId, b) {
   return run(async (t) => {
     await ownsTrade(t, projectId, b.projectTradeId);
     const [{ retainage_pct }] = await t('SELECT retainage_pct FROM projects WHERE id=$1', [projectId]);
-    const held = b.retainageHeld === undefined || b.retainageHeld === '' ? toDollars(Math.round(toCents(amount) * retainage_pct / 100)) : money(b.retainageHeld, 'Retainage');
+    const held = b.retainageHeld === undefined || b.retainageHeld === '' || b.retainageHeld === null ? 0 : money(b.retainageHeld, 'Retainage');   // none unless one is entered
     if (held > amount) throw bad('Retainage cannot exceed the invoice amount.');
     const [row] = await t('INSERT INTO client_invoices(project_id,project_trade_id,number,invoice_date,due_date,amount,retainage_held) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id', [projectId, b.projectTradeId, number, date, due, amount, held]);
     await assertValid(t, projectId); return { id: row.id };
@@ -56,7 +56,7 @@ export async function updateInvoice(projectId, id, b) {
     const v = {};
     if (b.number !== undefined) v.number = text(b.number, 'Invoice #', { max: 60 });
     if (b.amount !== undefined) { v.amount = money(b.amount, 'Invoice amount'); if (!(v.amount > 0)) throw bad('Invoice amount must be greater than zero.'); }
-    if (b.retainageHeld !== undefined) v.retainage_held = money(b.retainageHeld, 'Retainage');
+    if (b.retainageHeld !== undefined) v.retainage_held = b.retainageHeld === '' || b.retainageHeld === null ? 0 : money(b.retainageHeld, 'Retainage');
     if (b.date !== undefined) v.invoice_date = dateStr(b.date, 'Invoice date', true);
     if (b.dueDate !== undefined) v.due_date = dateStr(b.dueDate, 'Due date');
     if (b.projectTradeId !== undefined) { await ownsTrade(t, projectId, b.projectTradeId); v.project_trade_id = b.projectTradeId; }

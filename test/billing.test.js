@@ -37,8 +37,8 @@ test('setup: project with two trades, one vendor, one supplier', async () => {
 });
 
 let inv;
-test('invoice defaults to 10% retainage; payments reduce what is due; retainage is held separately', async () => {
-  const r = await call('POST', P('/invoices'), { projectTradeId: demo, number: 'INV-1', date: '2026-10-01', dueDate: '2026-10-31', amount: 10000 }, office);
+test('retainage is held only when entered; payments reduce what is due; retainage is held separately', async () => {
+  const r = await call('POST', P('/invoices'), { projectTradeId: demo, number: 'INV-1', date: '2026-10-01', dueDate: '2026-10-31', amount: 10000, retainageHeld: 1000 }, office);
   assert.equal(r.status, 200); inv = r.body.id;
   let d = (await trades()).trades.find((t) => t.id === demo);
   assert.deepEqual([d.billed, d.retainageOutstanding, d.currentlyDue, d.received, d.unbilled], [10000, 1000, 9000, 0, 15000]);
@@ -68,6 +68,12 @@ test('billed-to-date, retainage and received can all be corrected by editing', a
   assert.equal((await call('PUT', P(`/invoices/${r.body.id}`), { retainageHeld: 4000 }, office)).status, 200);
   const d = (await trades()).trades.find((t) => t.id === dry);
   assert.deepEqual([d.billed, d.retainageOutstanding, d.currentlyDue], [40000, 4000, 36000]);
+  // a blank retainage box means none: on a new invoice and when editing one (the project's percent is never added by itself)
+  assert.equal((await call('PUT', P(`/invoices/${r.body.id}`), { retainageHeld: '' }, office)).status, 200);
+  const e = (await trades()).trades.find((t) => t.id === dry); assert.deepEqual([e.retainageOutstanding, e.currentlyDue], [0, 40000]);
+  const blank = await call('POST', P('/invoices'), { projectTradeId: dry, number: 'D-2', date: '2026-10-06', amount: 100, retainageHeld: '' }, office); assert.equal(blank.status, 200);
+  assert.equal((await q(`SELECT retainage_held::float8 AS r FROM client_invoices WHERE number='D-2'`))[0].r, 0);
+  await q(`DELETE FROM client_invoices WHERE number='D-2'`);
 });
 
 let com, bill;

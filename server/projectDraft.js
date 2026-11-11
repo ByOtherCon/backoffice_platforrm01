@@ -4,7 +4,7 @@
 import { q } from './db.js';
 import { bad, HttpError } from './http.js';
 import { callClaude } from './ai.js';
-import { saveFile, deleteDocument } from './documents.js';
+import { saveFile, reusedId, deleteDocument } from './documents.js';
 import * as folders from './folders.js';
 import * as SP from './sharepoint.js';
 import { matchTrade } from '../src/lib/contracts.ts';
@@ -63,9 +63,9 @@ export async function readDraftFromSharePoint(user, itemId) {
 export async function setContractFile(user, projectId, bytes, filename, kind = 'Contract') {
   const [p] = await q('SELECT id, contract_document_id FROM projects WHERE id=$1', [projectId]); if (!p) throw new HttpError(404, 'Project not found.');
   if (!['Contract', 'Proposal', 'Work order'].includes(kind)) kind = 'Contract';
-  const f = await saveFile(bytes, filename);
-  const [d] = await q(`INSERT INTO documents(category,name,storage_key,mime,size,project_id,created_by) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`, [kind === 'Proposal' ? 'Proposal' : 'Contract', filename, f.key, f.mime, f.size, projectId, user.id]);
-  const up = await folders.pushProjectFile(projectId, { category: kind === 'Proposal' ? 'Proposal' : 'Contract', filename, bytes, mime: f.mime }); if (up?.webUrl) await q('UPDATE documents SET sp_url=$2 WHERE id=$1', [d.id, up.webUrl]);
+  const f = await saveFile(bytes, filename, { reuse: true }), again = reusedId(f, projectId);   // the same file is not saved twice
+  const d = again ? { id: again } : (await q(`INSERT INTO documents(category,name,storage_key,mime,size,project_id,created_by,sha256) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`, [kind === 'Proposal' ? 'Proposal' : 'Contract', filename, f.key, f.mime, f.size, projectId, user.id, f.sha256]))[0];
+  if (!again) { const up = await folders.pushProjectFile(projectId, { category: kind === 'Proposal' ? 'Proposal' : 'Contract', filename, bytes, mime: f.mime }); if (up?.webUrl) await q('UPDATE documents SET sp_url=$2 WHERE id=$1', [d.id, up.webUrl]); }
   await q('UPDATE projects SET contract_document_id=$2 WHERE id=$1', [projectId, d.id]);
   return { documentId: d.id, name: filename, replaced: !!p.contract_document_id };
 }

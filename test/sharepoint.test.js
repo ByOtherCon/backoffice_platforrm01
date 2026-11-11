@@ -62,7 +62,7 @@ async function call(method, path, body, cookie, raw) {
 const login = async (email) => { const r = await fetch(base + '/api/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email, password: 'correct horse battery' }) }); return r.headers.get('set-cookie').split(';')[0]; };
 const mk = async (o = {}) => (await call('POST', '/api/opportunities', { name: 'Wingstop', client: 'Wingstop', gc: 'CW Hayes Construction', addr: await addrOk('1200 13th St', 'St Cloud', '34769'), sourceType: 'PlanHub', estimatorId: estId, due: shift(today, 7), type: 'Restaurant', ...o }, est)).body.id;
 const opp = async (id) => (await call('GET', `/api/opportunities/${id}`, null, est)).body;
-const PDF = Buffer.from('%PDF-1.4\n%%EOF');
+let pdfN = 0; const mkPdf = () => Buffer.from('%PDF-1.4\n% sample ' + (++pdfN) + '\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF');
 
 test('without Microsoft settings nothing breaks, and the folder button explains what is missing', async () => {
   owner = await login('owner@x.net'); est = await login('est@x.net'); pm = await login('pm@x.net'); estId = (await q(`SELECT id FROM app_users WHERE email='est@x.net'`))[0].id;
@@ -123,17 +123,17 @@ test('Reviewing makes the folder before there is a P number; Accepting renames t
 let wing, wingCode;
 test('the proposal PDF is saved in the app and copied into 02. Proposal; a SharePoint outage only adds a note', async () => {
   wing = await mk({ name: 'Wingstop 2', gc: 'Hayes GC', addr: await addrOk('7 Elm St', 'Orlando', '32801'), due: shift(today, 9) }); await call('POST', `/api/opportunities/${wing}/status`, { status: 'Accepted' }, est);
-  const up = await call('POST', `/api/opportunities/${wing}/files?kind=Proposal`, PDF, est, 'Proposal v1.pdf'); assert.deepEqual([up.status, up.body.sharepoint], [200, true]);
-  const o = await opp(wing); wingCode = o.proposalId; const folder = find('ByOther', YEAR, 'Hayes GC', `${wingCode}_Wingstop 2_Orlando`); const f = find('ByOther', YEAR, 'Hayes GC', `${wingCode}_Wingstop 2_Orlando`, '02. Proposal', 'Proposal v1.pdf'); assert.ok(folder && f); assert.equal(f.size, PDF.length);
+  const up = await call('POST', `/api/opportunities/${wing}/files?kind=Proposal`, mkPdf(), est, 'Proposal v1.pdf'); assert.deepEqual([up.status, up.body.sharepoint], [200, true]);
+  const o = await opp(wing); wingCode = o.proposalId; const folder = find('ByOther', YEAR, 'Hayes GC', `${wingCode}_Wingstop 2_Orlando`); const f = find('ByOther', YEAR, 'Hayes GC', `${wingCode}_Wingstop 2_Orlando`, '02. Proposal', 'Proposal v1.pdf'); assert.ok(folder && f); assert.equal(f.size, mkPdf().length);
   assert.ok((await q('SELECT sp_url FROM opportunity_files WHERE opportunity_id=$1', [wing]))[0].sp_url.startsWith('https://byother.sharepoint.com/'));
-  graphDown = true; const down = await call('POST', `/api/opportunities/${wing}/files?kind=Submittal`, PDF, est, 'notes.pdf'); graphDown = false;
+  graphDown = true; const down = await call('POST', `/api/opportunities/${wing}/files?kind=Submittal`, mkPdf(), est, 'notes.pdf'); graphDown = false;
   assert.deepEqual([down.status, down.body.sharepoint], [200, false]); assert.equal((await opp(wing)).files.length, 2); assert.ok((await opp(wing)).notes.some((n) => /Saved in the app, but not copied to SharePoint/.test(n.body)));
   const big = Buffer.concat([Buffer.from('%PDF-1.4\n'), Buffer.alloc(9 * 1024 * 1024, 65)]);                                              // a large file goes up in pieces
   assert.equal((await call('POST', `/api/opportunities/${wing}/files?kind=Submittal`, big, est, 'Big plans.pdf')).body.sharepoint, true); assert.equal(find('ByOther', YEAR, 'Hayes GC', `${wingCode}_Wingstop 2_Orlando`, '02. Proposal', 'Big plans.pdf').size, big.length);
 });
 
 test('awarding turns P into C on the folder and the project; later documents carry the C code and land in the right folder', async () => {
-  const f = (await call('POST', `/api/opportunities/${wing}/files?kind=Proposal`, PDF, est, 'Final.pdf')).body.fileId;
+  const f = (await call('POST', `/api/opportunities/${wing}/files?kind=Proposal`, mkPdf(), est, 'Final.pdf')).body.fileId;
   assert.equal((await call('POST', `/api/opportunities/${wing}/submissions`, { fileId: f, date: today, method: 'Email', prices: [{ tradeId: tDemo, amount: 5000 }] }, est)).status, 200);
   const r = await call('POST', `/api/opportunities/${wing}/status`, { status: 'Awarded' }, est); assert.equal(r.status, 200); const code = 'C' + wingCode.slice(1);
   assert.equal(r.body.refCode, code); assert.match(r.body.folderUrl, /byother\.sharepoint\.com/);
@@ -141,7 +141,7 @@ test('awarding turns P into C on the folder and the project; later documents car
   const p = (await call('GET', `/api/projects/${r.body.projectId}`, null, owner)).body.project; assert.deepEqual([p.refCode, p.proposalId, p.spPath], [code, wingCode, `ByOther/${YEAR}/Hayes GC/${code}_Wingstop 2_Orlando`]); assert.match(p.folderUrl, /byother\.sharepoint\.com/);
   assert.ok((await opp(wing)).notes.some((n) => /renamed to C\d+.*P became C/.test(n.body)));
   // documents added to the project from now on: named with the contract code, filed by kind
-  const doc = async (category, name) => call('POST', `/api/documents/upload?category=${encodeURIComponent(category)}&projectId=${r.body.projectId}`, PDF, owner, name);
+  const doc = async (category, name) => call('POST', `/api/documents/upload?category=${encodeURIComponent(category)}&projectId=${r.body.projectId}`, mkPdf(), owner, name);
   assert.equal((await doc('Contract', 'Subcontract.pdf')).status, 200); assert.equal((await doc('Approved CO', 'CO 1.pdf')).status, 200); assert.equal((await doc('Plans', 'A1.pdf')).status, 200);
   const root = ['ByOther', YEAR, 'Hayes GC', `${code}_Wingstop 2_Orlando`];
   assert.ok(find(...root, '04. Documents', `${code} - Subcontract.pdf`)); assert.ok(find(...root, '03. Change Orders', `${code} - CO 1.pdf`)); assert.ok(find(...root, '01. DL', `${code} - A1.pdf`));

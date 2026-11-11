@@ -21,7 +21,7 @@ export function matchProject(hint, projects) {
 }
 export async function parseUpload(user, bytes, filename) {
   const f = await saveFile(bytes, filename);
-  const [d] = await q(`INSERT INTO documents(category,name,storage_key,mime,size,created_by) VALUES ('Receipt',$1,$2,$3,$4,$5) RETURNING id`, [filename, f.key, f.mime, f.size, user.id]);
+  const [d] = await q(`INSERT INTO documents(category,name,storage_key,mime,size,created_by,sha256) VALUES ('Receipt',$1,$2,$3,$4,$5,$6) RETURNING id`, [filename, f.key, f.mime, f.size, user.id, f.sha256]);
   const out = { documentId: d.id, parsed: null, aiError: null, suggestedProjectId: null, supplierId: null };
   try {
     out.parsed = await readReceipt(user.id, bytes, f.mime);

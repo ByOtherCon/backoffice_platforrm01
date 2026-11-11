@@ -10,7 +10,7 @@ const ai = await import('../server/ai.js');
 const { todayEastern, shift } = await import('../src/lib/estimating.ts');
 
 let base, est, asst, oid, T = {}, run;
-const PDF = Buffer.from('%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF');
+let pdfN = 0; const mkPdf = () => Buffer.from('%PDF-1.4\n% sample ' + (++pdfN) + '\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF');
 before(async () => {
   await pool.query('DROP SCHEMA public CASCADE; CREATE SCHEMA public;'); await applyAll(pool);
   const h = await hashPassword('correct horse battery');
@@ -37,20 +37,20 @@ test('setup: an accepted lead and the trades', async () => {
   await q(`INSERT INTO app_users(email,name,role,password_hash) VALUES ('boss@x.net','b','Super Admin',$1)`, [await hashPassword('correct horse battery')]); const owner = await login('boss@x.net');
   for (const [n, i] of [['Demolition', 1], ['Framing & Drywall', 2], ['Paint', 3], ['Carpentry', 4], ['Plumbing', 5]]) T[n] = (await call('POST', '/api/admin/trades', { name: n, sort: i }, owner)).body.id;
   oid = (await q(`INSERT INTO opportunities(name,client_name,gc_name,city,due_date,source_key,source_type,project_type) VALUES ('Aldi','Sun Industrial','Sun Industrial','Orlando',$1,'aldi','PlanHub','Retail') RETURNING id`, [shift(todayEastern(), 9)]))[0].id;
-  assert.equal((await up(`/api/opportunities/${oid}/takeoff`, PDF, 'plans.pdf', est)).status, 400);                  // lead not accepted yet
+  assert.equal((await up(`/api/opportunities/${oid}/takeoff`, mkPdf(), 'plans.pdf', est)).status, 400);                  // lead not accepted yet
   assert.equal((await call('POST', `/api/opportunities/${oid}/status`, { status: 'Accepted' }, est)).status, 200);
 });
 
 test('guards: PDF only, estimators only, honest when AI is not connected', async () => {
   delete process.env.ANTHROPIC_API_KEY;
-  assert.equal((await up(`/api/opportunities/${oid}/takeoff`, PDF, 'plans.pdf', asst)).status, 403);
+  assert.equal((await up(`/api/opportunities/${oid}/takeoff`, mkPdf(), 'plans.pdf', asst)).status, 403);
   assert.equal((await up(`/api/opportunities/${oid}/takeoff`, Buffer.from('x'), 'plans.txt', est)).status, 400);
-  const r = await up(`/api/opportunities/${oid}/takeoff`, PDF, 'plans.pdf', est); assert.equal(r.status, 200); assert.equal(r.body.runId, null); assert.match(r.body.error, /not connected/i); assert.ok(r.body.documentId);
+  const r = await up(`/api/opportunities/${oid}/takeoff`, mkPdf(), 'plans.pdf', est); assert.equal(r.status, 200); assert.equal(r.body.runId, null); assert.match(r.body.error, /not connected/i); assert.ok(r.body.documentId);
 });
 
 test('reading plans: items grouped by section, trades guessed, carpentry only included when the matrix says contractor', async () => {
   process.env.ANTHROPIC_API_KEY = 'test-key'; const seen = []; ai.setFetch(mock(PLAN, seen));
-  const r = await up(`/api/opportunities/${oid}/takeoff`, PDF, 'aldi-plans.pdf', est); assert.equal(r.status, 200); assert.equal(r.body.count, 10); run = r.body.runId;
+  const r = await up(`/api/opportunities/${oid}/takeoff`, mkPdf(), 'aldi-plans.pdf', est); assert.equal(r.status, 200); assert.equal(r.body.count, 10); run = r.body.runId;
   const body = seen[0]; assert.deepEqual(body.tool_choice, { type: 'auto' }); assert.equal(body.messages[0].content[0].type, 'document'); assert.match(body.messages[0].content[1].text, /responsibility matrix/);
   const t = (await call('GET', `/api/opportunities/${oid}/takeoff`, null, est)).body[0]; assert.deepEqual([t.status, t.matrixFound, t.items.length], ['Needs review', true, 10]);
   const by = (s) => t.items.filter((i) => i.section === s); assert.deepEqual([by('Demolition keynote').length, by('Wall type').length, by('Paint').length, by('Carpentry').length], [2, 2, 3, 3]);
@@ -63,7 +63,7 @@ test('reading plans: items grouped by section, trades guessed, carpentry only in
 
 test('a plan set with no responsibility matrix is flagged', async () => {
   ai.setFetch(mock({ ...PLAN, matrixFound: false, carpentry: [{ description: 'Blocking', responsibility: 'Contractor', sheet: 'A0.2' }] }));
-  const r = await up(`/api/opportunities/${oid}/takeoff`, PDF, 'again.pdf', est); const t = (await call('GET', `/api/opportunities/${oid}/takeoff`, null, est)).body.find((x) => x.id === r.body.runId);
+  const r = await up(`/api/opportunities/${oid}/takeoff`, mkPdf(), 'again.pdf', est); const t = (await call('GET', `/api/opportunities/${oid}/takeoff`, null, est)).body.find((x) => x.id === r.body.runId);
   assert.match(t.warnings.join(' '), /No responsibility matrix/); assert.equal((await call('GET', `/api/opportunities/${oid}/takeoff`, null, asst)).status, 200);
   await call('DELETE', `/api/takeoff/items/${t.items[0].id}`, null, est); // clean up the extra run's usage of ids
 });
@@ -88,7 +88,7 @@ test('nothing is applied until verified and priced; applying merges into the pro
 });
 
 test('editing after verification sends it back for review; manual items and deletes work; bad input is refused', async () => {
-  ai.setFetch(mock(PLAN)); const r2 = (await up(`/api/opportunities/${oid}/takeoff`, PDF, 'third.pdf', est)).body.runId; const t = (await call('GET', `/api/opportunities/${oid}/takeoff`, null, est)).body.find((x) => x.id === r2); const first = t.items[0];
+  ai.setFetch(mock(PLAN)); const r2 = (await up(`/api/opportunities/${oid}/takeoff`, mkPdf(), 'third.pdf', est)).body.runId; const t = (await call('GET', `/api/opportunities/${oid}/takeoff`, null, est)).body.find((x) => x.id === r2); const first = t.items[0];
   assert.equal((await call('PUT', `/api/takeoff/items/${first.id}`, { quantity: -3 }, est)).status, 400); assert.equal((await call('PUT', `/api/takeoff/items/${first.id}`, { unitPrice: 'free' }, est)).status, 400); assert.equal((await call('PUT', `/api/takeoff/items/${first.id}`, { tradeId: '00000000-0000-0000-0000-000000000000' }, est)).status, 400);
   assert.equal((await call('PUT', `/api/takeoff/items/${first.id}`, { responsibility: 'Maybe' }, est)).status, 400); assert.equal((await call('PUT', `/api/takeoff/items/${first.id}`, {}, est)).status, 400);
   const m = await call('POST', `/api/takeoff/${r2}/items`, { section: 'Other', description: 'Hang and finish soffit', quantity: 40, unit: 'LF', unitPrice: 30, tradeId: T['Framing & Drywall'], verified: true }, est); assert.equal(m.status, 200);

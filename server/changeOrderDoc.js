@@ -4,7 +4,7 @@
 import { q } from './db.js';
 import { bad, HttpError } from './http.js';
 import { callClaude } from './ai.js';
-import { saveFile } from './documents.js';
+import { saveFile, reusedId } from './documents.js';
 import * as folders from './folders.js';
 import * as SP from './sharepoint.js';
 import { dropUnusedDocument } from './projectApi.js';
@@ -30,9 +30,9 @@ const clean = (v, n) => (v == null ? '' : String(v).replace(/\s+/g, ' ').trim().
 
 async function storeFile(user, projectId, bytes, filename) {
   const [p] = await q('SELECT id FROM projects WHERE id=$1', [projectId]); if (!p) throw new HttpError(404, 'Project not found.');
-  const f = await saveFile(bytes, filename);
-  const [d] = await q(`INSERT INTO documents(category,name,storage_key,mime,size,project_id,created_by) VALUES ('Approved CO',$1,$2,$3,$4,$5,$6) RETURNING id`, [filename, f.key, f.mime, f.size, projectId, user.id]);
-  const up = await folders.pushProjectFile(projectId, { category: 'Approved CO', filename, bytes, mime: f.mime }); if (up?.webUrl) await q('UPDATE documents SET sp_url=$2 WHERE id=$1', [d.id, up.webUrl]);
+  const f = await saveFile(bytes, filename, { reuse: true }), again = reusedId(f, projectId);   // the same file read again is not saved twice
+  const d = again ? { id: again } : (await q(`INSERT INTO documents(category,name,storage_key,mime,size,project_id,created_by,sha256) VALUES ('Approved CO',$1,$2,$3,$4,$5,$6,$7) RETURNING id`, [filename, f.key, f.mime, f.size, projectId, user.id, f.sha256]))[0];
+  if (!again) { const up = await folders.pushProjectFile(projectId, { category: 'Approved CO', filename, bytes, mime: f.mime }); if (up?.webUrl) await q('UPDATE documents SET sp_url=$2 WHERE id=$1', [d.id, up.webUrl]); }
   return { id: d.id, mime: f.mime };
 }
 // Reads the file into a draft. The file is kept first (it is the record of what was read), so a failed read still leaves it on the project.

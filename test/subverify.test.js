@@ -34,7 +34,7 @@ const graph = async (url, init = {}) => {
 const find = (...segs) => { let cur = 'root'; for (const s of segs) { const n = kids(cur).find((x) => x.name === s); if (!n) return null; cur = n.id; } return nodes.get(cur); };
 
 let base, owner, office, pm, w9Read, pid, ptId, ptDemo;
-const PDF = Buffer.from('%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF');
+let pdfN = 0; const mkPdf = () => Buffer.from('%PDF-1.4\n% sample ' + (++pdfN) + '\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF');
 const claude = async (url, init) => { const tool = JSON.parse(init.body).tools[0].name; return w9Read === 'down' ? { ok: false, status: 500, json: async () => ({}) } : { ok: true, json: async () => ({ content: [{ type: 'tool_use', name: tool, input: w9Read }], usage: { input_tokens: 100, output_tokens: 30 } }) }; };
 async function call(method, path, body, cookie, raw) {
   const r = await fetch(base + path, { method, headers: { ...(body && !raw ? { 'content-type': 'application/json' } : {}), ...(cookie ? { cookie } : {}), ...(raw ? { 'x-file-name': raw } : {}) }, body: body ? (raw ? body : JSON.stringify(body)) : undefined });
@@ -81,9 +81,9 @@ test('adding a subcontractor from Admin makes its folder in SharePoint: ByOther 
 test('W-9 and insurance are uploaded onto the subcontractor, copied into its folder, and the address on the W-9 is read', async () => {
   const id = (await q(`SELECT id FROM subcontractors WHERE name='Rivera Framing'`))[0].id;
   await call('PUT', `/api/admin/subcontractors/${id}`, { addr: await verified('8001 South Orange Blossom Trail, Suite 606', 'Orlando', '32809') }, office);
-  const up = await call('POST', `/api/documents/upload?category=W-9&subcontractorId=${id}`, PDF, office, 'rivera-w9.pdf'); assert.equal(up.status, 200, JSON.stringify(up.body)); assert.match(up.body.sharepoint, /Rivera%20Framing/); assert.equal(up.body.read.address.zip, '32809');
+  const up = await call('POST', `/api/documents/upload?category=W-9&subcontractorId=${id}`, mkPdf(), office, 'rivera-w9.pdf'); assert.equal(up.status, 200, JSON.stringify(up.body)); assert.match(up.body.sharepoint, /Rivera%20Framing/); assert.equal(up.body.read.address.zip, '32809');
   assert.ok(find('ByOther', 'Subcontractors', 'Rivera Framing', 'W-9 - rivera-w9.pdf'));
-  const coi = await call('POST', `/api/documents/upload?category=COI&subcontractorId=${id}&expiresOn=2099-01-01`, PDF, office, 'rivera-coi.pdf'); assert.equal(coi.status, 200); assert.ok(find('ByOther', 'Subcontractors', 'Rivera Framing', 'COI - rivera-coi.pdf'));
+  const coi = await call('POST', `/api/documents/upload?category=COI&subcontractorId=${id}&expiresOn=2099-01-01`, mkPdf(), office, 'rivera-coi.pdf'); assert.equal(coi.status, 200); assert.ok(find('ByOther', 'Subcontractors', 'Rivera Framing', 'COI - rivera-coi.pdf'));
   const c = await comp(id); assert.deepEqual([c.docsOk, c.addressMatch, c.verified, c.blockers], [true, 'Matched', true, []]); assert.equal(c.addressOnDocs.w9.zip, '32809'); assert.match(c.folderUrl, /Subcontractors/);
   assert.equal((await q('SELECT read_name FROM documents WHERE id=$1', [up.body.id]))[0].read_name, 'Rivera Framing');
 });

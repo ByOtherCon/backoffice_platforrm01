@@ -10,7 +10,7 @@ const ai = await import('../server/ai.js');
 const addr = await import('../server/address.js');
 
 let base, owner, subAdmin, asst, pm, read, ann, bob, sub, YEAR;
-const PDF = Buffer.from('%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF');
+let pdfN = 0; const mkPdf = () => Buffer.from('%PDF-1.4\n% sample ' + (++pdfN) + '\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF');
 const claude = async (url, init) => { const tool = JSON.parse(init.body).tools[0].name; return { ok: true, json: async () => ({ content: [{ type: 'tool_use', name: tool, input: read }], usage: { input_tokens: 80, output_tokens: 20 } }) }; };
 async function call(method, path, body, cookie, raw) {
   const r = await fetch(base + path, { method, headers: { ...(body && !raw ? { 'content-type': 'application/json' } : {}), ...(cookie ? { cookie } : {}), ...(raw ? { 'x-file-name': raw } : {}) }, body: body ? (raw ? body : JSON.stringify(body)) : undefined });
@@ -21,7 +21,7 @@ const verified = async (street, city, zip) => { const r = (await call('POST', '/
 const w9 = (street = '12 Palm Ave', zip = '33602') => ({ documentType: 'W-9', legalName: 'Ann Marie Lopez', businessName: null, street, city: 'Tampa', state: 'FL', zip, warnings: [] });
 const emps = async () => (await call('GET', '/api/admin/employees', null, asst)).body;
 const rowOf = async (name) => (await emps()).find((e) => e.name === name);
-const upW9 = (id, who = asst, name = 'w9.pdf') => call('POST', `/api/documents/upload?category=W-9&employeeId=${id}`, PDF, who, name);
+const upW9 = (id, who = asst, name = 'w9.pdf') => call('POST', `/api/documents/upload?category=W-9&employeeId=${id}`, mkPdf(), who, name);
 
 before(async () => {
   await pool.query('DROP SCHEMA public CASCADE; CREATE SCHEMA public;'); await applyAll(pool);
@@ -44,14 +44,14 @@ test('an employee has a checked address like everyone else, and without a W-9 th
 });
 
 test('the employee W-9 is private: stored in the platform only, readable by the owner and Sub Admin, never listed or linkable; its address is read and compared', async () => {
-  assert.equal((await call('POST', `/api/documents/upload?category=COI&employeeId=${ann}&expiresOn=2099-01-01`, PDF, asst, 'x.pdf')).status, 400);   // only a W-9 attaches to an employee
+  assert.equal((await call('POST', `/api/documents/upload?category=COI&employeeId=${ann}&expiresOn=2099-01-01`, mkPdf(), asst, 'x.pdf')).status, 400);   // only a W-9 attaches to an employee
   const up = await upW9(ann); assert.equal(up.status, 200, JSON.stringify(up.body)); assert.equal(up.body.read.address.zip, '33602'); assert.equal(up.body.sharepoint, undefined);
   const a = await rowOf('Ann Lopez'); assert.deepEqual([a.w9, a.address_match, a.tax_ready, a.w9_name], [true, 'Matched', true, 'Ann Marie Lopez']); assert.equal(a.name_note, null);   // "Ann Marie Lopez" is the same person as "Ann Lopez"
   const id = up.body.id;
   assert.equal((await fetch(base + `/api/documents/${id}/file`, { headers: { cookie: owner } })).status, 200); assert.equal((await fetch(base + `/api/documents/${id}/file`, { headers: { cookie: subAdmin } })).status, 200);
   assert.equal((await fetch(base + `/api/documents/${id}/file`, { headers: { cookie: asst } })).status, 403);   // office staff cannot open a document that holds a tax number
   assert.ok(!(await call('GET', '/api/documents', null, owner)).body.some((d) => d.id === id)); assert.ok(!(await call('GET', '/api/search/records?kind=document&q=w9', null, owner)).body.some((d) => d.id === id));
-  assert.equal((await call('POST', `/api/documents/upload?category=W-9&employeeId=00000000-0000-4000-8000-000000000000`, PDF, asst, 'x.pdf')).status, 404);
+  assert.equal((await call('POST', `/api/documents/upload?category=W-9&employeeId=00000000-0000-4000-8000-000000000000`, mkPdf(), asst, 'x.pdf')).status, 404);
 });
 
 test('a W-9 that shows another address blocks it until a person confirms; the confirmation ends when the address changes; a different name is noted', async () => {
@@ -68,7 +68,7 @@ test('a W-9 that shows another address blocks it until a person confirms; the co
 test('the 1099 page: what each payee was paid in the year, whether their information is complete; crew pay is for the Super Admin only; subcontractors are included', async () => {
   sub = (await call('POST', '/api/admin/subcontractors', { name: 'Rivera Framing LLC', addr: await verified('8001 S Orange Blossom Trl', 'Orlando', '32809') }, asst)).body.id;
   read = { ...w9(), legalName: 'Rivera Framing LLC', street: '8001 South Orange Blossom Trail, Suite 606', city: 'Orlando', zip: '32809' };
-  await call('POST', `/api/documents/upload?category=W-9&subcontractorId=${sub}`, PDF, asst, 'w9.pdf');
+  await call('POST', `/api/documents/upload?category=W-9&subcontractorId=${sub}`, mkPdf(), asst, 'w9.pdf');
   const [g] = await q(`INSERT INTO gcs(name) VALUES ('GC') RETURNING id`); const [t] = await q(`INSERT INTO trades(name,sort) VALUES ('Framing',1) RETURNING id`);
   const [p] = await q(`INSERT INTO projects(name,gc_id,client,address) VALUES ('Job',$1,'C','A') RETURNING id`, [g.id]); const [pt] = await q('INSERT INTO project_trades(project_id,trade_id,original_amount) VALUES ($1,$2,90000) RETURNING id', [p.id, t.id]);
   const [sc] = await q('INSERT INTO sub_commitments(project_id,project_trade_id,subcontractor_id,contract_amount) VALUES ($1,$2,$3,20000) RETURNING id', [p.id, pt.id, sub]); const [si] = await q(`INSERT INTO sub_invoices(commitment_id,number,invoice_date,amount) VALUES ($1,'1',$2,5000) RETURNING id`, [sc.id, `${YEAR}-03-01`]);

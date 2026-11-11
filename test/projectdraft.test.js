@@ -12,10 +12,10 @@ const sp = await import('../server/sharepoint.js');
 const addr = await import('../server/address.js');
 
 let base, owner, pm, reply, tDemo, tDry, tPaint, gcId, aiDown = false, tool = null;
-const PDF = Buffer.from('%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF');
+let pdfN = 0; const mkPdf = () => Buffer.from('%PDF-1.4\n% sample ' + (++pdfN) + '\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF');
 const claude = async (url, init) => { tool = JSON.parse(init.body).tools[0].name; return aiDown ? { ok: false, status: 500, json: async () => ({}) } : { ok: true, json: async () => ({ content: [{ type: 'tool_use', name: tool, input: reply }], usage: { input_tokens: 500, output_tokens: 90 } }) }; };
 const res = (body, status = 200) => ({ ok: status < 400, status, headers: { get: () => null }, json: async () => body, arrayBuffer: async () => (Buffer.isBuffer(body) ? body.buffer.slice(body.byteOffset, body.byteOffset + body.length) : new ArrayBuffer(0)) });
-const files = { f1: { id: 'f1', name: 'Signed Subcontract.pdf', size: PDF.length, file: {}, bytes: PDF }, big: { id: 'big', name: 'Huge.pdf', size: 30 * 1024 * 1024, file: {} }, d1: { id: 'd1', name: '2026', folder: {} } };
+const files = { f1: { id: 'f1', name: 'Signed Subcontract.pdf', size: mkPdf().length, file: {}, bytes: mkPdf() }, big: { id: 'big', name: 'Huge.pdf', size: 30 * 1024 * 1024, file: {} }, d1: { id: 'd1', name: '2026', folder: {} } };
 const graph = async (url, init = {}) => {
   const u = new URL(url), p = decodeURIComponent(u.pathname);
   if (u.hostname === 'login.microsoftonline.com') return res({ access_token: 'tok', expires_in: 3600 });
@@ -45,17 +45,17 @@ before(async () => {
 after(async () => { server.close(); await pool.end(); });
 
 test('a document fills the new-project form: name, GC from the list, client, Florida address, retainage, each trade with its amount, and warnings', async () => {
-  reply = baseReply(); const r = await call('POST', '/api/projects/draft', PDF, owner, 'Subcontract.pdf'); assert.equal(r.status, 200, JSON.stringify(r.body)); assert.equal(tool, 'record_project_document');
+  reply = baseReply(); const r = await call('POST', '/api/projects/draft', mkPdf(), owner, 'Subcontract.pdf'); assert.equal(r.status, 200, JSON.stringify(r.body)); assert.equal(tool, 'record_project_document');
   const d = r.body; assert.deepEqual([d.documentType, d.name, d.gcId, d.client, d.contractNumber, d.total, d.retainagePct], ['Contract', 'Mall at Millenia - Zara', gcId, 'Zara USA', 'SC-1042', 120000, 5]);   // "Sachse Construction, LLC" finds "Sachse Construction"
   assert.deepEqual(d.addr, { street: '4200 Conroy Rd, Suite 120', city: 'Orlando', state: 'FL', zip: '32839' });
   assert.deepEqual(d.lines.map((l) => [l.tradeId, l.amount]), [[tDemo, 20000], [tDry, 85000], [tPaint, 15000]]); assert.deepEqual(d.warnings, []);
   reply = { ...baseReply(), gcName: 'Unknown GC Inc', totalAmount: 130000, siteStreet: '1 Main St, Orlando, FL 32801', siteCity: null, siteZip: null, lines: [...baseReply().lines, { description: 'Mystery scope', amount: null, tradeHint: 'xyz' }] };
-  const w = (await call('POST', '/api/projects/draft', PDF, owner, 'Subcontract.pdf')).body; assert.equal(w.gcId, null); assert.equal(w.client, 'Zara USA');
+  const w = (await call('POST', '/api/projects/draft', mkPdf(), owner, 'Subcontract.pdf')).body; assert.equal(w.gcId, null); assert.equal(w.client, 'Zara USA');
   assert.deepEqual(w.addr, { street: '1 Main St', city: 'Orlando', state: 'FL', zip: '32801' });   // a whole address in the street line is split
   assert.ok(w.warnings.some((x) => /not in the GC list/.test(x)) && w.warnings.some((x) => /add up to 120000.00 but the printed total is 130000.00/.test(x)) && w.warnings.some((x) => /Choose a trade/.test(x)) && w.warnings.some((x) => /no price/.test(x)));
-  assert.equal((await call('POST', '/api/projects/draft', PDF, pm, 'Subcontract.pdf')).status, 403);   // office only
-  assert.equal((await call('POST', '/api/projects/draft', PDF, owner, 'notes.docx')).status, 400);
-  aiDown = true; assert.equal((await call('POST', '/api/projects/draft', PDF, owner, 'Subcontract.pdf')).status, 502); aiDown = false;   // nothing is saved when AI is down: the form just stays manual
+  assert.equal((await call('POST', '/api/projects/draft', mkPdf(), pm, 'Subcontract.pdf')).status, 403);   // office only
+  assert.equal((await call('POST', '/api/projects/draft', mkPdf(), owner, 'notes.docx')).status, 400);
+  aiDown = true; assert.equal((await call('POST', '/api/projects/draft', mkPdf(), owner, 'Subcontract.pdf')).status, 502); aiDown = false;   // nothing is saved when AI is down: the form just stays manual
   assert.equal((await q('SELECT count(*)::int AS n FROM projects'))[0].n, 0);   // reading a document never creates anything
 });
 
@@ -63,13 +63,13 @@ test('the contract file is kept when the project is created, can be replaced and
   const a = (await call('POST', '/api/address/verify', { street: '4200 Conroy Rd', city: 'Orlando', state: 'FL', zip: '32839', kind: 'project' }, owner)).body;
   const c = await call('POST', '/api/projects', { name: 'Zara', gcId, client: 'Zara USA', addr: { ...a.address, token: a.token }, retainagePct: 5, trades: [{ tradeId: tDemo, amount: 20000 }] }, owner); assert.equal(c.status, 200);
   const id = c.body.id; assert.equal((await call('GET', `/api/projects/${id}/contract-file`, null, owner)).body.file, null);
-  const k = await call('POST', `/api/projects/${id}/contract-file?kind=Contract`, PDF, owner, 'Signed Zara.pdf'); assert.equal(k.status, 200, JSON.stringify(k.body)); assert.equal(k.body.replaced, false);
+  const k = await call('POST', `/api/projects/${id}/contract-file?kind=Contract`, mkPdf(), owner, 'Signed Zara.pdf'); assert.equal(k.status, 200, JSON.stringify(k.body)); assert.equal(k.body.replaced, false);
   const f = (await call('GET', `/api/projects/${id}/contract-file`, null, owner)).body.file; assert.equal(f.name, 'Signed Zara.pdf'); assert.equal(f.kind, 'Contract');
   assert.equal((await call('GET', `/api/projects/${id}`, null, owner)).body.project.contractUrl, f.url);   // the project header links to it
   assert.equal((await fetch(base + f.url, { headers: { cookie: owner } })).status, 200);
-  const r2 = await call('POST', `/api/projects/${id}/contract-file?kind=Proposal`, PDF, owner, 'Zara Proposal.pdf'); assert.equal(r2.body.replaced, true);
+  const r2 = await call('POST', `/api/projects/${id}/contract-file?kind=Proposal`, mkPdf(), owner, 'Zara Proposal.pdf'); assert.equal(r2.body.replaced, true);
   assert.equal((await call('GET', `/api/projects/${id}/contract-file`, null, owner)).body.file.name, 'Zara Proposal.pdf');
-  assert.equal((await call('POST', `/api/projects/${id}/contract-file`, PDF, pm, 'x.pdf')).status, 403);
+  assert.equal((await call('POST', `/api/projects/${id}/contract-file`, mkPdf(), pm, 'x.pdf')).status, 403);
   assert.equal((await call('DELETE', `/api/projects/${id}/contract-file`, null, owner)).status, 200); assert.equal((await call('GET', `/api/projects/${id}/contract-file`, null, owner)).body.file, null);
   assert.equal((await call('DELETE', `/api/projects/${id}/contract-file`, null, owner)).status, 200);   // already gone: fine
 });

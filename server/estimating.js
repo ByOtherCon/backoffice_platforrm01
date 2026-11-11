@@ -337,7 +337,7 @@ export async function uploadFile(user, id, bytes, filename, kind = 'Proposal') {
   if (kind === 'Proposal' && path.extname(filename).toLowerCase() !== '.pdf') throw bad('The proposal must be a PDF.');
   const f = await saveFile(bytes, filename); let parsed = null, aiError = null;
   const copy = folders.pushOpportunityFile(id, { kind, filename, bytes, mime: f.mime });   // runs alongside the AI reading; a SharePoint problem only adds a note
-  const [row] = await q('INSERT INTO opportunity_files(opportunity_id,kind,name,storage_key,mime,size,created_by) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id', [id, kind, filename.slice(0, 200), f.key, f.mime, f.size, user.id]);
+  const [row] = await q('INSERT INTO opportunity_files(opportunity_id,kind,name,storage_key,mime,size,created_by,sha256) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id', [id, kind, filename.slice(0, 200), f.key, f.mime, f.size, user.id, f.sha256]);
   await q('INSERT INTO opportunity_notes(opportunity_id,user_id,kind,body) VALUES ($1,$2,$3,$4)', [id, user.id, 'System', `${kind === 'Proposal' ? 'Proposal PDF' : 'File'} "${filename.slice(0, 120)}" uploaded by ${who(user)}.`]);
   if (kind === 'Proposal') {
     try {
@@ -366,7 +366,7 @@ export async function uploadPlans(user, id, req, filename) {
     await pipeline(req, new Transform({ transform(chunk, _e, cb) { n += chunk.length; cb(n > MAX_PLANS ? new HttpError(413, 'That file is too large (limit 600 MB). Split the plans into smaller zips.') : null, chunk); } }), fsm.createWriteStream(tmp, { mode: 0o600 }));
   } catch (e) { await fsm.promises.rm(tmp, { force: true }); throw e instanceof HttpError ? e : bad('The upload was interrupted. Try again.'); }
   let f; try { f = await adoptFile(tmp, name); } catch (e) { await fsm.promises.rm(tmp, { force: true }); throw e; }
-  const [row] = await q('INSERT INTO opportunity_files(opportunity_id,kind,name,storage_key,mime,size,created_by) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id', [id, 'Plans', name, f.key, f.mime, f.size, user.id]);
+  const [row] = await q('INSERT INTO opportunity_files(opportunity_id,kind,name,storage_key,mime,size,created_by,sha256) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id', [id, 'Plans', name, f.key, f.mime, f.size, user.id, f.sha256]);
   const mb = (f.size / 1048576).toFixed(1); await q('INSERT INTO opportunity_notes(opportunity_id,user_id,kind,body) VALUES ($1,$2,$3,$4)', [id, user.id, 'System', `Plans "${name}" (${mb} MB) uploaded by ${who(user)}${folders.enabled() ? '. Copying to the 01. DL folder in SharePoint…' : '.'}`]);
   // The copy to SharePoint can take a while for a big file, so it runs after this answer. When it lands the app's own copy is removed to save disk.
   const copying = folders.enabled() ? folders.pushOpportunityFilePath(id, { kind: 'Plans', filename: name, filePath: path.join(UPLOAD_DIR, f.key), size: f.size, mime: f.mime }).then(async (up) => {

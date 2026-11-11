@@ -10,14 +10,14 @@ const ai = await import('../server/ai.js');
 const { matchTrade, buildSchedule, compareToProject } = await import('../src/lib/contracts.ts');
 
 let base, owner, pm, projectId, tDemo, tDry, tPaint, tAct, reply, aiDown = false;
-const PDF = Buffer.from('%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF');
+let pdfN = 0; const mkPdf = () => Buffer.from('%PDF-1.4\n% sample ' + (++pdfN) + '\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF');
 const claude = async () => aiDown ? { ok: false, status: 500, json: async () => ({}) } : ({ ok: true, json: async () => ({ content: [{ type: 'tool_use', name: 'record_contract', input: reply }], usage: { input_tokens: 5000, output_tokens: 600 } }) });
 const call = async (method, path, body, cookie, raw) => {
   const res = await fetch(base + path, { method, headers: { ...(body && !raw ? { 'content-type': 'application/json' } : {}), ...(cookie ? { cookie } : {}), ...(raw ? { 'x-file-name': raw } : {}) }, body: body ? (raw ? body : JSON.stringify(body)) : undefined });
   const t = await res.text(); let b = null; try { b = t ? JSON.parse(t) : null; } catch { b = t; } return { status: res.status, body: b };
 };
 const login = async (email) => { const r = await fetch(base + '/api/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email, password: 'correct horse battery' }) }); return r.headers.get('set-cookie').split(';')[0]; };
-const upload = (who = owner, name = 'Subcontract.pdf', kind = 'Contract') => call('POST', `/api/projects/${projectId}/contract?kind=${encodeURIComponent(kind)}`, PDF, who, name);
+const upload = (who = owner, name = 'Subcontract.pdf', kind = 'Contract') => call('POST', `/api/projects/${projectId}/contract?kind=${encodeURIComponent(kind)}`, mkPdf(), who, name);
 const baseReply = () => ({ isChangeOrder: false, contractNumber: 'SC-1042', contractDate: '2026-10-20', totalAmount: 120000, retainagePercent: 5, netDays: 30, billingFrequency: 'Monthly progress', paymentTerms: 'Pay when paid, net 30. Pencil requisition by the 25th.',
   lines: [{ description: 'Selective demolition', amount: 20000, tradeHint: 'demolition' }, { description: 'Metal stud framing and gypsum board', amount: 85000, tradeHint: 'drywall' }, { description: 'Painting', amount: 15000, tradeHint: 'paint' }], schedule: [], warnings: [] });
 
@@ -95,6 +95,6 @@ test('a second contract replaces the first; tentative schedule rows are replaced
 test('when the AI is unavailable the file is still saved and attached', async () => {
   aiDown = true; const up = await upload(owner, 'Work-order.pdf', 'Work order'); aiDown = false;
   assert.equal(up.status, 200); assert.equal(up.body.runId, null); assert.match(up.body.error, /could not read/); assert.ok(up.body.documentId);
-  assert.equal((await call('POST', `/api/projects/${projectId}/contract?kind=Bogus`, PDF, owner, 'x.pdf')).status, 400);
+  assert.equal((await call('POST', `/api/projects/${projectId}/contract?kind=Bogus`, mkPdf(), owner, 'x.pdf')).status, 400);
   assert.equal((await call('POST', `/api/projects/${projectId}/contract`, Buffer.from('hello'), owner, 'x.txt')).status, 400);
 });

@@ -42,8 +42,8 @@ const form = async (o = {}) => ({ name: 'Wingstop - St Cloud', client: 'Wingstop
 const mk = async (o) => { const r = await call('POST', '/api/opportunities', await form(o), est); assert.equal(r.status, 200, JSON.stringify(r.body)); return r.body.id; };
 const get = async (id) => (await call('GET', `/api/opportunities/${id}`, null, est)).body;
 const status = (id, s, extra = {}, who = est) => call('POST', `/api/opportunities/${id}/status`, { status: s, ...extra }, who);
-const PDF = Buffer.from('%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF');
-const upload = (id, bytes = PDF, name = 'Proposal.pdf', kind = 'Proposal', who = est) => call('POST', `/api/opportunities/${id}/files?kind=${kind}`, bytes, who, name);
+let pdfN = 0; const mkPdf = () => Buffer.from('%PDF-1.4\n% sample ' + (++pdfN) + '\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF');
+const upload = (id, bytes = mkPdf(), name = 'Proposal.pdf', kind = 'Proposal', who = est) => call('POST', `/api/opportunities/${id}/files?kind=${kind}`, bytes, who, name);
 const submit = async (id, extra = {}) => { const up = await upload(id); assert.equal(up.status, 200); return call('POST', `/api/opportunities/${id}/submissions`, { fileId: up.body.fileId, date: today, method: 'Email', prices: [{ tradeId: tDemo, amount: 25000 }, { tradeId: tDry, amount: 132000.5 }], ...extra }, est); };
 
 test('setup and who may do what', async () => {
@@ -170,7 +170,7 @@ test('status moves: Reviewing and Accepted go to the Proposal Tracker; Accept ne
 
 test('submitting needs the proposal PDF: it is read, the trades are checked by a person, and the PDF joins the submittal folder', async () => {
   assert.equal((await call('POST', `/api/opportunities/${wing}/submissions`, { date: today, method: 'Email', prices: [{ tradeId: tDemo, amount: 1 }] }, est)).status, 400);     // no PDF
-  assert.equal((await upload(wing, Buffer.from('not a pdf'), 'x.pdf')).status, 400); assert.equal((await upload(wing, PDF, 'proposal.docx')).status, 400); assert.equal((await upload(wing, PDF, 'p.pdf', 'Proposal', asst)).status, 403);
+  assert.equal((await upload(wing, Buffer.from('not a pdf'), 'x.pdf')).status, 400); assert.equal((await upload(wing, mkPdf(), 'proposal.docx')).status, 400); assert.equal((await upload(wing, mkPdf(), 'p.pdf', 'Proposal', asst)).status, 403);
   aiReply = { trades: [{ trade: 'Demolition', amount: 25000 }, { trade: 'Framing and Drywall', amount: 132000.5 }, { trade: 'Mystery work', amount: 500 }], total: 160000, warnings: ['Alternate #1 excluded'] };
   const up = (await upload(wing)).body; assert.deepEqual(up.parsed.trades.map((t) => [t.trade, t.tradeId ? 'matched' : 'unmatched', t.amount]), [['Demolition', 'matched', 25000], ['Framing and Drywall', 'matched', 132000.5], ['Mystery work', 'unmatched', 500]]);
   assert.equal(up.parsed.total, 157500.5); assert.ok(up.parsed.warnings.some((w) => /add up to 157500.50 but the printed total is 160000.00/.test(w))); assert.ok(up.parsed.warnings.includes('Alternate #1 excluded'));
@@ -179,12 +179,12 @@ test('submitting needs the proposal PDF: it is read, the trades are checked by a
   assert.equal((await send({ date: shift(today, 1) })).status, 400); assert.equal((await send({ method: 'Carrier pigeon' })).status, 400); assert.equal((await send({ prices: [{ tradeId: tDemo, amount: 0 }] })).status, 400); assert.equal((await send({ prices: [{ tradeId: tDemo, amount: 1 }, { tradeId: tDemo, amount: 2 }] })).status, 400);
   assert.equal((await send({ fileId: '00000000-0000-0000-0000-000000000000' })).status, 400);
   const s = await send({}); assert.deepEqual([s.status, s.body.version, s.body.price], [200, 1, 157000.5]); assert.equal((await send({})).status, 409);
-  assert.equal((await upload(wing, PDF, 'Draft2.pdf')).status, 200);                                                                                     // a second upload that is never submitted
+  assert.equal((await upload(wing, mkPdf(), 'Draft2.pdf')).status, 200);                                                                                     // a second upload that is never submitted
   const o = await get(wing); assert.deepEqual([o.status, o.progress, o.countdown, o.total, o.tradePrices.map((p) => p.name), o.followup.stage, o.followup.status], ['Submitted', 'Done', 'Submitted', 157000.5, ['Demolition', 'Framing & Drywall'], 'First email', 'Active']);
   assert.deepEqual(o.files.map((f) => [f.kind, f.name]), [['Proposal', 'Proposal.pdf'], ['Proposal', 'Draft2.pdf']]); assert.match(o.notes.map((n) => n.body).join(' | '), /Bid version 1 sent .* \(Email\), 157000\.50 across 2 trades\. Follow-up case opened\./);
-  const f = await fetch(`${base}/api/opportunity-files/${o.files[0].id}`, { headers: { cookie: asst } }); assert.equal(f.status, 200); assert.equal(f.headers.get('content-type'), 'application/pdf'); assert.equal((await f.arrayBuffer()).byteLength, PDF.length);  // anyone on the team can open it
+  const f = await fetch(`${base}/api/opportunity-files/${o.files[0].id}`, { headers: { cookie: asst } }); assert.equal(f.status, 200); assert.equal(f.headers.get('content-type'), 'application/pdf'); assert.equal((await f.arrayBuffer()).byteLength, mkPdf().length);  // anyone on the team can open it
   assert.equal((await fetch(`${base}/api/opportunity-files/${o.files[0].id}`, { headers: { cookie: pm } })).status, 403);
-  assert.equal((await call('DELETE', `/api/opportunities/${wing}/files/${o.files[0].id}`, null, est)).status, 409);                                                       // a submitted PDF is kept for the record
+  assert.equal((await call('DELETE', `/api/opportunities/${wing}/files/${o.files[0].id}`, null, est)).status, 409);                                                       // a submitted mkPdf() is kept for the record
   assert.equal((await call('DELETE', `/api/opportunities/${wing}/files/${o.files[1].id}`, null, est)).status, 200);                                                        // the unused upload can go
   const extra = await upload(wing, Buffer.from('DOCX'), 'notes.txt', 'Submittal'); assert.equal(extra.status, 200); assert.equal((await get(wing)).files.length, 2);        // other files sit in the same folder list
   const sub = (await call('GET', '/api/opportunities?tab=submittals', null, est)).body.rows; assert.ok(sub.some((r) => r.id === wing && r.calendarDate === today));
@@ -250,7 +250,7 @@ test('post-submission results: Not Awarded needs a reason; No Communication From
   const cases = await q(`SELECT status FROM followup_cases WHERE opportunity_id=$1 ORDER BY created_at`, [id]); assert.deepEqual(cases.map((c) => c.status), ['Superseded', 'Active']);                // the new version starts its own cycle, the old one is cancelled
   // voiding the newest submission is recoverable and needs a reason; the earlier version becomes valid again
   const s2 = r.submissions[1].id; assert.equal((await call('POST', `/api/opportunities/${id}/submissions/${s2}/void`, {}, est)).status, 400); assert.equal((await call('POST', `/api/opportunities/${id}/submissions/${s2}/void`, { reason: 'Wrong PDF' }, est)).status, 200);
-  const v = await get(id); assert.deepEqual([v.lastSubmission.version, v.total, v.status], [1, 157000.5, 'Submitted']); assert.equal(v.files.length, 2);                                                  // the PDF is not deleted
+  const v = await get(id); assert.deepEqual([v.lastSubmission.version, v.total, v.status], [1, 157000.5, 'Submitted']); assert.equal(v.files.length, 2);                                                  // the mkPdf() is not deleted
   assert.equal((await call('PUT', `/api/opportunities/${id}/submissions/${v.lastSubmission.id}`, { date: shift(today, 2), method: 'PlanHub' }, est)).status, 400);
   assert.equal((await call('PUT', `/api/opportunities/${id}/submissions/${v.lastSubmission.id}`, { method: 'PlanHub', note: 'Sent through PlanHub' }, est)).status, 200); assert.match((await get(id)).notes[0].body, /Submission v1 corrected by est: method Email → PlanHub/);
 });

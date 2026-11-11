@@ -484,9 +484,10 @@ async function costsTab(p, canEdit, reload) {
     const sups = (await api('GET', '/admin/suppliers')).filter((s) => !s.archived);
     const lines = h('div'); const addLine = () => { const sel = tradeSelect(p, { project: true }), amt = num('', { placeholder: 'Amount' }); const row = h('div', { class: 'trade-row' }, sel, amt, h('button', { class: 'small', type: 'button', onclick: () => row.remove() }, 'Remove')); row._get = () => ({ projectId: p.project.id, projectTradeId: sel.value || null, amount: amt.value }); lines.append(row); }; addLine();
     const paid = h('input', { type: 'checkbox' }), paidDate = h('input', { type: 'date', value: todayStr() }); paidDate.parentElement; const paidBox = h('div', { style: 'display:none' }, field('Date Paid', paidDate)); paid.onchange = () => { paidBox.style.display = paid.checked ? '' : 'none'; };
-    const f = { sup: h('select', {}, h('option', { value: '' }, 'Choose vendor…'), sups.map((s) => h('option', { value: s.id }, s.name))), ref: h('input'), date: h('input', { type: 'date', value: todayStr() }), total: num(), desc: h('input', { placeholder: 'What was bought (for example: drywall screws and 2 boxes of mud)' }) };
-    formModal('Vendor invoice', [field('Vendor (from Admin)', f.sup), field('Invoice #', f.ref), field('Invoice date', f.date), field('Invoice total', f.total), field('Description Of The Purchase', f.desc, 'wide'), h('label', { class: 'wide', style: 'text-transform:none;letter-spacing:0;font-weight:400;display:flex;gap:.5rem;align-items:center' }, paid, 'Already paid (a website purchase or card charge)'), h('div', { class: 'wide' }, paidBox), field('Allocate to trades (must add up to the total)', h('div', {}, lines, h('button', { class: 'small', type: 'button', onclick: addLine }, '+ Split to another trade')), 'wide')],
-      async () => { await api('POST', '/supplier-invoices', { supplierId: f.sup.value, reference: f.ref.value, description: f.desc.value, paid: paid.checked, paidDate: paidDate.value, date: f.date.value, total: f.total.value, allocations: [...lines.children].map((r) => r._get()) }); reload(); }, 'Add invoice');
+    const f = { sup: h('select', {}, h('option', { value: '' }, 'Choose vendor…'), sups.filter((s) => !s.one_time).map((s) => h('option', { value: s.id }, s.name))), newSup: h('input', { placeholder: 'Or type a new vendor' }), ref: h('input'), date: h('input', { type: 'date', value: todayStr() }), total: num(), desc: h('input', { placeholder: 'What was bought (for example: drywall screws and 2 boxes of mud)' }) };
+    const keepVendor = vendorKeepChoice(f.sup, f.newSup);
+    formModal('Vendor invoice', [field('Vendor (from Admin)', f.sup), field('…or a new vendor', f.newSup), keepVendor.el, field('Invoice #', f.ref), field('Invoice date', f.date), field('Invoice total', f.total), field('Description Of The Purchase', f.desc, 'wide'), h('label', { class: 'wide', style: 'text-transform:none;letter-spacing:0;font-weight:400;display:flex;gap:.5rem;align-items:center' }, paid, 'Already paid (a website purchase or card charge)'), h('div', { class: 'wide' }, paidBox), field('Allocate to trades (must add up to the total)', h('div', {}, lines, h('button', { class: 'small', type: 'button', onclick: addLine }, '+ Split to another trade')), 'wide')],
+      async () => { await api('POST', '/supplier-invoices', { supplierId: f.sup.value || undefined, supplierName: f.newSup.value, saveVendor: keepVendor.save(), reference: f.ref.value, description: f.desc.value, paid: paid.checked, paidDate: paidDate.value, date: f.date.value, total: f.total.value, allocations: [...lines.children].map((r) => r._get()) }); reload(); }, 'Add invoice');
   };
   const paySupplier = (s) => {
     const f = { date: h('input', { type: 'date', value: todayStr() }), amount: num('', { placeholder: `Invoice total ${usd(s.invoiceTotal)}` }) };
@@ -709,11 +710,20 @@ async function projectDocs(p, canEdit, reload) {
       h('td', {}, d.has_file && hasFolderAccess() ? [h('button', { class: 'small', title: 'Save a copy into a folder on this computer', onclick: guard(err, oneAtATime(async () => { try { notice(err, 'Saved to ' + (await saveDocToFolder(d)), 'ok'); } catch (e) { throw folderError(e); } })) }, 'Save to my folder'), ' '] : '', canEdit ? h('button', { class: 'small danger', onclick: guard(err, async () => { if (confirm(`Delete ${d.name}?`)) { await api('DELETE', `/documents/${d.id}`); reload(); } }) }, 'Delete') : ''))))) ) : h('p', { class: 'muted' }, 'No documents yet. Add the signed contract, proposals, approved change orders, invoices and plans here.'));
 }
 
+// For a vendor typed in new: keep it for next time, or treat the purchase as a one-time one (kept on the invoice, out of the vendor dropdowns).
+function vendorKeepChoice(select, newName) {
+  const keep = h('input', { type: 'radio', name: 'vk' + Math.random().toString(36).slice(2), checked: true }), once = h('input', { type: 'radio', name: keep.name });
+  const lab = (inp, text) => h('label', { style: 'display:flex;gap:.5rem;align-items:center;text-transform:none;letter-spacing:0;font-weight:400;font-size:14px;margin:.15rem 0' }, inp, text);
+  const el = h('div', { class: 'wide' }, lab(keep, 'Save this vendor for future purchases'), lab(once, 'One-time purchase (do not add it to the vendor list)'));
+  const show = () => { el.style.display = select.value ? 'none' : ''; }; select.addEventListener('change', show); show();
+  return { el, save: () => (select.value ? undefined : keep.checked) };
+}
 const CATS_OVERHEAD = ['Tools', 'Insurance', 'Vehicles & fuel', 'Office', 'Software', 'Other'];
 function receiptReview(res, opts, done) {
   const parsed = res.parsed || { merchant: '', number: '', date: todayStr(), tax: 0, paid: false, lines: [{ description: '', amount: '', kind: 'Materials' }], warnings: [] };
-  const sup = h('select', {}, h('option', { value: '' }, 'Type a new vendor →'), opts.suppliers.map((s) => h('option', { value: s.id }, s.name))); if (res.supplierId) sup.value = res.supplierId;
+  const sup = h('select', {}, h('option', { value: '' }, 'Type a new vendor →'), opts.suppliers.filter((s) => !s.one_time).map((s) => h('option', { value: s.id }, s.name))); if (res.supplierId) sup.value = res.supplierId;
   const newSup = h('input', { value: res.supplierId ? '' : parsed.merchant || '', placeholder: 'New vendor name' });
+  const keepVendor = vendorKeepChoice(sup, newSup);
   const f = { ref: h('input', { value: parsed.number || '' }), date: h('input', { type: 'date', value: parsed.date || todayStr() }), tax: num(parsed.tax || 0), paid: h('input', { type: 'checkbox' }) }; f.paid.checked = !!parsed.paid;
   const lines = h('div'); const targets = () => [h('option', { value: '' }, 'Where does it go…'), ...opts.projects.map((p) => h('option', { value: 'p:' + p.id }, p.name)), ...CATS_OVERHEAD.map((c) => h('option', { value: 'o:' + c }, `Company overhead · ${c}`))];
   const addLine = (l) => {
@@ -729,9 +739,9 @@ function receiptReview(res, opts, done) {
   const warn = (parsed.warnings || []).concat(res.aiError ? [res.aiError] : []);
   formModal(res.parsed ? 'Review receipt' : 'Enter receipt', [
     ...(warn.length ? [h('div', { class: 'err wide' }, warn.map((w) => h('div', {}, w)))] : []),
-    field('Vendor', sup), field('…or new vendor', newSup), field('Receipt / invoice #', f.ref), field('Date', f.date), field('Tax', f.tax), field('', h('label', { style: 'text-transform:none;letter-spacing:0;font-size:15px;font-weight:400' }, f.paid, ' Paid at purchase')),
+    field('Vendor', sup), field('…or new vendor', newSup), keepVendor.el, field('Receipt / invoice #', f.ref), field('Date', f.date), field('Tax', f.tax), field('', h('label', { style: 'text-transform:none;letter-spacing:0;font-size:15px;font-weight:400' }, f.paid, ' Paid at purchase')),
     field('Lines: what it was, and where it goes (tax is shared across the lines)', h('div', {}, lines, h('button', { class: 'small', type: 'button', onclick: () => addLine({}) }, '+ Add line')), 'wide')],
-  async () => { await api('POST', '/receipts', { supplierId: sup.value || undefined, supplierName: newSup.value, reference: f.ref.value, date: f.date.value, tax: f.tax.value, paid: f.paid.checked, documentId: res.documentId, source: res.parsed ? 'AI' : 'Manual', total: parsed.total ?? undefined, lines: [...lines.children].map((r) => r._get()) }); done(); }, 'Save receipt');
+  async () => { await api('POST', '/receipts', { supplierId: sup.value || undefined, supplierName: newSup.value, saveVendor: keepVendor.save(), reference: f.ref.value, date: f.date.value, tax: f.tax.value, paid: f.paid.checked, documentId: res.documentId, source: res.parsed ? 'AI' : 'Manual', total: parsed.total ?? undefined, lines: [...lines.children].map((r) => r._get()) }); done(); }, 'Save receipt');
 }
 async function receiptsView() {
   const [list, opts, use] = await Promise.all([api('GET', '/receipts'), Promise.all([api('GET', '/trade-options'), api('GET', '/admin/suppliers')]).then(([projects, suppliers]) => ({ projects, suppliers: suppliers.filter((s) => !s.archived) })), api('GET', '/ai/usage')]);
@@ -1205,14 +1215,16 @@ function recordForm(sec, rec, done) {
     done();
   }, rec ? 'Save' : 'Add');
 }
+let showOneTime = false;
 async function adminSection(sec) {
-  const rows = await api('GET', '/admin/' + sec.kind); const err = h('div'); const cols = tableCols(sec);
+  const all = await api('GET', '/admin/' + sec.kind), oneTime = sec.kind === 'suppliers' ? all.filter((r) => r.one_time) : [], rows = sec.kind === 'suppliers' && !showOneTime ? all.filter((r) => !r.one_time) : all; const err = h('div'); const cols = tableCols(sec);
   const isOff = (r) => (sec.invert ? r[sec.archive] === false : r[sec.archive] === true);
   const flag = (r) => (sec.invert ? !r[sec.archive] : !r[sec.archive]);
   return h('div', { class: 'card' }, h('div', { class: 'row spread' }, h('h2', {}, sec.title), h('button', { class: 'primary', onclick: () => recordForm(sec, null, render) }, `+ Add ${sec.one}`)), err,
+    oneTime.length ? h('label', { style: 'display:flex;gap:.5rem;align-items:center;text-transform:none;letter-spacing:0;font-weight:400;font-size:14px' }, h('input', { type: 'checkbox', checked: showOneTime || null, onchange: (e) => { showOneTime = e.target.checked; render(); } }), `Show ${oneTime.length} one-time vendor${oneTime.length === 1 ? '' : 's'} (single purchases that were not saved to the list)`) : '',
     rows.length ? h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, cols.map(([, l]) => h('th', {}, l)), h('th'))),
       h('tbody', {}, rows.map((r) => h('tr', { class: isOff(r) ? 'muted' : '' }, cols.map(([k]) => (k === '_tax' ? h('td', { style: 'white-space:normal;min-width:13rem' }, h('span', { class: 'pill ' + (r.tax_ready ? 'Valid' : 'Expired'), title: (r.tax_blockers || []).join('; ') }, r.tax_ready ? 'Ready' : 'Not Ready'), r.tax_ready ? '' : h('div', { class: 'muted', style: 'font-size:12px' }, (r.tax_blockers || []).slice(0, 2).join('; ')), r.name_note ? h('div', { class: 'muted', style: 'font-size:12px' }, r.name_note) : '', r.address_verified && ['Unread', 'Mismatch'].includes(r.address_match) && r.w9 ? h('div', {}, h('button', { class: 'small', style: 'margin-top:.3rem', onclick: guard(err, async () => { if (confirm(`Compare the address on the W-9 with ${[r.address, r.city, [r.state, r.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ')}. Are they the same place?`)) { await api('POST', `/admin/employees/${r.id}/confirm-address`, {}); render(); } }) }, 'The W-9 Shows This Address')) : '') : k === '_verified' ? h('td', { style: 'white-space:normal' }, h('span', { class: 'pill ' + (r.verified ? 'Valid' : 'Expired'), title: (r.blockers || []).join('; ') }, r.verified ? 'Verified' : 'Unverified'), r.verified ? '' : h('div', { class: 'muted', style: 'font-size:12px' }, (r.blockers || []).slice(0, 2).join('; ')), r.folder_url ? h('div', {}, h('a', { href: r.folder_url, target: '_blank', rel: 'noopener', style: 'font-size:12px' }, 'SharePoint Folder')) : '') : h('td', {}, r[k] ?? ''))), h('td', {},
-        h('button', { class: 'small', onclick: () => recordForm(sec, r, render) }, 'Edit'), ' ', sec.extra ? [sec.extra(r, err), ' '] : '',
+        h('button', { class: 'small', onclick: () => recordForm(sec, r, render) }, 'Edit'), ' ', sec.extra ? [sec.extra(r, err), ' '] : '', r.one_time ? [h('button', { class: 'small', title: 'Add it to the vendor list so it can be chosen next time', onclick: guard(err, async () => { await api('PUT', `/admin/suppliers/${r.id}`, { one_time: false }); render(); }) }, 'Save As Vendor'), ' '] : '',
         h('button', { class: 'small', onclick: guard(err, async () => { await api('PUT', `/admin/${sec.kind}/${r.id}`, { [sec.archive]: flag(r) }); render(); }) }, sec.invert ? (r[sec.archive] ? 'Deactivate' : 'Activate') : (r[sec.archive] ? 'Restore' : 'Archive')), ' ',
         h('button', { class: 'small danger', onclick: guard(err, async () => { if (confirm(`Delete ${r.name}?`)) { await api('DELETE', `/admin/${sec.kind}/${r.id}`); render(); } }) }, 'Delete'))))))) : h('p', { class: 'muted' }, `No ${sec.title.toLowerCase()} yet.`));
 }

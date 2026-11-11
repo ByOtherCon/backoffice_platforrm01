@@ -114,7 +114,7 @@ export async function ignore(id, on = true) {
 // What the review screen needs for one cost and one project: the trades, and a first guess of the trade for each line.
 export async function prepare(id, projectId) {
   const [c] = await q('SELECT * FROM qb_costs WHERE id=$1', [id]); if (!c) throw new HttpError(404, 'Not found.');
-  const out = { categories: CATEGORIES, suppliers: (await q('SELECT id, name FROM suppliers WHERE NOT archived ORDER BY name')).map((s) => ({ id: s.id, name: s.name })), rule: (await q('SELECT supplier_id, project_id, overhead_category FROM qb_vendor_rules WHERE vendor_key=$1', [c.vendor_key]))[0] ?? null, project: null, guess: c.lines.map(() => null) };
+  const out = { categories: CATEGORIES, suppliers: (await q('SELECT id, name FROM suppliers WHERE NOT archived AND NOT one_time ORDER BY name')).map((s) => ({ id: s.id, name: s.name })), rule: (await q('SELECT supplier_id, project_id, overhead_category FROM qb_vendor_rules WHERE vendor_key=$1', [c.vendor_key]))[0] ?? null, project: null, guess: c.lines.map(() => null) };
   const [sup] = await q('SELECT id FROM suppliers WHERE lower(name)=lower($1) LIMIT 1', [c.vendor_name || '']); out.supplierGuess = out.rule?.supplier_id || sup?.id || null;
   if (projectId) {
     const [p] = await q('SELECT id, name FROM projects WHERE id=$1', [projectId]); if (!p) throw new HttpError(404, 'Project not found.');

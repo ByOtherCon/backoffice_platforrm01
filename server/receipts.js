@@ -4,6 +4,7 @@ import { bad, money, text, dateStr, HttpError } from './http.js';
 import { assertValid } from './projectApi.js';
 import { readReceipt } from './ai.js';
 import { saveFile } from './documents.js';
+import { resolveSupplier } from './vendors.js';
 import { toCents, toDollars } from '../src/lib/costing.ts';
 import { splitCents } from '../src/lib/split.ts';
 
@@ -26,7 +27,7 @@ export async function parseUpload(user, bytes, filename) {
     out.parsed = await readReceipt(user.id, bytes, f.mime);
     const projects = await q('SELECT id, name FROM projects WHERE active');
     out.suggestedProjectId = matchProject(out.parsed.jobHint, projects);
-    if (out.parsed.merchant) { const [s] = await q('SELECT id FROM suppliers WHERE lower(name)=lower($1) OR lower($1) LIKE lower(name)||\'%\' OR lower(name) LIKE lower($1)||\'%\' ORDER BY length(name) LIMIT 1', [out.parsed.merchant.trim()]); out.supplierId = s?.id ?? null; }
+    if (out.parsed.merchant) { const [s] = await q('SELECT id FROM suppliers WHERE NOT one_time AND (lower(name)=lower($1) OR lower($1) LIKE lower(name)||\'%\' OR lower(name) LIKE lower($1)||\'%\') ORDER BY length(name) LIMIT 1', [out.parsed.merchant.trim()]); out.supplierId = s?.id ?? null; }
   } catch (e) { if (!(e instanceof HttpError)) throw e; out.aiError = e.message; }
   return out;
 }
@@ -46,12 +47,7 @@ export async function createReceipt(user, b, outer = null) {
   const total = toDollars(alloc.reduce((n, a) => n + toCents(a.amount), 0));
   if (b.total !== undefined && b.total !== null && b.total !== '' && Math.abs(money(b.total, 'Total') - total) > 0.01) throw bad(`The lines plus tax come to ${total.toFixed(2)}, not ${Number(b.total).toFixed(2)}.`);
   return (outer ? (fn) => fn(outer) : tx)(async (t) => {
-    let supplierId = b.supplierId;
-    if (!supplierId) {
-      const name = text(b.supplierName, 'Supplier', { max: 200 });
-      const [ex] = await t('SELECT id FROM suppliers WHERE lower(name)=lower($1)', [name]);
-      supplierId = ex?.id ?? (await t(`INSERT INTO suppliers(name) VALUES ($1) RETURNING id`, [name]))[0].id;
-    } else if (!(await t('SELECT 1 FROM suppliers WHERE id=$1', [supplierId])).length) throw bad('Supplier not found.');
+    const supplierId = await resolveSupplier(t, { supplierId: b.supplierId, supplierName: b.supplierName, saveVendor: b.saveVendor });
     for (const a of alloc) if (a.projectId) {
       if (!(await t('SELECT 1 FROM projects WHERE id=$1', [a.projectId])).length) throw bad('A project was not found.');
       if (a.projectTradeId && !(await t('SELECT 1 FROM project_trades WHERE id=$1 AND project_id=$2', [a.projectTradeId, a.projectId])).length) throw bad('A trade is not on that project.');

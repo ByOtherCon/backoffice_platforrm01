@@ -1,6 +1,7 @@
 import { q, tx } from './db.js';
 import { bad, money, text, dateStr, HttpError } from './http.js';
 import { assertValid } from './projectApi.js';
+import { resolveSupplier } from './vendors.js';
 import { assertCanPay, vendorCompliance } from './compliance.js';
 import { aging, toCents, toDollars } from '../src/lib/costing.ts';
 
@@ -192,13 +193,14 @@ export const deleteSubPayment = (projectId, payId) => run(async (t) => {
 // ------------------------------------------------------------------ suppliers (one invoice split across projects/trades)
 export async function addSupplierInvoice(b) {
   const total = money(b.total, 'Invoice total'); if (!(total > 0)) throw bad('Invoice total must be greater than zero.');
-  if (!b.supplierId) throw bad('Choose a supplier.');
+  if (!b.supplierId && !String(b.supplierName || '').trim()) throw bad('Choose a vendor, or type a new one.');
   if (!Array.isArray(b.allocations) || !b.allocations.length) throw bad('Allocate the invoice to at least one project.');
   const allocs = b.allocations.map((a) => { if (!a.projectId) throw bad('Choose a project for each allocation.'); const amt = money(a.amount, 'Allocation amount'); if (!(amt > 0)) throw bad('Allocation amounts must be greater than zero.'); return { projectId: a.projectId, projectTradeId: a.projectTradeId || null, amount: amt }; });
   const diff = toCents(total) - allocs.reduce((n, a) => n + toCents(a.amount), 0);
   if (diff !== 0) throw bad(`Allocations differ from the invoice total by ${toDollars(Math.abs(diff)).toFixed(2)}.`);
   return run(async (t) => {
-    const [inv] = await t('INSERT INTO supplier_invoices(supplier_id,reference,invoice_date,total,description) VALUES ($1,$2,$3,$4,$5) RETURNING id', [b.supplierId, text(b.reference, 'Invoice reference', { max: 80 }), dateStr(b.date, 'Invoice date'), total, text(b.description, 'Description', { max: 500, required: false }) || null]);
+    const supplierId = await resolveSupplier(t, { supplierId: b.supplierId, supplierName: b.supplierName, saveVendor: b.saveVendor });
+    const [inv] = await t('INSERT INTO supplier_invoices(supplier_id,reference,invoice_date,total,description) VALUES ($1,$2,$3,$4,$5) RETURNING id', [supplierId, text(b.reference, 'Invoice reference', { max: 80 }), dateStr(b.date, 'Invoice date'), total, text(b.description, 'Description', { max: 500, required: false }) || null]);
     if (b.paid) await t('INSERT INTO supplier_payments(supplier_invoice_id,paid_date,amount) VALUES ($1,$2,$3)', [inv.id, dateStr(b.paidDate, 'Paid date', true), total]);   // already paid (a website purchase, a card charge): recorded as paid when it is added
     for (const a of allocs) {
       if (a.projectTradeId) await ownsTrade(t, a.projectId, a.projectTradeId);

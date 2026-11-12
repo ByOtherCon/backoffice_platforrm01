@@ -59,8 +59,10 @@ export function autoDeclineDue(status: string, due: string | null, today = today
 // New opportunities nobody took up: 7 working days after they appeared, or (Tier 3 and 4 only) when the week they arrived in is over.
 export const NEW_LEAD_WORKING_DAYS = 7;
 export function newLeadExpiry(createdDate: string, tier: number, today = todayEastern()): string | null {
-  if (businessDays(createdDate, today) >= NEW_LEAD_WORKING_DAYS) return `No action within ${NEW_LEAD_WORKING_DAYS} working days of the lead arriving.`;
-  if (tier >= 3 && weekOf(createdDate) < weekOf(today)) return `Tier ${tier} lead not taken up by the end of the week it arrived.`;
+  if (businessDays(createdDate, today) >= NEW_LEAD_WORKING_DAYS) return `No action within ${NEW_LEAD_WORKING_DAYS} working days of the lead arriving (arrived ${createdDate}).`;
+  // Tier 3 and 4: until the end of the week they arrived in, but never less than three working days. A lead that comes in on a Thursday, Friday or the weekend
+  // gets the following week as well, so it is never declined before anyone has had a chance to look at it.
+  if (tier >= 3) { const lastWeek = weekOf(addBusinessDays(createdDate, 2)); if (lastWeek < weekOf(today)) return `Tier ${tier} lead not taken up by the end of its week (arrived ${createdDate}, that week ended ${shift(lastWeek, 6)}).`; }
   return null;
 }
 // Accepted or Started work with no submission: a red "expiring" note 3 days after the bid due date, and Decided Not To Submit 2 days later.

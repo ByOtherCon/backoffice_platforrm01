@@ -145,7 +145,7 @@ export async function mergeRecords(records, gmailEmail) {
       const [g] = await t('SELECT id FROM gcs WHERE lower(name)=lower($1)', [rec.gc]);
       const ins = await t(`INSERT INTO opportunities(name,client_name,gc_name,gc_id,city,address,tier,mall,project_type,due_date,due_time,contact_name,contact_email,contact_phone,invitation_link,email_link,source,source_type,source_key,gmail_thread_id,invitations,last_seen_at)
                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'BuildingConnected email','Building Connected',$17,$18,$19,now()) ON CONFLICT (source_key) DO NOTHING RETURNING id`,
-        [rec.name, rec.gc, rec.gc, g?.id ?? null, rec.city, rec.address || null, R.tierFor(rec.city, map), rec.mall, rec.type, rec.due, rec.dueTime, rec.contact || null, rec.email || null, rec.phone || null, rec.link, emailLink, 'gmail:' + leadKey(rec.gc, rec.name, rec.due), rec.threadId, JSON.stringify([invite])]);
+        [rec.name, rec.gc, rec.gc, g?.id ?? null, rec.city, rec.address || null, R.tierWhy(rec.city, map, rec.name, rec.address).tier, rec.mall, rec.type, rec.due, rec.dueTime, rec.contact || null, rec.email || null, rec.phone || null, rec.link, emailLink, 'gmail:' + leadKey(rec.gc, rec.name, rec.due), rec.threadId, JSON.stringify([invite])]);
       if (ins.length) {
         const id = ins[0].id; added++;
         await note(t, id, `Added from a BuildingConnected email in Gmail (${gmailEmail}).${rec.due ? '' : ' No bid due date was provided.'}${rec.nda && !rec.email ? ' The GC contact is locked behind an NDA in BuildingConnected.' : ''}${rec.nda && !rec.due ? ' The due date is locked behind an NDA.' : ''}`);
@@ -180,14 +180,15 @@ const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 export async function sweepDeclines(rl) {
   if (!rl) { const v = (await q(`SELECT value FROM app_settings WHERE key='estimating'`))[0]?.value ?? {}; rl = { declineNewDays: Number(v.declineNewDays ?? 2), declineReviewingDays: Number(v.declineReviewingDays ?? 2) }; }
   const today = todayEastern(); let n = 0;
-  const rows = await q(`SELECT o.id, o.status, o.tier, o.keep_past_due, o.due_date::text AS due, (o.created_at AT TIME ZONE 'America/New_York')::date::text AS created,
+  const rows = await q(`SELECT o.id, o.status, o.tier, o.keep_past_due, o.due_date::text AS due, GREATEST((o.created_at AT TIME ZONE 'America/New_York')::date, COALESCE((o.revived_at AT TIME ZONE 'America/New_York')::date, DATE '0001-01-01'))::text AS created, (o.revived_at IS NOT NULL) AS revived,
       EXISTS (SELECT 1 FROM submissions s WHERE s.opportunity_id=o.id AND s.voided_at IS NULL) AS submitted
     FROM opportunities o WHERE o.status IN ('New','Reviewing','Accepted','Started')`);
   for (const o of rows) {
     let to = null, why = null, reason = null;
     if (['New', 'Reviewing'].includes(o.status)) {
       if (W.autoDeclineDue(o.status, o.due, today, rl, o.keep_past_due)) why = 'its bid due date has passed';
-      else if (o.status === 'New') { const x = W.newLeadExpiry(o.created, o.tier, today); if (x) why = x.replace(/\.$/, '').replace(/^N/, 'n'); }
+      // a lead brought back on purpose is not held to the end-of-week rule
+      else if (o.status === 'New') { const x = W.newLeadExpiry(o.created, o.revived ? Math.min(o.tier, 2) : o.tier, today); if (x) why = x.replace(/\.$/, '').replace(/^N/, 'n'); }
       if (why) { to = 'Declined'; reason = 'Auto-declined: ' + (/due date/.test(why) ? 'past its bid date' : why); }
     } else if (W.workExpiry(o.status, o.due, o.submitted, today) === 'expired') { to = 'Decided Not To Submit'; reason = W.EXPIRED_REASON; why = `no proposal was submitted within 5 days of the bid due date (${o.due})`; }
     if (!to) continue;
@@ -254,4 +255,6 @@ export const listRegions = () => q('SELECT city, tier FROM region_tiers ORDER BY
 export async function saveRegion(b) { const city = text(b.city, 'City', { max: 100 }); const tier = Number(b.tier); if (![1, 2, 3, 4].includes(tier)) throw bad('Tier is 1 to 4.'); await q('INSERT INTO region_tiers(city,tier) VALUES ($1,$2) ON CONFLICT (city) DO UPDATE SET tier=$2', [city, tier]); await retier(); }
 export async function deleteRegion(city) { await q('DELETE FROM region_tiers WHERE lower(city)=lower($1)', [city]); await retier(); }
 // Re-rank open leads when the city list changes.
-async function retier() { const map = await regionMap(); for (const o of await q(`SELECT id, city FROM opportunities WHERE status IN ('New','Reviewing')`)) await q('UPDATE opportunities SET tier=$2 WHERE id=$1', [o.id, R.tierFor(o.city, map)]); }
+export async function retier() { const map = await regionMap(); for (const o of await q(`SELECT id, city, name, address FROM opportunities WHERE status IN ('New','Reviewing','Accepted','Started','Submitted') AND merged_into IS NULL`)) { const w = R.tierWhy(o.city, map, o.name, o.address); await q('UPDATE opportunities SET tier=$2, tier_note=$3 WHERE id=$1 AND (tier IS DISTINCT FROM $2 OR tier_note IS DISTINCT FROM $3)', [o.id, w.tier, w.note]); } }
+// Once, after the tier rules were made more forgiving: look at every open lead again.
+export async function retierOnce() { const [d] = await q(`SELECT 1 FROM app_settings WHERE key='retier_v2'`); if (d) return; await retier(); await q(`INSERT INTO app_settings(key,value) VALUES ('retier_v2','true') ON CONFLICT (key) DO NOTHING`); }

@@ -24,3 +24,23 @@ test('the same job from two GCs is recognised; different units and different cit
   assert.equal(R.sameJob({ name: 'x', city: 'a', address: '', threadId: 't1' }, { name: 'y', city: 'b', address: '', threadId: 't1' }), true);
   assert.equal(R.gcKey('Sun Industrial, Inc.'), R.gcKey('sun industrial'));
 });
+
+test('the tier follows the city however it is typed, and a missing or unlisted city is found in the address or name before defaulting to Tier 3', () => {
+  const map = { orlando: 1, stcloud: 1, tampa: 2, miami: 3, winterpark: 1 };
+  for (const c of ['Orlando', 'orlando', 'Orlando, FL', 'Orlando FL', 'Orlando, Florida 32809', 'ORLANDO, FL 32809']) assert.equal(R.tierFor(c, map), 1, c);
+  assert.equal(R.tierFor('St. Cloud, FL', map), 1); assert.equal(R.tierFor('Saint Cloud', map), 1); assert.equal(R.tierFor('Tampa, FL', map), 2);
+  // the New Balance case: the city was left empty or typed wrong, the address and name say Orlando
+  assert.deepEqual(R.tierWhy('', map, 'New Balance - Orlando, FL', '8001 S Orange Blossom Trl'), { tier: 1, note: 'No city was entered; found orlando in the address or project name: Tier 1' });
+  assert.equal(R.tierFor('Orlandoo', map, 'New Balance', '8001 S Orange Blossom Trl, Orlando FL 32809'), 1);
+  assert.match(R.tierWhy('Nowhereville', map, 'Retail Store', '1 Main St').note, /"Nowhereville" is not on the city list, so it defaults to Tier 3/);
+  assert.match(R.tierWhy('', map, 'Retail Store', '1 Main St').note, /No city was entered/);
+});
+
+test('the same job from different GCs is recognised, but two addresses are two jobs', () => {
+  const j = (name: string, city: string | null, address: string | null) => ({ name, city, address });
+  assert.equal(R.sameJob(j('New Balance - Orlando, FL', 'Orlando', null), j('New Balance Orlando', 'Orlando, FL', null)), true);       // city spelled two ways, no address
+  assert.equal(R.sameJob(j('New Balance', 'Orlando', '8001 S Orange Blossom Trl'), j('New Balance (Retail Shell)', 'Orlando FL', '8001 South Orange Blossom Trail')), true);
+  assert.equal(R.sameJob(j('Aldi - Orlando', 'Orlando', '100 Colonial Dr'), j('Aldi - Orlando', 'Orlando', '2400 Semoran Blvd')), false);   // same store name, different addresses
+  assert.equal(R.sameJob(j('New Balance', 'Orlando', null), j('Aldi', 'Orlando', null)), false);
+  assert.equal(R.sameJob(j('New Balance', 'Orlando', null), j('New Balance', 'Tampa', null)), false);
+});

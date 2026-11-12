@@ -75,3 +75,14 @@ test('a lead added after its bid date had passed is not auto-declined for that d
   assert.equal(W.autoDeclineDue('New', '2026-10-01', '2026-10-30', r, true), false);   // entered by hand with a past date
   assert.equal(W.autoDeclineDue('New', '2026-10-01', '2026-10-30', r, false), true);
 });
+
+test('Tier 3 and 4 leads get the rest of their week, and never less than three working days: nothing is declined before its week is over', () => {
+  // arrived Tuesday 11/10: still alive Thursday 11/12 and through Sunday 11/15; declined once the week of 11/16 starts
+  for (const today of ['2026-11-10', '2026-11-12', '2026-11-13', '2026-11-15']) assert.equal(W.newLeadExpiry('2026-11-10', 3, today), null, today);
+  assert.match(W.newLeadExpiry('2026-11-10', 3, '2026-11-16')!, /end of its week \(arrived 2026-11-10, that week ended 2026-11-15\)/);
+  // arrived Friday 11/6: the old rule declined it the next Monday; now it gets the following week as well
+  assert.equal(W.newLeadExpiry('2026-11-06', 3, '2026-11-09'), null); assert.equal(W.newLeadExpiry('2026-11-06', 4, '2026-11-13'), null);
+  assert.match(W.newLeadExpiry('2026-11-06', 3, '2026-11-16')!, /arrived 2026-11-06, that week ended 2026-11-15/);
+  // tiers 1 and 2 only ever expire on the working-day count, and everyone does after 7
+  assert.equal(W.newLeadExpiry('2026-11-02', 2, '2026-11-10'), null); assert.match(W.newLeadExpiry('2026-11-02', 2, '2026-11-11')!, /7 working days/);
+});

@@ -258,6 +258,7 @@ test('post-submission results: Not Awarded needs a reason; No Communication From
 test('awarding builds the project in Job Costing with everything gathered; it cannot be awarded twice', async () => {
   assert.equal((await status(aldi, 'Awarded')).status, 409);                                                                                              // never submitted
   const r = await status(wing, 'Awarded'); assert.equal(r.status, 200);
+  { const w = await get(wing); assert.equal(w.tier, 0); assert.match(w.tierNote, /Awarded: Tier 0/); }   // an awarded job is Tier 0, top of every list
   const p = (await call('GET', `/api/projects/${r.body.projectId}`, null, owner)).body;
   assert.deepEqual([p.project.name, p.project.gc, p.project.client, p.project.address, p.project.proposalId, p.totals.contract, p.trades.map((t) => t.name)], ['Wingstop - St Cloud', 'CW Hayes Construction', 'Wingstop Restaurants', '1200 13th St, St Cloud, FL 34769', (await get(wing)).proposalId, 157000.5, ['Demolition', 'Framing & Drywall']]);
   assert.deepEqual(p.project.addr, { street: '1200 13th St', city: 'St Cloud', state: 'FL', zip: '34769', verified: true });   // the lead's green-checked address carries over as separate fields

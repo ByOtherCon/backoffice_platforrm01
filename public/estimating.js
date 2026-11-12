@@ -17,7 +17,7 @@ const TONE = { Reviewing: 'Pending', Accepted: 'Approved', Started: 'Approved', 
 const pill = (s) => h('span', { class: 'pill ' + (TONE[s] || '') }, sname(s));
 const fmtDay = (d) => { if (!d) return '—'; const dt = new Date(String(d).slice(0, 10) + 'T12:00:00'); return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', ...(dt.getFullYear() !== new Date().getFullYear() ? { year: 'numeric' } : {}) }); };
 const when = (iso) => (iso ? new Date(iso).toLocaleString('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '');
-const sub = (t) => h('div', { class: 'muted', style: 'font-size:13px' }, t);
+const sub = (t, title) => h('div', { class: 'muted', style: 'font-size:13px', title: title || null }, t);
 const addrLine = (o) => [o.address, o.city, o.zip ? 'FL ' + o.zip : ''].filter(Boolean).join(', ');
 
 // ---------------------------------------------------------------- pieces every form shares
@@ -235,7 +235,7 @@ function bidsPanel(data, err, w, feed) {
     h('div', { class: 'card' }, h('div', { class: 'row spread' }, h('h2', {}, 'Bid Opportunities'), h('div', { class: 'row' }, h('label', { style: 'text-transform:none;letter-spacing:0;font-size:14px;font-weight:400;margin:0' }, h('input', { type: 'checkbox', checked: state.estAll ? true : null, onchange: (e) => { state.estAll = e.target.checked; render(); } }), ' Include declined (last 30 days)'), h('span', { class: 'info-tip', tabindex: '0', 'aria-label': tip, 'data-tip': tip }, 'i'))),
       rows.length ? h('div', { class: 'scroll' }, h('table', { class: 'biglist' }, h('thead', {}, h('tr', {}, ...head, h('th', {}, 'Actions'))),
         h('tbody', {}, rows.map((o) => h('tr', { class: o.status === 'Declined' ? 'muted' : '' },
-          h('td', {}, h('div', {}, weekLabel(o.week)), sub(`Tier ${o.tier}`)),
+          h('td', {}, h('div', {}, weekLabel(o.week)), sub(o.tier === 0 ? 'Tier 0 · Awarded' : `Tier ${o.tier}`, o.tierNote || '')),
           h('td', { style: 'white-space:normal;min-width:240px' }, h('strong', {}, o.name), o.client && o.client !== o.gc ? sub('Client: ' + o.client) : '', sub([addrLine(o), o.mall ? 'Shopping center' : '', o.type, o.sourceType].filter(Boolean).join(' · '))),
           h('td', { style: 'white-space:normal;min-width:200px' }, contactBlock(o)), dueCell(o),
           h('td', {}, statusSelect(o, w), o.autoDeclined ? sub('Auto-declined') : o.declinedReason ? sub(o.declinedReason) : ''),

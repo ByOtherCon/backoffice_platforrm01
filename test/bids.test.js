@@ -5,6 +5,7 @@ process.env.DATABASE_URL ||= 'postgres://bo_test:bo_test_pw@localhost/byother_te
 Object.assign(process.env, { GOOGLE_CLIENT_ID: 'cid', GOOGLE_CLIENT_SECRET: 'csecret', SECRET_KEY: 'a-long-test-secret-key-1234', PUBLIC_URL: 'https://desk.example', ANTHROPIC_API_KEY: 'test-key' });
 const { pool, q } = await import('../server/db.js');
 const { server } = await import('../server/index.js');
+const bidsSweep = async () => (await import('../server/bids.js')).sweepDeclines();
 const { hashPassword } = await import('../server/auth.js');
 const ai = await import('../server/ai.js');
 const bd = await import('../server/bids.js');
@@ -131,7 +132,11 @@ test('decline rules: New two days past due, Reviewing two days, undated leads ne
   assert.deepEqual(await Promise.all(['R-new-due-today', 'R-new-yesterday', 'R-new-2days', 'R-rev-yesterday', 'R-rev-2days', 'R-undated-new', 'R-future', 'R-accepted-late'].map(st)), ['New', 'New', 'Declined', 'Reviewing', 'Declined', 'New', 'New', 'Decided Not To Submit']);   // accepted work 9 days past due with nothing submitted has expired (see the clean-up test for the rest)
   const d = await lead('R-new-2days'); assert.deepEqual([d.auto_declined, d.declined_reason], [true, 'Auto-declined: past its bid date']);
   const notes = (await call('GET', `/api/opportunities/${d.id}`, null, est)).body.notes; assert.match(notes[0].body, /Status changed New → Declined by the system: its bid due date has passed\. Reason: Auto-declined: past its bid date\./);
-  assert.equal((await call('POST', `/api/opportunities/${d.id}/status`, { status: 'New' }, est)).status, 400);                // would just decline again; the message says why
+  // bringing a declined lead back on purpose works, and it stays New: the clean-up does not decline it again
+  assert.equal((await call('POST', `/api/opportunities/${d.id}/status`, { status: 'New' }, est)).status, 200);
+  await call('GET', '/api/opportunities?tab=bids', null, est); await bidsSweep(); assert.equal(await st('R-new-2days'), 'New');
+  assert.equal((await q(`SELECT keep_past_due, revived_at IS NOT NULL AS revived FROM opportunities WHERE name='R-new-2days'`))[0].revived, true);
+  const reason = (await call('GET', '/api/estimating/options', null, est)).body.declineReasons[0]; assert.equal((await call('POST', `/api/opportunities/${d.id}/status`, { status: 'Declined', reason }, est)).status, 200);   // declined again by hand, for the next test
   assert.equal((await call('PUT', '/api/settings/estimating', { declineNewDays: 1 }, sub)).status, 200);                      // the stricter one-day rule is a setting
   await call('GET', '/api/opportunities?tab=bids', null, est); assert.equal(await st('R-new-yesterday'), 'Declined');
   assert.equal((await call('PUT', '/api/settings/estimating', { declineNewDays: 2 }, sub)).status, 200); assert.equal((await call('PUT', '/api/settings/estimating', { declineNewDays: 'x' }, sub)).status, 400);
@@ -211,7 +216,10 @@ test('the GC address and the job start date come from the invitation email, only
 
 test('clean-up: a New lead nobody takes up is declined after 7 working days, Tier 3 and 4 leads when their week is over; Accepted work expires; every change is in Notes', async () => {
   const wd = (n) => { let d = today; while (n > 0) { d = shift(d, -1); const w = new Date(d + 'T12:00:00Z').getUTCDay(); if (w !== 0 && w !== 6) n--; } return d; };
-  const { weekOf } = await import('../src/lib/estimating.ts'); const lastWeek = shift(weekOf(today), -3);   // a Friday of the previous week
+  const { weekOf, addBusinessDays, businessDays } = await import('../src/lib/estimating.ts');
+  // the Tier 3 and 4 week rule only matters for a lead under 7 working days old whose first week (and at least 3 working days) is over; find one for whatever day this runs
+  const cand = Array.from({ length: 14 }, (_, i) => shift(today, -(i + 1))).find((d) => !['0', '6'].includes(String(new Date(d + 'T12:00:00Z').getUTCDay())) && businessDays(d, today) <= 6 && weekOf(addBusinessDays(d, 2)) < weekOf(today));
+  const lastWeek = cand ?? shift(weekOf(today), -3), t34 = cand ? 'Declined' : 'New';
   const mk = (name, tier, created, status = 'New', due = null) => q(`INSERT INTO opportunities(name,gc_name,city,tier,status,due_date,created_at,source_key,accepted_date) VALUES ($1,'GC','Orlando',$2,$3,$4,$5::date + time '12:00',$1,CASE WHEN $3 IN ('Accepted','Started') THEN $6::date END)`, [name, tier, status, due, created, today]);
   await mk('C-fresh', 2, today); await mk('C-t2-oldweek', 2, lastWeek); await mk('C-t3-oldweek', 3, lastWeek); await mk('C-t4-oldweek', 4, lastWeek); await mk('C-t3-thisweek', 3, today); await mk('C-t2-8wd', 2, wd(8)); await mk('C-t2-6wd', 2, wd(6));
   await mk('C-acc-4d', 2, wd(9), 'Accepted', shift(today, -4)); await mk('C-acc-6d', 2, wd(9), 'Accepted', shift(today, -6)); await mk('C-started-6d', 2, wd(9), 'Started', shift(today, -6)); await mk('C-acc-future', 2, wd(9), 'Accepted', shift(today, 3));
@@ -219,9 +227,9 @@ test('clean-up: a New lead nobody takes up is declined after 7 working days, Tie
   await q(`INSERT INTO submissions(opportunity_id,version,submitted_date,method,price) VALUES ($1,1,$2,'Email',100)`, [submitted, shift(today, -7)]);
   const rows = (await call('GET', '/api/opportunities?tab=proposals&filter=All', null, est)).body.rows; await call('GET', '/api/opportunities?tab=bids', null, est);
   const st = async (n) => (await lead(n)).status;
-  assert.deepEqual(await Promise.all(['C-fresh', 'C-t2-oldweek', 'C-t3-oldweek', 'C-t4-oldweek', 'C-t3-thisweek', 'C-t2-8wd', 'C-t2-6wd'].map(st)), ['New', 'New', 'Declined', 'Declined', 'New', 'Declined', 'New']);
+  assert.deepEqual(await Promise.all(['C-fresh', 'C-t2-oldweek', 'C-t3-oldweek', 'C-t4-oldweek', 'C-t3-thisweek', 'C-t2-8wd', 'C-t2-6wd'].map(st)), ['New', 'New', t34, t34, 'New', 'Declined', 'New']);
   assert.deepEqual(await Promise.all(['C-acc-4d', 'C-acc-6d', 'C-started-6d', 'C-acc-future', 'C-sub-6d'].map(st)), ['Accepted', 'Decided Not To Submit', 'Decided Not To Submit', 'Accepted', 'Accepted']);   // a submitted bid is never expired
-  const t3 = (await call('GET', `/api/opportunities/${(await lead('C-t3-oldweek')).id}`, null, est)).body; assert.match(t3.notes[0].body, /Status changed New → Declined by the system: Tier 3 lead not taken up by the end of the week it arrived\./); assert.equal(t3.declinedReason, 'Auto-declined: Tier 3 lead not taken up by the end of the week it arrived');
+  const t3 = (await call('GET', `/api/opportunities/${(await lead('C-t3-oldweek')).id}`, null, est)).body; if (cand) { assert.match(t3.notes[0].body, /Status changed New → Declined by the system: Tier 3 lead not taken up by the end of its week \(arrived \d{4}-\d\d-\d\d, that week ended \d{4}-\d\d-\d\d\)\./); assert.match(t3.declinedReason, /^Auto-declined: Tier 3 lead not taken up by the end of its week/); }
   const wk = (await call('GET', `/api/opportunities/${(await lead('C-t2-8wd')).id}`, null, est)).body; assert.match(wk.notes[0].body, /no action within 7 working days of the lead arriving/i);
   const ex = (await call('GET', `/api/opportunities/${(await lead('C-acc-6d')).id}`, null, est)).body; assert.deepEqual([ex.status, ex.declinedReason], ['Decided Not To Submit', 'No action taken (lead expired)']); assert.match(ex.notes[0].body, /Status changed Accepted → Decided Not To Submit by the system: no proposal was submitted within 5 days of the bid due date/);
   // the flags the list shows: expiring from 3 days after the due date, colours by state

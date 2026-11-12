@@ -57,7 +57,7 @@ export async function loadAll(where = '', params = []) {
       followup = { caseId: kase?.id ?? null, status: kase?.status ?? 'Active', nextCheck: kase?.next_check ?? null, stage: kase?.status && kase.status !== 'Active' ? kase.status : plan.stage, due: kase?.status === 'Active' ? kase.next_check ?? plan.due : kase?.next_check ?? null, overdue: kase?.status === 'Active' && (kase.next_check ?? plan.due) < today, needsReview: plan.needsReview && kase?.status === 'Active', cutoff: plan.cutoff };
     }
     const gcAddr = { street: r.gc_street, city: r.gc_city, state: r.gc_state, zip: r.gc_zip, verified: r.gc_address_verified };
-    return { id: r.id, name: r.name, client: r.client_name, gc: r.gc_name, gcId: r.gc_id, additionalGcs: r.additional_gcs, gcAddr, city: r.city, address: r.address, zip: r.zip, addrVerified: r.address_verified, state: r.state, tier: r.tier, mall: r.mall, type: r.project_type, due: r.due_date, dueTime: r.due_time,
+    return { id: r.id, name: r.name, client: r.client_name, gc: r.gc_name, gcId: r.gc_id, additionalGcs: r.additional_gcs, gcAddr, tierNote: r.tier_note, city: r.city, address: r.address, zip: r.zip, addrVerified: r.address_verified, state: r.state, tier: r.tier, mall: r.mall, type: r.project_type, due: r.due_date, dueTime: r.due_time,
       contact: r.contact_name, email: r.contact_email, phone: r.contact_phone, link: r.invitation_link, sourceType: r.source_type, origin: r.source, addedBy: r.added_by, plannedStart: r.planned_start,
       status: r.status, statusLabel: W.statusName(r.status), next: W.nextStatuses(r.status), lastSeenAt: r.last_seen_at, emailLink: r.email_link, invitations: r.invitations ?? [], autoDeclined: r.auto_declined, progress: r.progress, result: r.result,
       spPath: r.sp_path, spError: r.sp_error, estimatorId: r.estimator_id, estimator: r.estimator, proposalId: r.proposal_id, acceptedDate: r.accepted_date, startDate: r.start_date, declinedReason: r.declined_reason, declinedAt: r.declined_at, lostReason: r.lost_reason, folderUrl: r.folder_url, proposalUrl: r.proposal_url, projectId: r.project_id,
@@ -178,7 +178,9 @@ async function readForm(b, old, user, creating) {
     const t = (await q(`SELECT 1 FROM app_users WHERE id=$1 AND active AND role = ANY($2::text[])`, [v.estimator_id, EST_ROLES]));
     if (!t.length) throw bad('Choose an estimator from the team list.');
   }
-  if (v.city) { v.tier = R.tierFor(v.city, await regionMap()); if (b.mall === undefined && creating) v.mall = R.looksLikeShoppingCenter(merged.name, merged.address); }
+  // the tier follows the city (or, when the city is missing or not listed, a listed city found in the address or name); an awarded job stays Tier 0
+  if (old?.status !== 'Awarded' && (creating || v.city !== undefined || b.name !== undefined || b.addr !== undefined)) { const w = R.tierWhy(merged.city, await regionMap(), merged.name, merged.address); v.tier = w.tier; v.tier_note = w.note; }
+  if (v.city && b.mall === undefined && creating) v.mall = R.looksLikeShoppingCenter(merged.name, merged.address);
   if (v.gc_name !== undefined) { const [g] = await q('SELECT id FROM gcs WHERE lower(name)=lower($1)', [v.gc_name]); v.gc_id = g?.id ?? null; }
   return v;
 }
@@ -242,7 +244,7 @@ export async function importLeads(user, b) {
       const name = text(r.name, 'Project', { max: 200 }), gc = text(r.gc, 'GC', { max: 200 }), city = text(r.city || 'Florida', 'City', { max: 100 });
       const link = r.link && r.link.startsWith('https://') ? httpsUrl(r.link, 'Link') : null, email = r.email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(r.email) ? r.email : null;
       const [g] = await q('SELECT id FROM gcs WHERE lower(name)=lower($1)', [gc]);
-      const v = { name, client_name: gc, gc_name: gc, gc_id: g?.id ?? null, city, address: r.address || null, tier: R.tierFor(city, map), mall: R.looksLikeShoppingCenter(name, r.address), project_type: W.PROJECT_TYPES.includes(r.type) ? r.type : 'Retail', due_date: due,
+      const v = { name, client_name: gc, gc_name: gc, gc_id: g?.id ?? null, city, address: r.address || null, tier: R.tierWhy(city, map, name, r.address).tier, tier_note: R.tierWhy(city, map, name, r.address).note, mall: R.looksLikeShoppingCenter(name, r.address), project_type: W.PROJECT_TYPES.includes(r.type) ? r.type : 'Retail', due_date: due,
         contact_name: r.contact || null, contact_email: email, contact_phone: r.phone || null, invitation_link: link, source_type: b.source === 'BuildingConnected' ? 'Building Connected' : null, source: b.source === 'BuildingConnected' ? 'BuildingConnected CSV' : 'CSV import', source_key: E.leadKey(gc, name, due), added_by: user.id };
       await tx(async (t) => { const [o] = await insert(t, v); await sys(t, o.id, user, `Imported from a CSV file by ${who(user)} on ${when()}.`); });
       out.added++;
@@ -283,8 +285,10 @@ export async function transition(user, id, b = {}) {
     if (to === 'Reviewing') { /* no proposal number or folders yet */ }
     if (to === 'Declined' || to === 'Decided Not To Submit') { set.declined_reason = reason; set.declined_at = new Date(); set.auto_declined = false; }
     if (to === 'New') {
-      if (W.autoDeclineDue('New', o.due_date, today, rl, o.keep_past_due)) throw bad('That bid date has already passed, so it would decline again. Change the due date first, or leave it declined.');
-      set.declined_reason = null; set.auto_declined = false;
+      // Brought back on purpose: the automatic clean-up leaves it alone (its clock starts again today, and a bid date that has passed no longer declines it)
+      set.declined_reason = null; set.auto_declined = false; set.revived_at = new Date();
+      if (W.autoDeclineDue('New', o.due_date, today, rl, false)) set.keep_past_due = true;
+      detail = ' Brought back on purpose, so the automatic clean-up will not decline it again right away.';
     }
     if (to === 'Started' && from === 'Submitted') {
       await closeCases(t, id, 'Superseded', 'Reopened for revision'); set.progress = 'In Progress';
@@ -296,6 +300,7 @@ export async function transition(user, id, b = {}) {
       else { set.lost_reason = null; }
       if (to === 'No Communication') await closeCases(t, id, 'Closed / No Response', 'Marked No Communication From GC');
       if (to === 'Awarded') {
+        set.tier = 0; set.tier_note = 'Awarded: Tier 0 (best)';   // an awarded job goes to the top of every list
         if (o.project_id) throw new HttpError(409, 'A project was already created for this award.');
         const tp = await t('SELECT trade_id, amount FROM opportunity_trades WHERE opportunity_id=$1 AND amount > 0', [id]); if (!tp.length) throw bad('The submitted proposal has no priced trades. The project is built from them.');
         let [gc] = await t('SELECT id FROM gcs WHERE lower(name)=lower($1)', [o.gc_name]); if (!gc) [gc] = await t('INSERT INTO gcs(name) VALUES ($1) RETURNING id', [o.gc_name]);

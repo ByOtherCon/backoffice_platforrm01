@@ -27,6 +27,12 @@ export const looksLikeShoppingCenter = (...parts: (string | null | undefined)[])
 
 // ---- recognising the same job invited by more than one GC
 export const gcKey = (s: string) => norm(String(s || '').replace(/\b(construction|contractors|contracting|company|group|llc|inc|incorporated|corp|corporation)\b/gi, '')) || norm(s);
+// Every GC a job was pitched to: the lead's own GC first, then the others on its invitation list (each once).
+export function gcNames(gcName: string | null, invitations: Array<{ gc?: string }> | null | undefined): string[] {
+  const out: string[] = [], seen = new Set<string>();
+  for (const g of [gcName, ...(Array.isArray(invitations) ? invitations.map((i) => i.gc) : [])]) { const k = gcKey(String(g || '')); if (!g || !k || seen.has(k)) continue; seen.add(k); out.push(String(g)); }
+  return out;
+}
 const STOP = ['fl', 'florida', 'orlando', 'at', 'the', 'and', 'expansion', 'remodel', 'renovation', 'marketplace', 'outlet', 'new', 'construction', 'project'];
 const words = (s: string) => String(s || '').toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 1 && !STOP.includes(w));
 function addressParts(value: string | null) {

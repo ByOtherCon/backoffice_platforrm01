@@ -6,6 +6,7 @@ import { q } from './db.js';
 import { HttpError } from './http.js';
 import * as SP from './sharepoint.js';
 import { cleanName, todayEastern } from '../src/lib/estimating.ts';
+import * as R from '../src/lib/bidrules.ts';
 
 export const enabled = () => SP.configured();
 const key = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -24,14 +25,14 @@ function matcher({ code, name }) {
 
 // Makes sure this opportunity has its folder in the current year. Creates the year, GC and project folders when missing, renames a
 // folder that was made before the P number existed, and remembers where it is.
-export async function ensureOpportunityFolder(id) {
+async function ensureMainFolder(id) {
   if (!enabled()) throw new HttpError(503, 'SharePoint is not connected yet. Add the Microsoft settings on the server first.');
   const [o] = await q('SELECT * FROM opportunities WHERE id=$1', [id]); if (!o) throw new HttpError(404, 'Opportunity not found.');
   const want = projectFolderName({ code: o.proposal_id, name: o.name, city: o.city });
   if (o.sp_item_id) {
     const cur = (o.sp_path || '').split('/').pop();
     if (key(cur) !== key(want)) { try { const r = await SP.renameItem(o.sp_item_id, want); const path = [...o.sp_path.split('/').slice(0, -1), r.name].join('/'); await q('UPDATE opportunities SET sp_path=$2, folder_url=$3, sp_error=NULL WHERE id=$1', [id, path, r.webUrl ?? o.folder_url]); await note(id, `SharePoint folder renamed to ${r.name}.`); return { id: o.sp_item_id, path, webUrl: r.webUrl ?? o.folder_url, renamed: true }; }
-      catch (e) { if (e.graph === 404) { await q('UPDATE opportunities SET sp_item_id=NULL WHERE id=$1', [id]); return ensureOpportunityFolder(id); } throw e; } }
+      catch (e) { if (e.graph === 404) { await q('UPDATE opportunities SET sp_item_id=NULL WHERE id=$1', [id]); return ensureMainFolder(id); } throw e; } }
     return { id: o.sp_item_id, path: o.sp_path, webUrl: o.folder_url };
   }
   const year = (o.accepted_date || todayEastern()).slice(0, 4);
@@ -41,23 +42,75 @@ export async function ensureOpportunityFolder(id) {
   await note(id, `${f.existed ? 'Linked the existing' : 'Created the'} SharePoint folder ${f.path.join(' / ')}.`);
   return { id: f.id, path: f.path.join('/'), webUrl: f.webUrl, existed: f.existed };
 }
+export async function ensureOpportunityFolder(id) {
+  const d = await ensureMainFolder(id);
+  await ensureGcFolders(id).catch(() => {});   // a bundled job that keeps a folder under each GC gets them all
+  return d;
+}
+// A job pitched to several GCs (bundled) can keep the same project folder under each GC, with everything duplicated. Nothing is created
+// unless that was chosen on the lead. The main folder is the one on the lead; the others are listed in opportunity_folders.
+export async function ensureGcFolders(id) {
+  if (!enabled()) return [];
+  const [o] = await q('SELECT * FROM opportunities WHERE id=$1', [id]); if (!o || !o.folder_per_gc || !o.sp_item_id) return [];
+  const want = projectFolderName({ code: o.proposal_id, name: o.name, city: o.city }), year = (o.accepted_date || todayEastern()).slice(0, 4), out = [];
+  const have = new Map((await q('SELECT * FROM opportunity_folders WHERE opportunity_id=$1', [id])).map((r) => [R.gcKey(r.gc_name), r]));
+  for (const gc of R.gcNames(o.gc_name, o.invitations).slice(1)) {
+    const row = have.get(R.gcKey(gc));
+    if (row?.sp_item_id) {
+      if (key((row.sp_path || '').split('/').pop()) !== key(want)) { try { const r = await SP.renameItem(row.sp_item_id, want); const path = [...row.sp_path.split('/').slice(0, -1), r.name].join('/'); await q('UPDATE opportunity_folders SET sp_path=$3, folder_url=$4 WHERE opportunity_id=$1 AND gc_name=$2', [id, row.gc_name, path, r.webUrl ?? row.folder_url]); out.push({ gc, path }); continue; } catch { /* made again below */ } }
+      else { out.push({ gc, path: row.sp_path }); continue; }
+    }
+    const f = await SP.ensureProjectFolder({ year, gc, folderName: want, alsoMatch: matcher({ code: o.proposal_id, name: o.name }) });
+    await q(`INSERT INTO opportunity_folders(opportunity_id,gc_name,sp_item_id,sp_path,folder_url) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (opportunity_id,gc_name) DO UPDATE SET sp_item_id=$3, sp_path=$4, folder_url=$5`, [id, gc, f.id, f.path.join('/'), f.webUrl]);
+    await note(id, `${f.existed ? 'Linked the existing' : 'Created the'} SharePoint folder for ${gc}: ${f.path.join(' / ')}.`);
+    out.push({ gc, path: f.path.join('/') });
+  }
+  return out;
+}
+export async function tryEnsureGcFolders(id) {
+  if (!enabled()) return null;
+  try { await tryEnsureOpportunityFolder(id); return await ensureGcFolders(id); } catch (e) { await note(id, `The folders under the other GCs were not created: ${oneLine(e)}`).catch(() => {}); return null; }
+}
+// The GC that awarded a bundled job becomes the lead's main GC: its folder takes the main place (and is the one renamed to C), the old main folder is kept as an extra.
+export async function promoteGc(id, winner, oldMain) {
+  if (!enabled()) return null;
+  try {
+    let [o] = await q('SELECT * FROM opportunities WHERE id=$1', [id]); if (!o) return null;
+    let [row] = (await q('SELECT * FROM opportunity_folders WHERE opportunity_id=$1', [id])).filter((r) => R.gcKey(r.gc_name) === R.gcKey(winner));
+    if (!row?.sp_item_id) {   // one folder was kept: the winner gets its own under its GC so the project lives under the GC that awarded it
+      const want = projectFolderName({ code: o.proposal_id, name: o.name, city: o.city });
+      const f = await SP.ensureProjectFolder({ year: (o.accepted_date || todayEastern()).slice(0, 4), gc: winner, folderName: want, alsoMatch: matcher({ code: o.proposal_id, name: o.name }) });
+      row = { gc_name: winner, sp_item_id: f.id, sp_path: f.path.join('/'), folder_url: f.webUrl };
+      await note(id, `${f.existed ? 'Linked the existing' : 'Created the'} SharePoint folder under ${winner}: ${f.path.join(' / ')}.${o.sp_path ? ` Files saved earlier are in ${o.sp_path}.` : ''}`);
+    }
+    await q('DELETE FROM opportunity_folders WHERE opportunity_id=$1 AND lower(gc_name)=lower($2)', [id, winner]);
+    if (o.sp_item_id) await q(`INSERT INTO opportunity_folders(opportunity_id,gc_name,sp_item_id,sp_path,folder_url) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (opportunity_id,gc_name) DO UPDATE SET sp_item_id=$3, sp_path=$4, folder_url=$5`, [id, oldMain, o.sp_item_id, o.sp_path, o.folder_url]);
+    await q('UPDATE opportunities SET sp_item_id=$2, sp_path=$3, folder_url=$4, sp_error=NULL WHERE id=$1', [id, row.sp_item_id, row.sp_path, row.folder_url]);
+    return { id: row.sp_item_id, path: row.sp_path, webUrl: row.folder_url };
+  } catch (e) { await note(id, `The folder under ${winner} could not be set up: ${oneLine(e)}`).catch(() => {}); return null; }
+}
 // Best-effort wrappers: report a problem in the record's Notes, never throw.
 export async function tryEnsureOpportunityFolder(id) {
   if (!enabled()) return null;
   try { return await ensureOpportunityFolder(id); } catch (e) { await q('UPDATE opportunities SET sp_error=$2 WHERE id=$1', [id, oneLine(e)]).catch(() => {}); await note(id, `SharePoint folder not created: ${oneLine(e)}`).catch(() => {}); return null; }
 }
+const extraFolders = (oppId) => q(`SELECT f.* FROM opportunity_folders f JOIN opportunities o ON o.id=f.opportunity_id WHERE f.opportunity_id=$1 AND o.folder_per_gc AND f.sp_item_id IS NOT NULL`, [oppId]);
 // Saves a copy of a file into the right numbered folder of an opportunity.
 export async function pushOpportunityFile(oppId, { kind, filename, bytes, mime }) {
   if (!enabled()) return null;
   try {
     const dir = await ensureOpportunityFolder(oppId); const sub = await SP.ensureFolder(dir.id, SUBFOLDER[kind] || SUBFOLDER.Other);
-    const up = await SP.uploadFile(sub.id, filename, bytes, mime); return up;
+    const up = await SP.uploadFile(sub.id, filename, bytes, mime);
+    for (const x of await extraFolders(oppId)) { try { const xs = await SP.ensureFolder(x.sp_item_id, SUBFOLDER[kind] || SUBFOLDER.Other); await SP.uploadFile(xs.id, filename, bytes, mime); } catch (e) { await note(oppId, `Not copied to the ${x.gc_name} folder: ${oneLine(e)}`).catch(() => {}); } }
+    return up;
   } catch (e) { await note(oppId, `Saved in the app, but not copied to SharePoint: ${oneLine(e)}`).catch(() => {}); return null; }
 }
 // Same, for a big file already on disk (plans). Returns the SharePoint item or null.
 export async function pushOpportunityFilePath(oppId, { kind, filename, filePath, size, mime }) {
   if (!enabled()) return null;
-  try { const dir = await ensureOpportunityFolder(oppId); const sub = await SP.ensureFolder(dir.id, SUBFOLDER[kind] || SUBFOLDER.Other); return await SP.uploadFromPath(sub.id, filename, filePath, size, mime); }
+  try { const dir = await ensureOpportunityFolder(oppId); const sub = await SP.ensureFolder(dir.id, SUBFOLDER[kind] || SUBFOLDER.Other); const up = await SP.uploadFromPath(sub.id, filename, filePath, size, mime);
+    for (const x of await extraFolders(oppId)) { try { const xs = await SP.ensureFolder(x.sp_item_id, SUBFOLDER[kind] || SUBFOLDER.Other); await SP.uploadFromPath(xs.id, filename, filePath, size, mime); } catch (e) { await note(oppId, `Not copied to the ${x.gc_name} folder: ${oneLine(e)}`).catch(() => {}); } }
+    return up; }
   catch (e) { await note(oppId, `Saved in the app, but not copied to SharePoint: ${oneLine(e)}`).catch(() => {}); return null; }
 }
 // At award: the folder and the project take the C code.

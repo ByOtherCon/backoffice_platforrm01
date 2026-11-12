@@ -185,3 +185,20 @@ test('Upload plans: a zip is streamed to disk, filed with the opportunity, copie
   const kept = (await q(`SELECT storage_key FROM opportunity_files WHERE name='More plans.zip'`))[0]; assert.ok(kept.storage_key); assert.ok((await opp(id)).notes.some((n) => /Saved in the app, but not copied to SharePoint/.test(n.body)));
   const dl2 = await fetch(`${base}/api/opportunity-files/${(await opp(id)).files.find((x) => x.name === 'More plans.zip').id}`, { headers: { cookie: est } }); assert.equal(dl2.status, 200); assert.equal(dl2.headers.get('content-type'), 'application/zip');
 });
+
+test('a job bundled under several GCs keeps a folder under each GC, files go into all of them, and the GC that awards it gets the C folder', async () => {
+  const addrB = await addrOk('55 Orange Ave', 'Orlando', '32801');
+  const a = await mk({ name: 'Bundle Store', gc: 'GC Alpha', addr: addrB, due: shift(today, 9) }), b = await mk({ name: 'Bundle Store - Orlando', gc: 'GC Beta', addr: await addrOk('55 Orange Ave', 'Orlando', '32801'), due: shift(today, 9) });
+  assert.equal((await call('POST', `/api/opportunities/${a}/status`, { status: 'Accepted' }, est)).status, 200); const code = (await opp(a)).proposalId, dir = `${code}_Bundle Store_Orlando`;
+  assert.ok(find('ByOther', YEAR, 'GC Alpha', dir)); assert.equal(find('ByOther', YEAR, 'GC Beta', dir), null);
+  assert.equal((await call('POST', '/api/opportunities/bundle', { primaryId: a, otherIds: [b], folderPerGc: true }, est)).status, 200);
+  assert.ok(find('ByOther', YEAR, 'GC Beta', dir, '02. Proposal'), 'the same folder now exists under the second GC');
+  assert.ok((await opp(a)).notes.some((n) => /SharePoint folder for GC Beta/.test(n.body)));
+  const up = await call('POST', `/api/opportunities/${a}/files?kind=Proposal`, mkPdf(), est, 'Bundle proposal.pdf'); assert.equal(up.status, 200);
+  assert.ok(find('ByOther', YEAR, 'GC Alpha', dir, '02. Proposal', 'Bundle proposal.pdf')); assert.ok(find('ByOther', YEAR, 'GC Beta', dir, '02. Proposal', 'Bundle proposal.pdf'));
+  assert.equal((await call('POST', `/api/opportunities/${a}/submissions`, { fileId: up.body.fileId, date: today, method: 'Email', prices: [{ tradeId: tDemo, amount: 5000 }] }, est)).status, 200);
+  const r = await call('POST', `/api/opportunities/${a}/status`, { status: 'Awarded', awardedGc: 'GC Beta' }, est); assert.equal(r.status, 200, JSON.stringify(r.body)); const c = 'C' + code.slice(1);
+  assert.ok(find('ByOther', YEAR, 'GC Beta', `${c}_Bundle Store_Orlando`), 'the winner\'s folder is the contract folder'); assert.equal(find('ByOther', YEAR, 'GC Beta', dir), null);
+  assert.ok(find('ByOther', YEAR, 'GC Alpha', dir), 'the other GC keeps its proposal folder'); assert.equal(find('ByOther', YEAR, 'GC Alpha', `${c}_Bundle Store_Orlando`), null);
+  const p = (await call('GET', `/api/projects/${r.body.projectId}`, null, owner)).body.project; assert.equal(p.spPath, `ByOther/${YEAR}/GC Beta/${c}_Bundle Store_Orlando`);
+});

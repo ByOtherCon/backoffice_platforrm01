@@ -12,6 +12,7 @@ import { requireVerified } from './address.js';
 import { saveFile, adoptFile, UPLOAD_DIR } from './documents.js';
 import { callClaude, aiConnected } from './ai.js';
 import * as folders from './folders.js';
+import * as bundles from './bundles.js';
 import path from 'node:path';
 
 registerLinkable('opportunity', { sql: 'SELECT name AS label FROM opportunities WHERE id=$1', route: (id) => `#/estimating/${id}` });
@@ -36,7 +37,7 @@ export async function options() {
 
 // ------------------------------------------------------------------ reading
 export async function loadAll(where = '', params = []) {
-  const rows = await q(`SELECT o.*, u.name AS estimator FROM opportunities o LEFT JOIN app_users u ON u.id=o.estimator_id ${where} ORDER BY o.due_date NULLS LAST, o.name`, params);
+  const rows = await q(`SELECT o.*, u.name AS estimator FROM opportunities o LEFT JOIN app_users u ON u.id=o.estimator_id ${where ? where + ' AND' : 'WHERE'} o.merged_into IS NULL ORDER BY o.due_date NULLS LAST, o.name`, params);
   const ids = rows.map((r) => r.id); if (!ids.length) return [];
   const [prices, subs, comms, considered, files, cases] = await Promise.all([
     q('SELECT ot.opportunity_id, ot.trade_id, t.name, ot.amount FROM opportunity_trades ot JOIN trades t ON t.id=ot.trade_id WHERE ot.opportunity_id = ANY($1::uuid[]) ORDER BY t.sort, t.name', [ids]),
@@ -57,7 +58,7 @@ export async function loadAll(where = '', params = []) {
       followup = { caseId: kase?.id ?? null, status: kase?.status ?? 'Active', nextCheck: kase?.next_check ?? null, stage: kase?.status && kase.status !== 'Active' ? kase.status : plan.stage, due: kase?.status === 'Active' ? kase.next_check ?? plan.due : kase?.next_check ?? null, overdue: kase?.status === 'Active' && (kase.next_check ?? plan.due) < today, needsReview: plan.needsReview && kase?.status === 'Active', cutoff: plan.cutoff };
     }
     const gcAddr = { street: r.gc_street, city: r.gc_city, state: r.gc_state, zip: r.gc_zip, verified: r.gc_address_verified };
-    return { id: r.id, name: r.name, client: r.client_name, gc: r.gc_name, gcId: r.gc_id, additionalGcs: r.additional_gcs, gcAddr, tierNote: r.tier_note, city: r.city, address: r.address, zip: r.zip, addrVerified: r.address_verified, state: r.state, tier: r.tier, mall: r.mall, type: r.project_type, due: r.due_date, dueTime: r.due_time,
+    return { id: r.id, name: r.name, client: r.client_name, gc: r.gc_name, gcId: r.gc_id, additionalGcs: r.additional_gcs, gcs: R.gcNames(r.gc_name, r.invitations), folderPerGc: r.folder_per_gc, gcAddr, tierNote: r.tier_note, city: r.city, address: r.address, zip: r.zip, addrVerified: r.address_verified, state: r.state, tier: r.tier, mall: r.mall, type: r.project_type, due: r.due_date, dueTime: r.due_time,
       contact: r.contact_name, email: r.contact_email, phone: r.contact_phone, link: r.invitation_link, sourceType: r.source_type, origin: r.source, addedBy: r.added_by, plannedStart: r.planned_start,
       status: r.status, statusLabel: W.statusName(r.status), next: W.nextStatuses(r.status), lastSeenAt: r.last_seen_at, emailLink: r.email_link, invitations: r.invitations ?? [], autoDeclined: r.auto_declined, progress: r.progress, result: r.result,
       spPath: r.sp_path, spError: r.sp_error, estimatorId: r.estimator_id, estimator: r.estimator, proposalId: r.proposal_id, acceptedDate: r.accepted_date, startDate: r.start_date, declinedReason: r.declined_reason, declinedAt: r.declined_at, lostReason: r.lost_reason, folderUrl: r.folder_url, proposalUrl: r.proposal_url, projectId: r.project_id,
@@ -95,9 +96,11 @@ export async function list({ tab, search, showAll, filter, scope, userId } = {})
   return { stats, rows, count: rows.length };
 }
 export async function get(id) {
+  const [m] = await q('SELECT merged_into FROM opportunities WHERE id=$1', [id]); if (m?.merged_into) id = m.merged_into;   // a lead that was bundled opens its main lead
   const [o] = await loadAll('WHERE o.id=$1', [id]); if (!o) throw new HttpError(404, 'Opportunity not found.');
   const notes = await q(`SELECT n.id, n.kind, n.body, n.created_at AS at, u.name AS who FROM opportunity_notes n LEFT JOIN app_users u ON u.id=n.user_id WHERE n.opportunity_id=$1 ORDER BY n.created_at DESC, n.id`, [id]);
-  return { ...o, notes, folderPlan: E.folderPlan({ proposalId: o.proposalId, name: o.name, city: o.city, gc: o.gc, year: Number((o.acceptedDate || E.todayEastern()).slice(0, 4)) }) };
+  const bundled = (await q('SELECT id, gc_name AS gc, due_date AS due FROM opportunities WHERE merged_into=$1 ORDER BY gc_name', [id])).map((x) => ({ id: x.id, gc: x.gc, due: x.due }));
+  return { ...o, bundled, notes, folderPlan: E.folderPlan({ proposalId: o.proposalId, name: o.name, city: o.city, gc: o.gc, year: Number((o.acceptedDate || E.todayEastern()).slice(0, 4)) }) };
 }
 // GCs we already work with, with the details last used for each, so the form can fill itself in.
 export async function knownGcs() {
@@ -196,8 +199,9 @@ async function saveTrades(t, id, ids) { await t('DELETE FROM opportunity_conside
 export async function create(user, b) {
   const v = await readForm(b, null, user, true), ids = (await readTrades(b)) ?? [];
   const key = E.leadKey(v.gc_name, v.name, v.due_date ?? null);
+  let made;
   try {
-    return await tx(async (t) => {
+    made = await tx(async (t) => {
       const [r] = await insert(t, { ...v, keep_past_due: !!v.due_date && v.due_date < E.todayEastern(), source: 'Manual', source_key: key, added_by: user.id });
       await saveTrades(t, r.id, ids);
       await rememberGc(t, { ...v, id: r.id });
@@ -206,9 +210,14 @@ export async function create(user, b) {
       return { id: r.id };
     });
   } catch (e) { throw e.code === '23505' ? new HttpError(409, 'That opportunity is already in the system.') : e; }
+  // the same job under another GC that is already on the list: it joins that lead instead of standing next to it
+  if (b.bundleWith) { const out = await bundles.mergeInto(user, uuidOf(b.bundleWith), [made.id], { folderPerGc: b.folderPerGc }); return { id: out.id, bundled: true }; }
+  return made;
 }
+const uuidOf = (x) => { if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(x))) throw bad('Choose the lead to bundle with from the list.'); return String(x); };
+const notBundled = (o) => { if (o.merged_into) throw new HttpError(409, 'This job was bundled into another lead. Open the main lead to change it.'); };
 export async function update(user, id, b) {
-  const [old] = await q('SELECT * FROM opportunities WHERE id=$1', [id]); if (!old) throw new HttpError(404, 'Opportunity not found.');
+  const [old] = await q('SELECT * FROM opportunities WHERE id=$1', [id]); if (!old) throw new HttpError(404, 'Opportunity not found.'); notBundled(old);
   const v = await readForm(b, old, user, false), ids = await readTrades(b);
   if (!Object.keys(v).length && ids === undefined && !b.note) throw bad('Nothing to save.');
   await tx(async (t) => {
@@ -265,8 +274,8 @@ export async function transition(user, id, b = {}) {
   const extra = text(b.note, 'Note', { max: 2000, required: false });
   const rl = await rules();
   const done = await tx(async (t) => {
-    const [o] = await t('SELECT * FROM opportunities WHERE id=$1 FOR UPDATE', [id]); if (!o) throw new HttpError(404, 'Opportunity not found.');
-    const from = o.status, today = E.todayEastern(); let result = {};
+    const [o] = await t('SELECT * FROM opportunities WHERE id=$1 FOR UPDATE', [id]); if (!o) throw new HttpError(404, 'Opportunity not found.'); notBundled(o);
+    const from = o.status, today = E.todayEastern(); let result = {}, swap = null;
     if (from === to) throw bad(`This is already ${W.statusName(to)}.`);
     if (!W.canMove(from, to)) throw new HttpError(409, `${W.statusName(from)} cannot move to ${W.statusName(to)}.${from === 'Declined' ? ' Reopen it to New first.' : ''}`);
     if (to === 'Submitted' && ['Accepted', 'Started'].includes(from)) throw bad('Upload the proposal PDF and record the submission. That moves it to Submitted.');
@@ -303,24 +312,37 @@ export async function transition(user, id, b = {}) {
         set.tier = 0; set.tier_note = 'Awarded: Tier 0 (best)';   // an awarded job goes to the top of every list
         if (o.project_id) throw new HttpError(409, 'A project was already created for this award.');
         const tp = await t('SELECT trade_id, amount FROM opportunity_trades WHERE opportunity_id=$1 AND amount > 0', [id]); if (!tp.length) throw bad('The submitted proposal has no priced trades. The project is built from them.');
-        let [gc] = await t('SELECT id FROM gcs WHERE lower(name)=lower($1)', [o.gc_name]); if (!gc) [gc] = await t('INSERT INTO gcs(name) VALUES ($1) RETURNING id', [o.gc_name]);
+        // a job that was pitched to several GCs: the one that awarded it becomes the lead's GC (its contact and address come with it)
+        const pitched = R.gcNames(o.gc_name, o.invitations); let winner = o.gc_name;
+        if (pitched.length > 1) { const pick = text(b.awardedGc, 'Awarded GC', { max: 200, required: false }); if (!pick) throw bad('Choose which GC awarded the job.'); winner = pitched.find((g) => R.gcKey(g) === R.gcKey(pick)); if (!winner) throw bad('Choose the GC from the list.'); }
+        let clientName = o.client_name || o.gc_name;
+        if (R.gcKey(winner) !== R.gcKey(o.gc_name)) {
+          const inv = (Array.isArray(o.invitations) ? o.invitations : []).find((x) => R.gcKey(x.gc) === R.gcKey(winner)) ?? {}, [saved] = await t('SELECT address, city, state, zip, address_verified FROM gcs WHERE lower(name)=lower($1)', [winner]);
+          clientName = winner; swap = { from: o.gc_name, to: winner };
+          Object.assign(set, { gc_name: winner, client_name: winner, contact_name: inv.contactName || null, contact_email: inv.email || null, contact_phone: inv.phone || null, invitation_link: inv.link || o.invitation_link,
+            additional_gcs: pitched.filter((g) => R.gcKey(g) !== R.gcKey(winner)).join('; ') || null, gc_street: saved?.address ?? null, gc_city: saved?.city ?? null, gc_state: saved?.state ?? null, gc_zip: saved?.zip ?? null, gc_address_verified: !!saved?.address_verified });
+          set.gc_id = (await t('SELECT id FROM gcs WHERE lower(name)=lower($1)', [winner]))[0]?.id ?? null;
+        }
+        let [gc] = await t('SELECT id FROM gcs WHERE lower(name)=lower($1)', [winner]); if (!gc) [gc] = await t('INSERT INTO gcs(name) VALUES ($1) RETURNING id', [winner]);
+        if (!set.gc_id) set.gc_id = gc.id;
         const checked = o.address_verified && o.address && o.city && o.zip;   // the lead's address already has its green check: carried over as it is
         const addrPart = checked ? { addr: { street: o.address, city: o.city, state: 'FL', zip: o.zip } } : { address: W.addrLine({ street: o.address, city: o.city, state: 'FL', zip: o.zip }) || o.name };
-        const p = await createProject({ name: o.name, gcId: gc.id, client: o.client_name || o.gc_name, ...addrPart, proposalId: o.proposal_id, startDate: o.planned_start, trades: tp.map((x) => ({ tradeId: x.trade_id, amount: x.amount })) }, t, { trusted: true });
+        const p = await createProject({ name: o.name, gcId: gc.id, client: clientName, ...addrPart, proposalId: o.proposal_id, startDate: o.planned_start, trades: tp.map((x) => ({ tradeId: x.trade_id, amount: x.amount })) }, t, { trusted: true });
         await t(`UPDATE projects SET opportunity_id=$2, ref_code=$3 WHERE id=$1`, [p.id, id, o.proposal_id ? 'C' + o.proposal_id.slice(1) : null]); set.project_id = p.id; result = { projectId: p.id, refCode: o.proposal_id ? 'C' + o.proposal_id.slice(1) : null };
         await closeCases(t, id, 'Closed / Awarded', 'Awarded: project created in Job Costing');
-        detail = ' Project created in Job Costing with the lead, proposal and submittal details attached.';
+        detail = ` Project created in Job Costing with the lead, proposal and submittal details attached.${swap ? ` ${swap.to} awarded it (the lead was under ${swap.from}); the other GCs we pitched stay listed.` : ''}`;
       }
     }
     if (from === 'Not Awarded' || from === 'No Communication') { if (to === 'Submitted') { set.lost_reason = null; await t(`UPDATE followup_cases SET status='Active', updated_at=now() WHERE id = (SELECT id FROM followup_cases WHERE opportunity_id=$1 ORDER BY created_at DESC LIMIT 1)`, [id]); detail = ' Follow-up resumed.'; } }
     const keys = Object.keys(set); await t(`UPDATE opportunities SET ${keys.map((k, i) => `${k}=$${i + 2}`).join(',')}, last_seen_at=now() WHERE id=$1`, [id, ...keys.map((k) => set[k])]);
     await sys(t, id, user, `Status changed ${W.statusName(from)} → ${W.statusName(to)} by ${who(user)}.${reason ? ` Reason: ${reason}.` : ''}${detail}`);
     if (extra) await addNote(t, id, user, 'User', extra);
-    return { result, to };
+    return { result, to, swap };
   });
   // The shared folder follows the status: made when work is taken on, renamed P -> C when it becomes a contract.
   if (['Reviewing', 'Accepted'].includes(done.to)) { const f = await folders.tryEnsureOpportunityFolder(id); if (f?.webUrl) done.result.folderUrl = f.webUrl; }
   if (done.to === 'Awarded' && done.result.projectId) await locateProject(done.result.projectId, { enable: true }).catch(() => null);   // fence the new jobsite for the time clock
+  if (done.swap) await folders.promoteGc(id, done.swap.to, done.swap.from);   // the winning GC's folder is the one that becomes the contract folder
   if (done.to === 'Awarded' && done.result.projectId) { const f = await folders.onAwarded(id, done.result.projectId); if (f?.webUrl) done.result.folderUrl = f.webUrl; }
   return done.result;
 }

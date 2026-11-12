@@ -36,7 +36,7 @@ export async function searchRecords(kind, term) {
   const t = `%${String(term || '').trim().replace(/[%_]/g, '')}%`;
   const sql = { project: `SELECT id, name AS label FROM projects WHERE name ILIKE $1 ORDER BY name LIMIT 15`, vendor: `SELECT id, name AS label FROM subcontractors WHERE name ILIKE $1 ORDER BY name LIMIT 15`, supplier: `SELECT id, name AS label FROM suppliers WHERE name ILIKE $1 ORDER BY name LIMIT 15`,
     document: `SELECT id, name AS label FROM documents WHERE name ILIKE $1 AND category <> 'Employee ID' AND NOT restricted ORDER BY created_at DESC LIMIT 15`, receipt: `SELECT si.id, s.name || ' ' || si.reference AS label FROM supplier_invoices si JOIN suppliers s ON s.id=si.supplier_id WHERE s.name || ' ' || si.reference ILIKE $1 ORDER BY si.invoice_date DESC NULLS LAST LIMIT 15`,
-    opportunity: `SELECT id, name AS label FROM opportunities WHERE name ILIKE $1 ORDER BY due_date DESC NULLS LAST LIMIT 15` }[kind];
+    opportunity: `SELECT id, name AS label FROM opportunities WHERE merged_into IS NULL AND name ILIKE $1 ORDER BY due_date DESC NULLS LAST LIMIT 15` }[kind];
   if (!sql || !LINKABLE[kind]) throw bad('Choose what to search for.');
   return (await q(sql, [t])).map((r) => ({ kind, id: r.id, label: r.label }));
 }

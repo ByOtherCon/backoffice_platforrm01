@@ -37,6 +37,7 @@ import * as sv from './subVerify.js';
 import * as qbo from './quickbooks.js';
 import * as qbr from './qbReset.js';
 import * as vr from './vendorRead.js';
+import * as bn from './bundles.js';
 import * as qbi from './qbImport.js';
 import * as acc from './access.js';
 import * as gl from './googleLogin.js';
@@ -226,6 +227,11 @@ route('POST', '/api/address/verify', async ({ user, body }) => {
 route('GET', '/api/opportunities', async ({ req, user }) => { estRead(user); return es.list({ tab: q1(req, 'tab'), search: q1(req, 'q'), showAll: q1(req, 'all') === '1', filter: q1(req, 'filter'), scope: q1(req, 'scope'), userId: user.id }); });
 route('POST', '/api/opportunities', async ({ user, body }) => es.create(estWrite(user), body));
 route('POST', '/api/opportunities/import', async ({ user, body }) => es.importLeads(estWrite(user), body));
+route('GET', '/api/opportunities/bundles', async ({ user }) => { estRead(user); return { groups: await bn.findDuplicates() }; });
+route('GET', '/api/opportunities/similar', async ({ req, user }) => { estRead(user); return { leads: await bn.similarFor({ name: q1(req, 'name'), city: q1(req, 'city'), address: q1(req, 'address'), gc: q1(req, 'gc') }) }; });
+route('POST', '/api/opportunities/bundle', async ({ user, body }) => { const u = estWrite(user); if (!Array.isArray(body.otherIds)) throw bad('Choose the leads to join.'); return bn.mergeInto(u, uuid(body.primaryId), body.otherIds.map(uuid), { folderPerGc: body.folderPerGc === undefined ? undefined : !!body.folderPerGc }); });
+route('POST', '/api/opportunities/:id/unbundle', async ({ user, params }) => bn.unmerge(estWrite(user), uuid(params.id)));
+route('PUT', '/api/opportunities/:id/folder-policy', async ({ user, params, body }) => bn.setFolderPolicy(estWrite(user), uuid(params.id), !!body.perGc));
 route('GET', '/api/opportunities/:id', async ({ user, params }) => { estRead(user); const d = await es.get(uuid(params.id)); return d.projectId && auth.MANAGE.includes(user.role) ? { ...d, projectDocs: await es.projectDocsForLead(d.projectId) } : d; });
 // The same lead files and job-folder listing, seen from the project (people on the project do not need Estimating access).
 route('GET', '/api/projects/:id/lead-files', async ({ user, params }) => { await auth.requireProject(user, uuid(params.id)); return es.leadFilesForProject(params.id); });

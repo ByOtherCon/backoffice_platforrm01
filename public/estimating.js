@@ -105,7 +105,29 @@ function buildOpportunityForm(full, op, known, { readonly = false } = {}) {
 }
 async function opportunityForm(o) {   // a new opportunity, in a pop-up (an existing one is opened on its own page)
   const op = await opts(), known = await api('GET', '/gcs/known'); const built = buildOpportunityForm(null, op, known);
-  formModal('New opportunity', built.nodes, async () => { await api('POST', '/opportunities', built.body()); render(); }, 'Add opportunity');
+  formModal('New opportunity', built.nodes, async () => {
+    const b = built.body(), qs = new URLSearchParams({ name: b.name, gc: b.gc, city: b.addr?.city || '', address: b.addr?.street || '' });
+    const same = (await api('GET', '/opportunities/similar?' + qs)).leads;
+    if (same.length) { const pick = await askBundle(same, b); if (!pick) throw new Error('Not saved yet. Choose Bundle or Create Separately.'); if (pick.bundleWith) { b.bundleWith = pick.bundleWith; b.folderPerGc = pick.folderPerGc; } }
+    await api('POST', '/opportunities', b); render();
+  }, 'Add opportunity');
+}
+// The folder question, asked whenever one job is under more than one GC.
+function folderChoice(initial = true) {
+  const name = 'fpg' + Math.random().toString(36).slice(2, 7), mk = (v, label, hint) => h('label', { class: 'choice', style: 'display:block;text-transform:none;letter-spacing:0;font-size:15px;font-weight:400;margin:.3rem 0' }, h('input', { type: 'radio', name, value: v, checked: v === String(initial) ? true : null }), ' ', label, h('div', { class: 'muted', style: 'font-size:13px;margin-left:1.4rem' }, hint));
+  const el = h('div', {}, h('label', {}, 'Folders in SharePoint'), mk('true', 'A folder for this job under each GC', 'Everything is duplicated: every file is saved in each GC\'s folder. When one GC awards the job, its folder becomes the contract folder.'), mk('false', 'One folder, under the main GC', 'Keeps a single folder. The GC that awards the job gets its own folder then.'));
+  return { el, value: () => el.querySelector('input:checked')?.value === 'true' };
+}
+function askBundle(same, b) {
+  return new Promise((done) => {
+    const name = 'bw' + Math.random().toString(36).slice(2, 7), fc = folderChoice(true); let settled = false;
+    const finish = (v) => { if (settled) return; settled = true; bg.remove(); done(v); };
+    const rows = same.map((l, i) => h('label', { style: 'display:block;text-transform:none;letter-spacing:0;font-size:15px;font-weight:400;margin:.3rem 0' }, h('input', { type: 'radio', name, value: l.id, checked: i === 0 ? true : null }), ' ', h('strong', {}, l.name), ` · ${l.gcs.join(', ')} · ${l.city || ''} · due ${l.due ? fmtDay(l.due) : '—'} · ${l.status}`));
+    const bg = modal('Same Job Already On The List', h('div', {}, h('p', {}, `${b.name} is already on the list under ${[...new Set(same.flatMap((l) => l.gcs))].join(', ')}. The same job from another GC is one job: one proposal, one submission, and any of those GCs can award it.`),
+      h('div', {}, rows), h('div', { style: 'margin-top:.8rem' }, fc.el),
+      h('div', { class: 'row', style: 'margin-top:1rem;justify-content:flex-end;gap:.5rem' }, h('button', { type: 'button', onclick: () => finish(null) }, 'Go Back'), h('button', { type: 'button', onclick: () => finish({}) }, 'Create Separately'),
+        h('button', { type: 'button', class: 'primary', onclick: () => finish({ bundleWith: bg.querySelector(`input[name=${name}]:checked`)?.value, folderPerGc: fc.value() }) }, 'Bundle With This Job'))), { mode: 'edit' });
+  });
 }
 
 // ---------------------------------------------------------------- moving between statuses (same look for every move)
@@ -113,15 +135,17 @@ async function statusModal(o, to) {
   const op = await opts(); const reasons = { Declined: op.declineReasons, 'Decided Not To Submit': op.dntsReasons, 'Not Awarded': op.notAwardedReasons }[to];
   if (to === 'Submitted' && ['Accepted', 'Started'].includes(o.status)) return submitModal(o);
   const f = { reason: h('select', { required: true }, h('option', { value: '' }, 'Choose a reason…'), (reasons || []).map((r) => h('option', { value: r }, r))), est: h('select', {}, op.estimators.map((u) => h('option', { value: u.id }, u.name || u.email))), due: h('input', { type: 'date' }), note: h('textarea', { rows: 2, placeholder: 'Optional' }) };
+  f.awarded = h('select', { required: true }, h('option', { value: '' }, 'Choose the GC…'), (o.gcs || []).map((g) => h('option', { value: g }, g)));
   f.est.value = o.estimatorId || (op.estimators.some((u) => u.id === state.user.id) ? state.user.id : op.estimators[0]?.id);
   const WHAT = { Reviewing: 'It moves to the Proposal Tracker as Reviewing. No proposal number or folders are created yet.', Accepted: 'It gets the next proposal number, an estimator, and moves to the Proposal Tracker.', Started: 'Work on the estimate and proposal has started.', New: 'It goes back to Bid Opportunities.',
     Declined: 'It leaves Bid Opportunities and stays searchable.', Submitted: 'The result is cleared and follow-up resumes.', 'Decided Not To Submit': 'It leaves the Proposal and Submittal trackers and stays searchable.', Awarded: 'This creates the project in Job Costing with the lead, proposal and submittal details attached.', 'Not Awarded': 'The bid is recorded as not awarded and follow-up stops.',
     'No Communication': 'The GC never answered. Follow-up closes; the proposal and history are kept.' };
   const reopen = o.status === 'Submitted' && to === 'Started';
   const fields = [summary(o), h('p', { class: 'muted wide' }, reopen ? 'Reopen for revision: the next proposal PDF becomes a new bid version. Earlier versions are kept.' : WHAT[to] || ''),
+    to === 'Awarded' && (o.gcs || []).length > 1 ? field(lbl('Which GC awarded the job?', true), f.awarded, 'wide') : '',
     to === 'Accepted' ? field(lbl('Estimator', true), f.est) : '', to === 'Accepted' && !o.due ? field(lbl('Bid due date', true), f.due) : '', reasons ? field(lbl('Reason', true), f.reason, 'wide') : '', field('Note', f.note, 'wide')].filter(Boolean);
   formModal(`${reopen ? 'Reopen for revision' : sname(to)} · ${o.name}`, fields, async () => {
-    const body = { status: to, note: f.note.value }; if (reasons) body.reason = f.reason.value; if (to === 'Accepted') { body.estimatorId = f.est.value; if (!o.due) body.due = f.due.value; }
+    const body = { status: to, note: f.note.value }; if (reasons) body.reason = f.reason.value; if (to === 'Awarded' && (o.gcs || []).length > 1) body.awardedGc = f.awarded.value; if (to === 'Accepted') { body.estimatorId = f.est.value; if (!o.due) body.due = f.due.value; }
     const r = await api('POST', `/opportunities/${o.id}/status`, body);
     if (r.projectId) { location.hash = '#/projects/' + r.projectId; return; }
     if (r.proposalId) { setTimeout(() => acceptedModal(o, r), 0); location.hash = '#/estimating/proposals'; }
@@ -189,7 +213,7 @@ export async function estimatingView(arg, arg2) {
   const head = h('div', { class: 'grid kpis', style: 'grid-template-columns:repeat(auto-fit,minmax(140px,1fr))' }, kpi('New opportunities', st.openLeads), kpi('Reviewing', st.reviewing), kpi('Accepted this month', st.accepted), kpi('Working now', st.working), kpi('Submitted this month', st.submitted), kpi('Follow-ups due', st.awaitingFollowUp, st.awaitingFollowUp ? 'warn' : ''), kpi('Awaiting award', st.interested, st.interested ? 'good' : ''));
   const tabs = h('div', { class: 'tabs', style: 'margin-top:1rem' }, TABS.map(([t, l]) => h('a', { class: t === tab ? 'on' : '', href: '#/estimating/' + t }, l)));
   let body;
-  if (tab === 'bids') body = bidsPanel(data, err, w, await api('GET', '/bids/status'));
+  if (tab === 'bids') body = bidsPanel(data, err, w, await api('GET', '/bids/status'), w ? (await api('GET', '/opportunities/bundles')).groups : []);
   else if (tab === 'proposals') body = proposalsPanel(data, err, w);
   else if (tab === 'submittals') body = submittalsPanel(data, err, w);
   else if (tab === 'followups') body = await followUpsPanel(err, w, arg === 'followups' ? arg2 : null);
@@ -203,6 +227,24 @@ async function importForm() {
   file.onchange = async () => { if (file.files[0]) csv.value = await file.files[0].text(); };
   formModal('Import bid invitations', [h('p', { class: conn.connected ? 'ok wide' : 'muted wide' }, conn.note), field('CSV', csv, 'wide'), field('File', file, 'wide')],
     async () => { const r = await api('POST', '/opportunities/import', { csv: csv.value, source: 'BuildingConnected' }); if (r.added) render(); throw new Error(`Added ${r.added}, already had ${r.duplicates}, skipped ${r.skipped.length}.${r.skipped.length ? ' ' + r.skipped.slice(0, 4).join(' | ') : ''}`); }, 'Import');
+}
+
+// ---------------------------------------------------------------- one job under several GCs
+function bundleModal(groups) {
+  const fc = folderChoice(true), err = h('div'), picks = groups.map((g) => ({ g, main: g.primaryId, on: new Set(g.leads.map((l) => l.id)) }));
+  const draw = () => box.replaceChildren(...picks.map((p, gi) => h('div', { class: 'card', style: 'margin:.6rem 0' },
+    h('strong', {}, p.g.leads[0].name), h('div', { class: 'muted', style: 'font-size:13px' }, [p.g.leads[0].address, p.g.leads[0].city].filter(Boolean).join(', ')),
+    p.g.blocked ? h('p', { class: 'neg' }, p.g.blocked) : '',
+    h('table', {}, h('thead', {}, h('tr', {}, ['Include', 'Main lead', 'GC', 'Project name', 'Bid due', 'Status', 'Proposal'].map((t) => h('th', {}, t)))), h('tbody', {}, p.g.leads.map((l) => h('tr', {},
+      h('td', {}, h('input', { type: 'checkbox', checked: p.on.has(l.id) ? true : null, disabled: l.id === p.main ? true : null, onchange: (e) => { e.target.checked ? p.on.add(l.id) : p.on.delete(l.id); } })),
+      h('td', {}, h('input', { type: 'radio', name: 'main' + gi, checked: l.id === p.main ? true : null, onchange: () => { p.main = l.id; p.on.add(l.id); draw(); } })),
+      h('td', {}, h('strong', {}, l.gc)), h('td', {}, l.name), h('td', {}, l.due ? fmtDay(l.due) : '—'), h('td', {}, l.status), h('td', {}, l.proposalId ? `${l.proposalId}${l.submissions ? ' · submitted' : ''}` : '—'))))),
+    h('div', { class: 'row', style: 'justify-content:flex-end;margin-top:.5rem' }, h('button', { class: 'primary small', disabled: p.g.blocked ? true : null, onclick: guard(err, async () => {
+      const others = [...p.on].filter((id) => id !== p.main); if (!others.length) throw new Error('Include at least one more lead to bundle.');
+      await api('POST', '/opportunities/bundle', { primaryId: p.main, otherIds: others, folderPerGc: fc.value() }); bg.remove(); render(); }) }, 'Bundle This Job')))));
+  const box = h('div'); draw();
+  const bg = modal('Bundle Jobs Under More Than One GC', h('div', {}, h('p', {}, 'These jobs came in more than once, from different GCs. Bundled, a job is one lead with one proposal and one submission, because we price it once. Any of the GCs can award it, and we work with whichever does. Pick the main lead (it keeps the proposal number and the notes), tick the ones to join it, and choose how to keep the folders.'),
+    fc.el, err, box), { mode: 'edit' });
 }
 
 // ---------------------------------------------------------------- Bid Opportunities
@@ -224,14 +266,15 @@ function inviteCell(o) {
 const contactBlock = (o) => { const nda = (o.invitations || []).some((i) => i.nda) && !o.email;
   return [h('strong', {}, o.gc), o.additionalGcs ? sub('Also: ' + o.additionalGcs) : '', o.contact ? sub(o.contact) : '', o.email ? h('div', {}, h('a', { href: 'mailto:' + o.email, style: 'font-size:13px' }, o.email)) : '', o.phone ? sub(o.phone) : '', nda ? h('div', { class: 'neg', style: 'font-size:13px' }, 'Contact is locked behind an NDA') : (!o.contact && !o.email && !o.phone ? sub('No contact on file') : '')]; };
 const dueCell = (o) => h('td', {}, o.due ? [fmtDay(o.due), o.dueTime ? sub(`${o.dueTime} Eastern`) : sub(o.countdown)] : [h('strong', { class: 'neg', style: 'font-size:13px' }, 'NO BID DUE DATE PROVIDED'), (o.invitations || []).some((i) => i.nda) ? sub('May be locked behind an NDA') : '']);
-function bidsPanel(data, err, w, feed) {
+function bidsPanel(data, err, w, feed, dups = []) {
   const rows = data.groups.flatMap((g) => g.rows.map((o) => ({ ...o, week: g.name }))); rows.forEach((o, i) => (o.rank = i));
   const sort = state.bidSort || { key: 'week', dir: 1 };
   const keyOf = { week: (o) => o.rank, project: (o) => o.name.toLowerCase(), gc: (o) => o.gc.toLowerCase(), due: (o) => o.due || '9999', status: (o) => o.status, invitation: (o) => (o.link || (o.invitations || []).some((i) => i.link) ? 0 : 1), onedrive: (o) => (o.folderUrl ? 0 : 1) }[sort.key];
   rows.sort((a, b) => { const x = keyOf(a), y = keyOf(b); return (x < y ? -1 : x > y ? 1 : a.rank - b.rank) * sort.dir; });
   const head = BID_COLS.map(([k, l]) => h('th', {}, h('button', { class: 'sortbtn', onclick: () => { state.bidSort = { key: k, dir: sort.key === k ? -sort.dir : 1 }; render(); } }, l, h('span', { class: sort.key === k ? 'on' : '' }, sort.key === k ? (sort.dir === 1 ? ' ↑' : ' ↓') : ' ↕'))));
   const tip = BID_RULES(data.rules || { declineNewDays: 2 });
-  return h('div', {}, bidFeedBar(feed, err, w),
+  const banner = dups.length ? h('div', { class: 'card', style: 'padding:.7rem 1rem;border-color:var(--navy)' }, h('div', { class: 'row spread' }, h('span', {}, h('strong', {}, `${dups.length} ${dups.length === 1 ? 'job appears' : 'jobs appear'} under more than one GC.`), ' Bundle them so each job is one lead and one submission.'), h('button', { class: 'primary small', onclick: () => bundleModal(dups) }, 'Review And Bundle'))) : '';
+  return h('div', {}, bidFeedBar(feed, err, w), banner,
     h('div', { class: 'card' }, h('div', { class: 'row spread' }, h('h2', {}, 'Bid Opportunities'), h('div', { class: 'row' }, h('label', { style: 'text-transform:none;letter-spacing:0;font-size:14px;font-weight:400;margin:0' }, h('input', { type: 'checkbox', checked: state.estAll ? true : null, onchange: (e) => { state.estAll = e.target.checked; render(); } }), ' Include declined (last 30 days)'), h('span', { class: 'info-tip', tabindex: '0', 'aria-label': tip, 'data-tip': tip }, 'i'))),
       rows.length ? h('div', { class: 'scroll' }, h('table', { class: 'biglist' }, h('thead', {}, h('tr', {}, ...head, h('th', {}, 'Actions'))),
         h('tbody', {}, rows.map((o) => h('tr', { class: o.status === 'Declined' ? 'muted' : '' },
@@ -298,6 +341,13 @@ function calendar(rows) {
 }
 
 // ---------------------------------------------------------------- one opportunity: Open and Edit share one layout
+function bundleSection(o, w, msg) {
+  const fc = folderChoice(!!o.folderPerGc), awarded = o.status === 'Awarded';
+  return h('div', { class: 'card', style: 'margin-top:.8rem;padding:.7rem 1rem' }, h('label', {}, 'Pitched to more than one GC'),
+    h('p', { style: 'margin:.2rem 0' }, o.gcs.join(' · '), '. One job, one proposal and one submission. ', awarded ? '' : 'Any of these GCs can award it.'),
+    w && !awarded ? h('div', {}, fc.el, h('div', { class: 'row', style: 'gap:.5rem;flex-wrap:wrap;margin-top:.4rem' }, h('button', { class: 'small', onclick: guard(msg, async () => { await api('PUT', `/opportunities/${o.id}/folder-policy`, { perGc: fc.value() }); render(); }) }, 'Save Folder Choice'),
+      (o.bundled || []).map((x) => h('button', { class: 'small', title: `Make ${x.gc} its own lead again`, onclick: guard(msg, async () => { if (!confirm(`Take ${x.gc} out of this bundle and make it its own lead again?`)) return; await api('POST', `/opportunities/${x.id}/unbundle`, {}); render(); }) }, `Split Out ${x.gc}`)))) : '');
+}
 async function opportunityDetail(id, err, w, editing) {
   const o = await api('GET', '/opportunities/' + id), op = await opts(), known = await api('GET', '/gcs/known');
   const built = buildOpportunityForm(o, op, known, { readonly: !editing }), msg = h('div');
@@ -309,6 +359,7 @@ async function opportunityDetail(id, err, w, editing) {
     built.wrap(),
     o.tradePrices.length ? h('p', { style: 'margin-top:.8rem' }, h('strong', {}, 'Proposed: '), o.tradePrices.map((p) => `${p.name} ${usd(p.amount)}`).join(' · '), ` = ${usd(o.total)}`) : '',
     o.submissions.length ? h('div', { style: 'margin-top:.8rem' }, h('label', {}, 'Bid versions'), h('table', {}, h('tbody', {}, o.submissions.map((s) => h('tr', {}, h('td', {}, 'v' + s.version), h('td', {}, fmtDay(s.date)), h('td', {}, s.method), h('td', { class: 'n' }, usd(s.price)), h('td', {}, (s.trades || []).map((t) => t.name).join(', ')), h('td', {}, w && o.status === 'Submitted' ? h('button', { class: 'small danger', onclick: guard(err, async () => { const why = prompt('Why remove this submission? (the PDF stays in the folder)'); if (why) { await api('POST', `/opportunities/${o.id}/submissions/${s.id}/void`, { reason: why }); render(); } }) }, 'Remove') : '')))))) : '',
+    (o.gcs || []).length > 1 ? bundleSection(o, w, msg) : '',
     h('div', { style: 'margin-top:.8rem' }, h('label', {}, 'Shared folder'), folderButtons(o, w, 'opportunity', OPTS?.sharepoint !== false)),
     h('div', { style: 'margin-top:.8rem' }, filesPanel(o, w, err)),
     h('div', { style: 'margin-top:.8rem' }, notesPanel(o, w)),

@@ -237,8 +237,7 @@ route('GET', '/api/opportunities/:id', async ({ user, params }) => { estRead(use
 route('GET', '/api/projects/:id/lead-files', async ({ user, params }) => { await auth.requireProject(user, uuid(params.id)); return es.leadFilesForProject(params.id); });
 route('GET', '/api/projects/:id/lead-files/:fid', async ({ res, user, params }) => {
   await auth.requireProject(user, uuid(params.id)); const d = await es.leadFileForProject(params.id, uuid(params.fid)); if (!fs.existsSync(d.file)) throw new HttpError(404, 'File is missing from storage.');
-  const inline = /^(application\/pdf|image\/)/.test(d.mime);
-  res.writeHead(200, { ...SEC, 'content-type': d.mime, 'content-disposition': `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(d.name)}`, 'cache-control': 'private, no-store', 'content-security-policy': "default-src 'none'; sandbox" });
+  res.writeHead(200, fileHead(d));
   fs.createReadStream(d.file).pipe(res); return 'sent';
 });
 route('GET', '/api/projects/:id/lead-folder-files', async ({ user, params }) => { await auth.requireProject(user, uuid(params.id)); const [o] = await q('SELECT id FROM opportunities WHERE project_id=$1', [params.id]); return o ? folders.folderFiles(o.id) : { enabled: false, plans: [], proposals: [] }; });
@@ -289,8 +288,7 @@ route('POST', '/api/opportunities/:id/files', async ({ req, user, params }) => e
 route('DELETE', '/api/opportunities/:id/files/:fid', async ({ user, params }) => { await es.deleteFile(estWrite(user), uuid(params.id), uuid(params.fid)); return { ok: true }; });
 route('GET', '/api/opportunity-files/:fid', async ({ res, user, params }) => {
   estRead(user); const d = await es.fileForDownload(uuid(params.fid)); if (!fs.existsSync(d.file)) throw new HttpError(404, 'File is missing from storage.');
-  const inline = /^(application\/pdf|image\/)/.test(d.mime);
-  res.writeHead(200, { ...SEC, 'content-type': d.mime, 'content-disposition': `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(d.name)}`, 'cache-control': 'private, no-store', 'content-security-policy': "default-src 'none'; sandbox" });
+  res.writeHead(200, fileHead(d));
   fs.createReadStream(d.file).pipe(res); return 'sent';
 });
 route('PUT', '/api/opportunities/:id/trade-prices', async ({ user, params, body }) => { await es.setTradePrices(estWrite(user), uuid(params.id), body.prices); return { ok: true }; });
@@ -387,8 +385,7 @@ route('GET', '/api/documents/:id/file', async ({ res, user, params }) => {
   if (user.role === 'Employee') throw new HttpError(403, 'Your role does not permit this.');   // a time-clock session has no business with documents
   const d = await dc.getFile(uuid(params.id));
   if (d.category === 'Employee ID' || d.restricted) auth.requireRole(user, auth.APPROVERS); else if (d.project_id) await auth.requireProject(user, d.project_id); else manage(user);
-  const inline = /^(application\/pdf|image\/)/.test(d.mime);
-  res.writeHead(200, { ...SEC, 'content-type': d.mime, 'content-disposition': `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(d.name)}`, 'cache-control': 'private, no-store', 'content-security-policy': "default-src 'none'; sandbox" });
+  res.writeHead(200, fileHead(d));
   fs.createReadStream(d.file).pipe(res); return 'sent';
 });
 route('DELETE', '/api/documents/:id', async ({ user, params }) => { manage(user); await dc.deleteDocument(uuid(params.id)); return { ok: true }; });
@@ -404,6 +401,14 @@ route('PUT', '/api/overhead/:id', async ({ user, params, body }) => { auth.requi
 route('DELETE', '/api/overhead/:id', async ({ user, params }) => { auth.requireRole(user, auth.SUPER); await oh.remove(uuid(params.id)); return { ok: true }; });
 route('PUT', '/api/settings/overhead', async ({ user, body }) => { auth.requireRole(user, auth.SUPER); await oh.saveBasis(body.basis); return { ok: true }; });
 
+// Headers for a stored file sent back to the browser. PDFs and pictures open in the browser, everything else downloads.
+// A PDF must NOT carry the "sandbox" rule: Chrome's PDF viewer refuses to start under it ("This page has been blocked by Chrome").
+// A PDF cannot run script on this site (its type is checked at upload and "nosniff" stops the browser treating it as a web page), so it only needs the no-framing rule.
+function fileHead(d) {
+  const pdf = d.mime === 'application/pdf', inline = pdf || /^image\//.test(d.mime);
+  return { ...SEC, 'content-type': d.mime, 'content-disposition': `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(d.name)}`, 'cache-control': 'private, no-store',
+    'content-security-policy': pdf ? "frame-ancestors 'none'" : "default-src 'none'; sandbox" };
+}
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.ico': 'image/x-icon', '.webmanifest': 'application/manifest+json' };
 const SEC = {
   'x-content-type-options': 'nosniff', 'x-frame-options': 'DENY', 'referrer-policy': 'same-origin',

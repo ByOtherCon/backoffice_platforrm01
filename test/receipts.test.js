@@ -42,9 +42,13 @@ test('uploads: type and contents are verified; files are served only to people w
   assert.equal(ok.status, 200); projectDocId = ok.body.id;
   const f = await fetch(`${base}/api/documents/${projectDocId}/file`, { headers: { cookie: asst } });
   assert.equal(f.status, 200); assert.equal(f.headers.get('content-type'), 'application/pdf'); assert.equal(f.headers.get('x-content-type-options'), 'nosniff'); assert.deepEqual(Buffer.from(await f.arrayBuffer()), sent);
+  // a PDF opens in the browser's own viewer: it must be sent inline and without the "sandbox" rule, which makes Chrome answer "This page has been blocked by Chrome"
+  assert.match(f.headers.get('content-disposition'), /^inline;/); assert.doesNotMatch(f.headers.get('content-security-policy'), /sandbox/); assert.match(f.headers.get('content-security-policy'), /frame-ancestors 'none'/);
   assert.equal((await fetch(`${base}/api/documents/${projectDocId}/file`, { headers: { cookie: pm } })).status, 403);           // PM not on the project
   assert.equal((await fetch(`${base}/api/documents/${projectDocId}/file`)).status, 401);
   assert.equal((await call('GET', `/api/documents?projectId=${pid}`, null, asst)).body[0].name, 'Signed contract');
+  { const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(40)]), up = await upload(`/api/documents/upload?category=Other&projectId=${pid}`, png, 'photo.png', asst); assert.equal(up.status, 200, JSON.stringify(up.body));
+    const g = await fetch(`${base}/api/documents/${up.body.id}/file`, { headers: { cookie: asst } }); assert.equal(g.headers.get('content-type'), 'image/png'); assert.match(g.headers.get('content-security-policy'), /sandbox/); }   // anything that is not a PDF keeps the locked-down rule
   assert.equal((await call('POST', '/api/documents', { category: 'Plans', name: 'Set A', url: 'http://insecure.example/a.pdf', projectId: pid }, asst)).status, 400);
   assert.equal((await call('POST', '/api/documents', { category: 'Plans', name: 'Set A', url: 'https://example.com/a.pdf', projectId: pid }, asst)).status, 200);
 });

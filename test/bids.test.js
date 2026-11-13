@@ -236,7 +236,7 @@ test('clean-up: a New lead nobody takes up is declined after 7 working days, Tie
   const all = (await call('GET', '/api/opportunities?tab=proposals&filter=All', null, est)).body.rows; const by = (n) => all.find((o) => o.name === n);
   assert.deepEqual([by('C-acc-4d').expiry, by('C-acc-4d').tone, by('C-acc-future').expiry, by('C-acc-future').tone, by('C-sub-6d').tone], ['expiring', 'red', null, '', 'green']); void rows;
   // declined leads stay searchable for 30 days from the decline
-  const found = (await call('GET', '/api/opportunities?tab=bids&q=C-t3-oldweek', null, est)).body.groups.flatMap((g) => g.rows.map((o) => o.statusLabel)); assert.deepEqual(found, ['Declined']);
+  const found = (await call('GET', '/api/opportunities?tab=bids&q=C-t2-8wd', null, est)).body.groups.flatMap((g) => g.rows.map((o) => o.statusLabel)); assert.deepEqual(found, ['Declined']);   // this lead is declined whatever day the test runs
 });
 
 test('the working figures are for the signed-in estimator, or the whole company on request', async () => {

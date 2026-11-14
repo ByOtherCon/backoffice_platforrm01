@@ -70,7 +70,7 @@ const ET_TODAY = "(now() AT TIME ZONE 'America/New_York')::date";
 async function series() {
   const m = (col) => `to_char(${col},'YYYY-MM')`, since = `date_trunc('month', ${ET_TODAY}) - interval '11 months'`;
   const [rev, sub, sup, lab] = await Promise.all([
-    q(`SELECT ${m('invoice_date')} AS m, SUM(amount)::float AS v FROM client_invoices WHERE invoice_date >= ${since} GROUP BY 1`),
+    q(`SELECT ${m('invoice_date')} AS m, SUM(amount - retainage_held)::float AS v FROM client_invoices WHERE invoice_date >= ${since} GROUP BY 1`),
     q(`SELECT ${m(`COALESCE(invoice_date, ${ET_TODAY})`)} AS m, SUM(amount)::float AS v FROM sub_invoices WHERE COALESCE(invoice_date, ${ET_TODAY}) >= ${since} GROUP BY 1`),
     q(`SELECT ${m(`COALESCE(si.invoice_date, ${ET_TODAY})`)} AS m, SUM(sa.amount)::float AS v FROM supplier_allocations sa JOIN supplier_invoices si ON si.id=sa.supplier_invoice_id WHERE sa.project_id IS NOT NULL AND COALESCE(si.invoice_date, ${ET_TODAY}) >= ${since} GROUP BY 1`),
     q(`SELECT ${m('work_date')} AS m, SUM(COALESCE(pay, hours*rate))::float AS v FROM labor_entries WHERE work_date >= ${since} GROUP BY 1`)]);
@@ -95,7 +95,7 @@ export async function widgetData(user, { period = 'month' } = {}) {
   if (ok.has('chart') || ok.has('forecast')) jobs.push((async () => {
     const s = await series(); out.series = s;
     if (ok.has('forecast')) { const hist = s.map((x) => ({ month: x.month, revenue: x.revenue })); const qn = Math.floor((Number(cur.slice(5)) - 1) / 3) + 1;
-      const [back] = await q(`SELECT COALESCE(SUM(GREATEST(contract - billed, 0)),0)::float AS v FROM (SELECT p.id, (SELECT COALESCE(SUM(original_amount),0) FROM project_trades WHERE project_id=p.id) + (SELECT COALESCE(SUM(amount),0) FROM change_orders WHERE project_id=p.id AND status='Approved') AS contract, (SELECT COALESCE(SUM(amount),0) FROM client_invoices WHERE project_id=p.id) AS billed FROM projects p WHERE p.active) x`);
+      const [back] = await q(`SELECT COALESCE(SUM(GREATEST(contract - billed, 0)),0)::float AS v FROM (SELECT p.id, (SELECT COALESCE(SUM(original_amount),0) FROM project_trades WHERE project_id=p.id) + (SELECT COALESCE(SUM(amount),0) FROM change_orders WHERE project_id=p.id AND status='Approved') AS contract, (SELECT COALESCE(SUM(amount),0) FROM client_invoices WHERE project_id=p.id AND NOT is_retainage) AS billed FROM projects p WHERE p.active) x`);
       out.forecast = { month: projectPeriod(hist, cur, [cur]), quarter: projectPeriod(hist, cur, quarterMonths(year, qn)), year: projectPeriod(hist, cur, yearMonths(year)), backlog: r2(back.v), note: 'Based on what has been billed: the average of the last three completed months, carried forward. It needs two months of billing before it shows a number.' }; }
   })());
   if (ok.has('receivables') || ok.has('payables')) jobs.push((async () => {

@@ -118,6 +118,8 @@ const view = async (user, params) => { await auth.requireProject(user, uuid(para
 const write = (user, params) => { manage(user); return uuid(params.id); };
 route('GET', '/api/projects/:id/billing', async ({ user, params }) => bl.getBilling(await view(user, params)));
 route('POST', '/api/projects/:id/invoices', async ({ user, params, body }) => bl.addInvoice(write(user, params), body));
+route('GET', '/api/projects/:id/retainage-check', async ({ user, params }) => { const c = await bl.retainageCheck(write(user, params)); return { pct: c.pct, rows: c.rows, unclear: c.unclear, totals: c.totals }; });
+route('POST', '/api/projects/:id/retainage-apply', async ({ user, params }) => bl.retainageApply(write(user, params)));
 route('PUT', '/api/projects/:id/invoices/:iid', async ({ user, params, body }) => { await bl.updateInvoice(write(user, params), uuid(params.iid), body); return { ok: true }; });
 route('DELETE', '/api/projects/:id/invoices/:iid', async ({ user, params }) => { await bl.deleteInvoice(write(user, params), uuid(params.iid)); return { ok: true }; });
 route('POST', '/api/projects/:id/invoices/:iid/payments', async ({ user, params, body }) => { await bl.addClientPayment(write(user, params), uuid(params.iid), body); return { ok: true }; });

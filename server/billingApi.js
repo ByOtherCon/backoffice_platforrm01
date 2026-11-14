@@ -3,7 +3,9 @@ import { bad, money, text, dateStr, HttpError } from './http.js';
 import { assertValid } from './projectApi.js';
 import { resolveSupplier } from './vendors.js';
 import { assertCanPay, vendorCompliance } from './compliance.js';
-import { aging, toCents, toDollars } from '../src/lib/costing.ts';
+import { aging, toCents, toDollars, retainageOn, tradeStats } from '../src/lib/costing.ts';
+import { spreadPayment } from '../src/lib/qbmatch.ts';
+import { loadInputs } from './projects.js';
 
 const dbError = (e) => {
   if (e.code === '23505') return new HttpError(409, 'That number is already used here.');
@@ -31,24 +33,97 @@ export async function getBilling(projectId) {
     const collected = r2(payments + released);
     return {
       id: i.id, number: i.number, projectTradeId: i.project_trade_id, trade: i.trade, date: i.invoice_date, dueDate: i.due_date, amount: i.amount, retainageHeld: i.retainage_held,
+      // the invoice as it was sent (what will be paid), what is still owed on it, and whether it is the invoice for retainage held back earlier
+      payable: r2(i.amount - i.retainage_held), owed: r2(Math.max(0, i.amount - i.retainage_held - payments)), retainageInvoice: i.is_retainage, fromQuickBooks: !!i.qb_invoice_id,
       retainageOutstanding: r2(i.retainage_held - released), collected, outstanding: r2(i.amount - collected), aging: aging({ amount: i.amount - i.retainage_held, paid: payments, dueDate: i.due_date }, asOf),
       payments: mine.map((p) => ({ id: p.id, date: p.paid_date, amount: p.amount, kind: p.kind })),
     };
   });
 }
+// An invoice is entered the way it was sent: `payable` is its total, which is what will be paid. The retainage the GC holds back is logged
+// beside it (from the project's percent unless one is given) and is never taken off the invoice. Stored as work billed (invoice + retainage)
+// with the retainage part noted. `amount` (work billed, retainage inside it) is still accepted for older callers.
 export async function addInvoice(projectId, b) {
-  const number = text(b.number, 'Invoice #', { max: 60 }), amount = money(b.amount, 'Invoice amount');
-  if (!(amount > 0)) throw bad('Invoice amount must be greater than zero.');
+  if (b.retainageInvoice) return addRetainageInvoice(projectId, b);
+  const number = text(b.number, 'Invoice #', { max: 60 }), net = b.payable !== undefined, entered = money(net ? b.payable : b.amount, 'Invoice amount');
+  if (!(entered > 0)) throw bad('Invoice amount must be greater than zero.');
   const date = dateStr(b.date, 'Invoice date', true), due = dateStr(b.dueDate, 'Due date');
   if (due && due < date) throw bad('Due date cannot precede the invoice date.');
   return run(async (t) => {
     await lockProjects(t, [projectId]);
     await ownsTrade(t, projectId, b.projectTradeId);
     const [{ retainage_pct }] = await t('SELECT retainage_pct FROM projects WHERE id=$1', [projectId]);
-    const held = b.retainageHeld === undefined || b.retainageHeld === '' || b.retainageHeld === null ? 0 : money(b.retainageHeld, 'Retainage');   // none unless one is entered
+    const blank = b.retainageHeld === undefined || b.retainageHeld === '' || b.retainageHeld === null;
+    const held = net && b.retainageHeld === undefined ? retainageOn(entered, Number(retainage_pct)) : blank ? 0 : money(b.retainageHeld, 'Retainage');
+    const amount = net ? r2(entered + held) : entered;
     if (held > amount) throw bad('Retainage cannot exceed the invoice amount.');
-    const [row] = await t('INSERT INTO client_invoices(project_id,project_trade_id,number,invoice_date,due_date,amount,retainage_held) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id', [projectId, b.projectTradeId, number, date, due, amount, held]);
+    const [row] = await t('INSERT INTO client_invoices(project_id,project_trade_id,number,invoice_date,due_date,amount,retainage_held,net_basis) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id', [projectId, b.projectTradeId, number, date, due, amount, held, net]);
     await assertValid(t, projectId); return { id: row.id };
+  });
+}
+// The trades a retainage invoice is shared over: by the retainage each one still has held back, or by contract amount when none was logged.
+export async function retainageWeights(t, projectId) {
+  const loaded = (await loadInputs([projectId], t)).get(projectId), rows = (loaded?.trades ?? []).map((r) => ({ ptId: r.ptId, st: tradeStats(r.input) }));
+  const any = rows.some((r) => r.st.retainageOutstanding > 0);
+  return rows.map((r) => ({ ptId: r.ptId, weight: any ? Math.max(0, r.st.retainageOutstanding) : r.st.contract })).filter((x) => x.weight > 0);
+}
+// The invoice for retainage held back earlier. It is not new work: it uses up the retainage logged on the project and is owed until paid.
+// It is one invoice for the whole project, kept as one row per trade so each trade's numbers stay right.
+export async function addRetainageInvoice(projectId, b) {
+  const number = text(b.number, 'Invoice #', { max: 60 }), amount = money(b.payable !== undefined ? b.payable : b.amount, 'Invoice amount');
+  if (!(amount > 0)) throw bad('Invoice amount must be greater than zero.');
+  const date = dateStr(b.date, 'Invoice date', true), due = dateStr(b.dueDate, 'Due date');
+  if (due && due < date) throw bad('Due date cannot precede the invoice date.');
+  return run(async (t) => {
+    await lockProjects(t, [projectId]);
+    const w = await retainageWeights(t, projectId); if (!w.length) throw bad('Add the project trades first.');
+    const parts = spreadPayment(amount, w.map((x) => x.weight)), ids = [];
+    for (let i = 0; i < w.length; i++) if (parts[i] > 0) ids.push((await t('INSERT INTO client_invoices(project_id,project_trade_id,number,invoice_date,due_date,amount,retainage_held,is_retainage,net_basis) VALUES ($1,$2,$3,$4,$5,$6,0,true,true) RETURNING id', [projectId, w[i].ptId, number, date, due, parts[i]]))[0].id);
+    await assertValid(t, projectId); return { id: ids[0], rows: ids.length };
+  });
+}
+// ---- bringing a project's invoices in line with "the invoice is what gets paid; retainage is logged on top of it"
+// For every progress invoice: what it asks for, and the retainage that should be logged for it at the project's percent. Invoices that came
+// from QuickBooks with their own retainage line are already right and are left alone. Nothing is changed here; `retainageApply` does that.
+export async function retainageCheck(projectId, t = q) {
+  const [p] = await t('SELECT retainage_pct FROM projects WHERE id=$1', [projectId]); if (!p) throw new HttpError(404, 'Project not found.');
+  const pct = Number(p.retainage_pct);
+  const rows = await t(`SELECT ci.id, ci.number, ci.invoice_date, ci.amount, ci.retainage_held, ci.net_basis, ci.qb_invoice_id, tr.name AS trade, qi.imported_total, qi.total AS qb_total, qi.lines AS qb_lines,
+      COALESCE((SELECT SUM(amount) FROM client_payments WHERE client_invoice_id=ci.id AND kind='Retainage Release'),0) AS released
+    FROM client_invoices ci LEFT JOIN project_trades pt ON pt.id=ci.project_trade_id LEFT JOIN trades tr ON tr.id=pt.trade_id LEFT JOIN qb_invoices qi ON qi.qb_id=ci.qb_invoice_id
+    WHERE ci.project_id=$1 AND NOT ci.is_retainage ORDER BY ci.invoice_date, ci.number, tr.name`, [projectId]);
+  const groups = new Map(); for (const r of rows) if (r.qb_invoice_id) { const g = groups.get(r.qb_invoice_id) ?? groups.set(r.qb_invoice_id, { gross: 0, net: 0 }).get(r.qb_invoice_id); g.gross += toCents(Number(r.amount)); g.net += toCents(Number(r.amount)) - toCents(Number(r.retainage_held)); }
+  const out = [], unclear = [], settle = [];
+  for (const r of rows) {
+    const amount = Number(r.amount), held = Number(r.retainage_held), base = { id: r.id, number: r.number, trade: r.trade, date: r.invoice_date, owedNow: r2(amount - held), loggedNow: held };
+    if (r.qb_invoice_id && Array.isArray(r.qb_lines) && r.qb_lines.some((l) => l.retainage)) continue;   // QuickBooks shows the retainage on the invoice itself
+    let payable, note = '';
+    if (r.net_basis) payable = r2(amount - held);
+    else if (!(held > 0)) payable = amount;
+    else if (r.qb_invoice_id) {
+      const g = groups.get(r.qb_invoice_id), total = toCents(Number(r.imported_total ?? r.qb_total ?? NaN));
+      if (Math.abs(g.gross - total) <= 2) { payable = amount; note = 'The retainage was taken off the QuickBooks invoice. The full invoice is owed.'; }
+      else if (Math.abs(g.net - total) <= 2) payable = r2(amount - held);
+      else { unclear.push({ ...base, note: 'This no longer adds up to the QuickBooks invoice, so it is left as it is. Check it by hand.' }); continue; }
+    } else { payable = amount; note = 'Entered by hand: the invoice amount is treated as what gets paid.'; }
+    const logged = retainageOn(payable, pct);
+    if (Number(r.released) > logged + 0.005) { unclear.push({ ...base, note: `Retainage of ${Number(r.released).toFixed(2)} was already recorded as received on this invoice, more than would be logged. Left as it is.` }); continue; }
+    const after = { ...base, owedAfter: payable, loggedAfter: logged, workBilledAfter: r2(payable + logged), note };
+    if (Math.abs(r2(payable + logged) - amount) > 0.005 || Math.abs(logged - held) > 0.005) out.push(after); else if (!r.net_basis) settle.push(r.id);
+  }
+  const tot = (k) => r2(out.reduce((n, x) => n + x[k], 0));
+  return { pct, rows: out, unclear, settle, totals: { owedNow: tot('owedNow'), owedAfter: tot('owedAfter'), loggedNow: tot('loggedNow'), loggedAfter: tot('loggedAfter') } };
+}
+// Makes the changes `retainageCheck` lists, all or nothing. The billing rules must still hold afterwards.
+export async function retainageApply(projectId) {
+  return run(async (t) => {
+    await lockProjects(t, [projectId]);
+    const c = await retainageCheck(projectId, t);
+    for (const r of c.rows) await t('UPDATE client_invoices SET amount=$2, retainage_held=$3, net_basis=true WHERE id=$1 AND project_id=$4', [r.id, r.workBilledAfter, r.loggedAfter, projectId]);
+    if (c.settle.length) await t('UPDATE client_invoices SET net_basis=true WHERE id = ANY($1::uuid[]) AND project_id=$2', [c.settle, projectId]);
+    try { await assertValid(t, projectId); }
+    catch (e) { throw e instanceof HttpError && e.status === 400 ? bad(`Not changed. ${e.message} The retainage logged counts as work billed, so each trade's contract has to cover its invoices plus the retainage. Check the trade's contract amount, or the project's retainage percent.`) : e; }
+    return { changed: c.rows.length, unclear: c.unclear.length };
   });
 }
 export async function updateInvoice(projectId, id, b) {
@@ -59,7 +134,10 @@ export async function updateInvoice(projectId, id, b) {
     const v = {};
     if (b.number !== undefined) v.number = text(b.number, 'Invoice #', { max: 60 });
     if (b.amount !== undefined) { v.amount = money(b.amount, 'Invoice amount'); if (!(v.amount > 0)) throw bad('Invoice amount must be greater than zero.'); }
-    if (b.retainageHeld !== undefined) v.retainage_held = b.retainageHeld === '' || b.retainageHeld === null ? 0 : money(b.retainageHeld, 'Retainage');
+    if (b.retainageHeld !== undefined) v.retainage_held = cur.is_retainage || b.retainageHeld === '' || b.retainageHeld === null ? 0 : money(b.retainageHeld, 'Retainage');
+    // entered the way it was sent: the invoice total stays what will be paid, and the retainage logged sits on top of it
+    if (b.payable !== undefined) { const pay = money(b.payable, 'Invoice amount'); if (!(pay > 0)) throw bad('Invoice amount must be greater than zero.'); v.amount = r2(pay + (v.retainage_held ?? Number(cur.retainage_held))); v.net_basis = true; }
+    else if (b.retainageHeld !== undefined && b.amount === undefined && cur.net_basis) v.amount = r2(Number(cur.amount) - Number(cur.retainage_held) + v.retainage_held);
     if (b.date !== undefined) v.invoice_date = dateStr(b.date, 'Invoice date', true);
     if (b.dueDate !== undefined) v.due_date = dateStr(b.dueDate, 'Due date');
     if (b.projectTradeId !== undefined) { await ownsTrade(t, projectId, b.projectTradeId); v.project_trade_id = b.projectTradeId; }

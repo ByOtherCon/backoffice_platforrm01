@@ -58,6 +58,8 @@ export function splitByTrade(lines: QbLine[], assignOf: (i: number) => Assign, d
   const splits = entries.map(([t, c], k) => { let r: number; if (explicit == null) r = Math.round(c * defaultRetainagePct / 100); else if (k === entries.length - 1) r = left; else { r = Math.round(explicit * c / (total || 1)); left -= r; } return { projectTradeId: t, amount: toDollars(c), retainage: toDollars(Math.max(0, Math.min(r, c))) }; });
   return { splits, unassigned, badSplit };
 }
+// The invoice for retainage held back earlier: every line is a charge (not a deduction) and names retainage.
+export const isRetainageBill = (lines: QbLine[]): boolean => { const real = lines.filter((l) => l.amount !== 0); return real.length > 0 && real.every((l) => l.amount > 0 && /retain/i.test(`${l.description} ${l.itemName}`)); };
 // Spreads a payment across the trade rows of one invoice in proportion to what each billed, to the cent.
 export function spreadPayment(amount: number, weights: number[]): number[] {
   const total = weights.reduce((a, b) => a + b, 0), c = toCents(amount); let left = c;

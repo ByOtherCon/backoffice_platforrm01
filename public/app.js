@@ -148,7 +148,7 @@ function editProjectForm(pr) {
 }
 async function newProjectModal() {
   const err = h('div'), note = h('div');
-  const f = { name: h('input'), gc: h('select', {}, h('option', { value: '' }, 'Choose GC…'), state.gcs.filter((g) => !g.archived).map((g) => h('option', { value: g.id }, g.name))), client: h('input'), ret: h('input', { type: 'number', value: '10', min: '0', max: '100', step: '0.5' }) };
+  const f = { name: h('input'), gc: h('select', {}, h('option', { value: '' }, 'Choose GC…'), state.gcs.filter((g) => !g.archived).map((g) => h('option', { value: g.id }, g.name))), client: h('input'), ret: h('input', { type: 'number', value: '0', min: '0', max: '100', step: '0.5' }) };
   const addr = addressBlock(api, { kind: 'project', init: null, label: 'Project address (Florida)' });
   const tradeRows = h('div'); const addRow = (tradeId = '', amount = '', hint = '') => {
     const sel = h('select', { class: tradeId || !hint ? '' : 'needs' }, h('option', { value: '' }, 'Trade…'), state.trades.filter((t) => !t.archived).map((t) => h('option', { value: t.id }, t.name)));
@@ -322,12 +322,12 @@ function tradeOverview(p, canEdit, reload) {
   const avail = state.trades.filter((t) => !t.archived && !used.has(t.id));
   const sel = h('select', {}, h('option', { value: '' }, 'Add trade…'), avail.map((t) => h('option', { value: t.id }, t.name))); const amt = h('input', { type: 'number', min: '0', step: '0.01', placeholder: 'Contract amount' });
   return h('div', { class: 'card' }, h('h2', {}, 'Trade performance'), err,
-    h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, th('Trade'), th('Original Contract', 1), th('Approved COs', 1, 'lo'), th('Contract Total', 1), th('Billed', 1, 'lo3'), th('Retainage', 1, 'lo2'), th('Received', 1, 'lo3'), th('Owed To Us Now', 1), th('Actual Cost', 1, 'lo3'), th('Projected Profit', 1), th('Profit %', 1), canEdit && th(''))),
+    h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, th('Trade'), th('Original Contract', 1), th('Approved COs', 1, 'lo'), th('Contract Total', 1), th('Work Billed', 1, 'lo3'), th('Retainage Held', 1, 'lo2'), th('Received', 1, 'lo3'), th('Owed To Us Now', 1), th('Actual Cost', 1, 'lo3'), th('Projected Profit', 1), th('Profit %', 1), canEdit && th(''))),
       h('tbody', {}, p.trades.map((t) => h('tr', {}, h('td', {}, t.name), h('td', { class: 'n' }, editAmount(t)), h('td', { class: 'n lo' }, usd(t.approvedCOs)), h('td', { class: 'n' }, usd(t.contract)), h('td', { class: 'n lo3' }, usd(t.billed)), h('td', { class: 'n lo2' }, usd(t.retainageOutstanding)), h('td', { class: 'n lo3' }, usd(t.received)), h('td', { class: 'n' }, usd(t.currentlyDue)), h('td', { class: 'n lo3' }, usd(t.actualCost)), h('td', { class: 'n ' + cls(t.projectedProfit) }, usd(t.projectedProfit)), h('td', { class: 'n ' + cls(t.projectedProfit) }, t.marginPct == null ? '—' : `${t.marginPct.toFixed(1)}%`),
         canEdit && h('td', {}, h('button', { class: 'small danger', onclick: guard(err, async () => { if (confirm(`Remove ${t.name} from this project?`)) { await api('DELETE', `/projects/${p.project.id}/trades/${t.id}`); reload(); } }) }, 'Remove'))))),
       h('tfoot', {}, h('tr', { class: 'total' }, h('td', {}, 'Project'), h('td', { class: 'n' }, usd(sum('original'))), h('td', { class: 'n lo' }, usd(sum('approvedCOs'))), h('td', { class: 'n' }, usd(p.totals.contract)), h('td', { class: 'n lo3' }, usd(p.totals.billed)), h('td', { class: 'n lo2' }, usd(p.totals.retainageOutstanding)), h('td', { class: 'n lo3' }, usd(p.totals.received)), h('td', { class: 'n' }, usd(p.totals.currentlyDue)), h('td', { class: 'n lo3' }, usd(p.totals.actualCost)), h('td', { class: 'n ' + cls(p.totals.projectedProfit) }, usd(p.totals.projectedProfit)), h('td', { class: 'n ' + cls(p.totals.projectedProfit) }, p.totals.marginPct == null ? '—' : `${p.totals.marginPct.toFixed(1)}%`), canEdit && h('td'))))),
     canEdit && avail.length ? h('div', { class: 'row', style: 'margin-top:1rem' }, sel, amt, h('button', { onclick: guard(err, async () => { await api('POST', `/projects/${p.project.id}/trades`, { tradeId: sel.value, amount: amt.value }); reload(); }) }, 'Add')) : '',
-    h('p', { class: 'muted', style: 'margin-top:.8rem' }, 'Projected profit = contract minus actual cost minus unbilled subcontract commitments. Only approved change orders change the contract.'));
+    h('p', { class: 'muted', style: 'margin-top:.8rem' }, 'Projected profit = contract minus actual cost minus unbilled subcontract commitments. Only approved change orders change the contract. Work Billed is the invoices plus the retainage the GC is holding back; Retainage Held is logged beside the invoices and never taken off them.'));
 }
 
 function changeOrders(p, reload) {
@@ -420,23 +420,23 @@ function billingMatrix(p, inv, canEdit, openInvoice) {
   const status = (i) => { const net = cents(i.amount) - cents(i.retainageHeld), paid = i.payments.filter((x) => x.kind === 'Payment').reduce((n, x) => n + cents(x.amount), 0); return { net, paid, st: net <= 0 || paid >= net ? 'Paid' : paid > 0 ? 'Partial' : i.dueDate && i.dueDate < today ? 'Overdue' : 'Unpaid' }; };
   const groups = new Map(); for (const i of inv) { const k = `${i.number}|${i.date}`; const g = groups.get(k) || { no: i.number, date: i.date, rows: [] }; g.rows.push(i); groups.set(k, g); }
   const cols = [...groups.values()].sort((a, b) => String(a.date).localeCompare(String(b.date)) || a.no.localeCompare(b.no, undefined, { numeric: true }));
-  for (const g of cols) { const sts = g.rows.map(status); g.owed = sts.reduce((n, x) => n + Math.max(0, x.net - x.paid), 0); g.total = g.rows.reduce((n, r) => n + cents(r.amount), 0); g.st = sts.every((x) => x.st === 'Paid') ? 'Paid' : sts.some((x) => x.st === 'Overdue') ? 'Overdue' : sts.some((x) => x.st === 'Partial' || x.st === 'Paid') ? 'Partial' : 'Unpaid'; }
+  for (const g of cols) { const sts = g.rows.map(status); g.owed = sts.reduce((n, x) => n + Math.max(0, x.net - x.paid), 0); g.total = g.rows.reduce((n, r) => n + cents(r.amount) - cents(r.retainageHeld), 0); g.ret = g.rows.every((r) => r.retainageInvoice); g.st = sts.every((x) => x.st === 'Paid') ? 'Paid' : sts.some((x) => x.st === 'Overdue') ? 'Overdue' : sts.some((x) => x.st === 'Partial' || x.st === 'Paid') ? 'Partial' : 'Unpaid'; }
   const mon = (d) => new Date(String(d).slice(0, 10) + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
   const tradeRow = (t) => { const tr = [h('td', { class: 'bm-name' }, t.name), h('td', { class: 'n' }, usd(t.original))];
     for (const c of coCols) { const v = c.byTrade.get(t.id); tr.push(h('td', { class: 'n' }, v ? money2(v) : '')); }
     tr.push(h('td', { class: 'n bm-tot' }, usd(t.contract)), h('td', { class: 'bm-gap' }));
     for (const g of cols) { const r = g.rows.find((x) => x.projectTradeId === t.id); if (!r) { tr.push(h('td', { class: 'n' })); continue; } const s2 = status(r);
-      tr.push(h('td', { class: `n bm-${s2.st.toLowerCase()}${canEdit ? ' bm-click' : ''}`, title: `${s2.st}: invoiced ${usd(r.amount)}, retainage held ${usd(r.retainageHeld)}, payments received ${money2(s2.paid)}${r.dueDate ? ', due ' + r.dueDate : ''}`, onclick: canEdit ? () => openInvoice(r) : null }, usd(r.amount))); }
-    tr.push(h('td', { class: 'bm-gap' }), h('td', { class: 'n bm-tot' }, usd(t.billed)), h('td', { class: 'n lo2' }, usd(t.retainageOutstanding)), h('td', { class: 'n lo2' }, usd(t.received)), h('td', { class: 'n lo3' }, usd(t.unbilled)), h('td', { class: 'n bm-owed' }, usd(t.currentlyDue)));
+      tr.push(h('td', { class: `n bm-${s2.st.toLowerCase()}${canEdit ? ' bm-click' : ''}`, title: `${s2.st}: ${r.retainageInvoice ? 'retainage invoice' : 'invoice'} ${money2(s2.net)}${r.retainageInvoice ? '' : `, retainage held back and logged ${usd(r.retainageHeld)} (not taken off the invoice)`}, payments received ${money2(s2.paid)}${r.dueDate ? ', due ' + r.dueDate : ''}`, onclick: canEdit ? () => openInvoice(r) : null }, money2(s2.net))); }
+    tr.push(h('td', { class: 'bm-gap' }), h('td', { class: 'n bm-tot' }, usd(t.invoiced)), h('td', { class: 'n lo2' }, usd(t.retainageOutstanding)), h('td', { class: 'n lo2' }, usd(t.received)), h('td', { class: 'n lo3' }, usd(t.unbilled)), h('td', { class: 'n bm-owed' }, usd(t.currentlyDue)));
     return h('tr', {}, tr); };
   const T = p.totals, coSum = (c) => [...c.byTrade.values()].reduce((n, v) => n + v, 0);
   const totalRow = h('tr', { class: 'total' }, h('td', { class: 'bm-name' }, 'Project'), h('td', { class: 'n' }, usd(p.trades.reduce((n, t) => n + t.original, 0))), ...coCols.map((c) => h('td', { class: 'n' }, money2(coSum(c)))), h('td', { class: 'n bm-tot' }, usd(T.contract)), h('td', { class: 'bm-gap' }),
-    ...cols.map((g) => h('td', { class: 'n' }, money2(g.total))), h('td', { class: 'bm-gap' }), h('td', { class: 'n bm-tot' }, usd(T.billed)), h('td', { class: 'n lo2' }, usd(T.retainageOutstanding)), h('td', { class: 'n lo2' }, usd(T.received)), h('td', { class: 'n lo3' }, usd(T.unbilled)), h('td', { class: 'n bm-owed' }, usd(T.currentlyDue)));
+    ...cols.map((g) => h('td', { class: 'n' }, money2(g.total))), h('td', { class: 'bm-gap' }), h('td', { class: 'n bm-tot' }, usd(T.invoiced)), h('td', { class: 'n lo2' }, usd(T.retainageOutstanding)), h('td', { class: 'n lo2' }, usd(T.received)), h('td', { class: 'n lo3' }, usd(T.unbilled)), h('td', { class: 'n bm-owed' }, usd(T.currentlyDue)));
   const statusRow = h('tr', { class: 'bm-status' }, h('td', { class: 'bm-name' }, 'Paid?'), h('td'), ...coCols.map(() => h('td')), h('td'), h('td', { class: 'bm-gap' }), ...cols.map((g) => h('td', { class: 'n' }, h('span', { class: `bm-pill bm-${g.st.toLowerCase()}` }, g.st === 'Paid' ? 'Paid' : g.st === 'Partial' ? `Owed ${money2(g.owed)}` : g.st === 'Overdue' ? `Overdue ${money2(g.owed)}` : `Unpaid ${money2(g.owed)}`))), h('td', { class: 'bm-gap' }), h('td'), h('td', { class: 'lo2' }), h('td', { class: 'lo2' }), h('td', { class: 'lo3' }), h('td', { class: 'n bm-owed' }, usd(T.currentlyDue)));
   const head = h('thead', {}, h('tr', {}, h('th', { class: 'bm-name' }, 'Trade'), h('th', { class: 'n' }, 'Original Contract'), ...coCols.map((c) => h('th', { class: 'n', title: `${c.desc || ''}${c.date ? ' · approved ' + c.date : ''}` }, c.no)), h('th', { class: 'n' }, 'Contract Total'), h('th', { class: 'bm-gap' }),
-    ...cols.map((g) => h('th', { class: 'n' }, h('div', {}, g.date ? mon(g.date) : ''), h('div', { class: 'bm-inv' }, '#' + g.no))), h('th', { class: 'bm-gap' }), h('th', { class: 'n' }, 'Billed To Date'), h('th', { class: 'n lo2' }, 'Retainage Held'), h('th', { class: 'n lo2' }, 'Received'), h('th', { class: 'n lo3' }, 'Left To Invoice'), h('th', { class: 'n' }, 'Owed To Us Now')));
+    ...cols.map((g) => h('th', { class: 'n' }, h('div', {}, g.date ? mon(g.date) : ''), h('div', { class: 'bm-inv' }, '#' + g.no), g.ret ? h('div', { class: 'bm-inv' }, 'Retainage') : '')), h('th', { class: 'bm-gap' }), h('th', { class: 'n' }, 'Invoiced To Date'), h('th', { class: 'n lo2' }, 'Retainage Held'), h('th', { class: 'n lo2' }, 'Received'), h('th', { class: 'n lo3' }, 'Left To Invoice'), h('th', { class: 'n' }, 'Owed To Us Now')));
   const legend = h('div', { class: 'row', style: 'gap:.9rem;flex-wrap:wrap;font-size:13px;margin:.2rem 0 .6rem' }, [['paid', 'Paid'], ['partial', 'Partly Paid'], ['unpaid', 'Unpaid, Not Due Yet'], ['overdue', 'Unpaid, Past Due']].map(([k, l]) => h('span', {}, h('span', { class: `bm-swatch bm-${k}` }), ' ' + l)));
-  return h('div', { class: 'card' }, h('h2', {}, 'Billing Matrix'), h('p', { class: 'muted', style: 'margin:0 0 .3rem;font-size:13px' }, `Each trade's contract with approved change orders, then every invoice and what was billed to each trade.${canEdit ? ' Click an amount to open that invoice.' : ''} "Owed To Us Now" is billed, minus retainage held, minus payments received.`), legend,
+  return h('div', { class: 'card' }, h('h2', {}, 'Billing Matrix'), h('p', { class: 'muted', style: 'margin:0 0 .3rem;font-size:13px' }, `Each trade's contract with approved change orders, then every invoice as it was sent and what it billed to each trade.${canEdit ? ' Click an amount to open that invoice.' : ''} "Owed To Us Now" is what was invoiced minus payments received. Retainage Held is what the GC is holding back: it is logged beside the invoices, never taken off them, and is billed on the retainage invoice at the end. Invoiced + Retainage Held + Left To Invoice = the contract.`), legend,
     p.trades.length ? h('div', { class: 'scroll bm-wrap' }, h('table', { class: 'bm' }, head, h('tbody', {}, p.trades.map(tradeRow)), h('tfoot', {}, totalRow, statusRow))) : h('p', { class: 'muted' }, 'No trades on this project yet.'));
 }
 async function billingTab(p, canEdit, reload) {
@@ -445,7 +445,7 @@ async function billingTab(p, canEdit, reload) {
   const slices = [{ label: 'Received', value: T.received, color: '#15803d' }, { label: 'Owed to us now', value: T.currentlyDue, color: '#b45309' }, { label: 'Retainage held', value: T.retainageOutstanding, color: '#6366f1' }, { label: 'Unbilled', value: Math.max(0, T.unbilled), color: '#cbd5e1' }];
   const th = (t, n) => h('th', { class: n ? 'n' : '' }, t);
   const sov = h('div', { class: 'card' }, h('h2', {}, 'Schedule of values'), h('div', { class: 'scroll' }, h('table', {},
-    h('thead', {}, h('tr', {}, th('Trade'), th('Contract (orig + COs)', 1), th('Billed to date', 1), th('% billed', 1), th('Retainage held', 1), th('Received', 1), th('Owed To Us Now', 1), th('Balance to finish', 1))),
+    h('thead', {}, h('tr', {}, th('Trade'), th('Contract (orig + COs)', 1), th('Work billed (invoices + retainage)', 1), th('% billed', 1), th('Retainage held', 1), th('Received', 1), th('Owed To Us Now', 1), th('Balance to finish', 1))),
     h('tbody', {}, p.trades.map((t) => h('tr', {}, h('td', {}, t.name), h('td', { class: 'n' }, usd(t.contract)), h('td', { class: 'n' }, usd(t.billed)), h('td', { class: 'n' }, t.contract > 0 ? pct((t.billed / t.contract) * 100) : '—'), h('td', { class: 'n' }, usd(t.retainageOutstanding)), h('td', { class: 'n' }, usd(t.received)), h('td', { class: 'n' }, usd(t.currentlyDue)), h('td', { class: 'n' }, usd(t.unbilled))))),
     h('tfoot', {}, h('tr', { class: 'total' }, h('td', {}, 'Project'), h('td', { class: 'n' }, usd(T.contract)), h('td', { class: 'n' }, usd(T.billed)), h('td', { class: 'n' }, T.contract > 0 ? pct((T.billed / T.contract) * 100) : '—'), h('td', { class: 'n' }, usd(T.retainageOutstanding)), h('td', { class: 'n' }, usd(T.received)), h('td', { class: 'n' }, usd(T.currentlyDue)), h('td', { class: 'n' }, usd(T.unbilled)))))),
     h('div', { class: 'row', style: 'gap:2rem;margin-top:1.2rem;align-items:center' }, pie(slices), h('div', { style: 'min-width:260px' }, h('h2', {}, 'Where the contract stands'), legend(slices))));
@@ -461,29 +461,63 @@ async function billingTab(p, canEdit, reload) {
           if (!full) throw new Error('That invoice is no longer waiting. It may have been imported or ignored from the QuickBooks page.');
           await qboReview({ ...full, projectId: p.project.id });
         }) }, 'Review And Import')))))))) : '';
+  const pctNow = Number(p.project.retainagePct) || 0, retOf = (v) => (pctNow > 0 && Number(v) > 0 ? Math.round(Number(v) * 100 * pctNow / (100 - pctNow)) / 100 : 0);
+  const retHint = () => h('div', { class: 'muted wide', style: 'font-size:13px' }, pctNow > 0 ? `The invoice amount is what will be paid. Retainage is what the GC is holding back on top of it (${pctNow}% of the work, filled in for you). It is logged and never taken off the invoice.` : 'The invoice amount is what will be paid. This project is set to no retainage; type an amount only if the GC is holding some back on this invoice. It is logged and never taken off the invoice.');
   const newInvoice = () => {
     const f = { trade: tradeSelect(p), number: h('input'), date: h('input', { type: 'date', value: todayStr() }), due: h('input', { type: 'date' }), amount: num(), ret: num('', { placeholder: 'Blank = none' }) };
-    formModal('New invoice', [field('Trade', f.trade), field('Invoice #', f.number), field('Invoice date', f.date), field('Due date', f.due), field('Invoice amount', f.amount), field('Retainage withheld by GC', f.ret)],
-      async () => { await api('POST', `${base}/invoices`, { projectTradeId: f.trade.value, number: f.number.value, date: f.date.value, dueDate: f.due.value || null, amount: f.amount.value, retainageHeld: f.ret.value }); reload(); }, 'Add invoice');
+    let touched = false; f.ret.oninput = () => { touched = true; }; f.amount.oninput = () => { if (!touched) f.ret.value = retOf(f.amount.value) ? retOf(f.amount.value).toFixed(2) : ''; };
+    formModal('New invoice', [field('Trade', f.trade), field('Invoice #', f.number), field('Invoice date', f.date), field('Due date', f.due), field('Invoice amount (what will be paid)', f.amount), field('Retainage held by GC (logged, not deducted)', f.ret), retHint()],
+      async () => { await api('POST', `${base}/invoices`, { projectTradeId: f.trade.value, number: f.number.value, date: f.date.value, dueDate: f.due.value || null, payable: f.amount.value, retainageHeld: f.ret.value }); reload(); }, 'Add invoice');
+  };
+  // the invoice sent at the end for the retainage held back along the way: one invoice for the whole project
+  const newRetainageInvoice = () => {
+    const f = { number: h('input'), date: h('input', { type: 'date', value: todayStr() }), due: h('input', { type: 'date' }), amount: num(T.retainageOutstanding > 0 ? T.retainageOutstanding.toFixed(2) : '') };
+    formModal('New retainage invoice', [h('p', { class: 'muted wide' }, `This is the invoice for retainage the GC held back earlier. It is not new work: it uses up the retainage logged on this project (${usd(T.retainageOutstanding)} held now) and is owed until it is paid. It is shared across the trades by the retainage each one has held.`),
+      field('Invoice #', f.number), field('Invoice date', f.date), field('Due date', f.due), field('Invoice amount', f.amount)],
+      async () => { await api('POST', `${base}/invoices`, { retainageInvoice: true, number: f.number.value, date: f.date.value, dueDate: f.due.value || null, payable: f.amount.value }); reload(); }, 'Add retainage invoice');
   };
   const editInvoice = (i) => {
-    const f = { number: h('input', { value: i.number }), date: h('input', { type: 'date', value: i.date }), due: h('input', { type: 'date', value: i.dueDate || '' }), amount: num(i.amount), ret: num(i.retainageHeld) };
-    formModal(`Edit ${i.number}`, [field('Invoice #', f.number), field('Invoice date', f.date), field('Due date', f.due), field('Invoice amount', f.amount), field('Retainage withheld by GC', f.ret)],
-      async () => { await api('PUT', `${base}/invoices/${i.id}`, { number: f.number.value, date: f.date.value, dueDate: f.due.value || null, amount: f.amount.value, retainageHeld: f.ret.value }); reload(); });
+    const f = { number: h('input', { value: i.number }), date: h('input', { type: 'date', value: i.date }), due: h('input', { type: 'date', value: i.dueDate || '' }), amount: num(i.payable), ret: num(i.retainageHeld || '') };
+    formModal(`Edit ${i.number}`, [field('Invoice #', f.number), field('Invoice date', f.date), field('Due date', f.due), field(i.retainageInvoice ? 'Invoice amount' : 'Invoice amount (what will be paid)', f.amount),
+      ...(i.retainageInvoice ? [h('p', { class: 'muted wide' }, `This is a retainage invoice (${i.trade} share). It bills retainage held back earlier and is not new work.`)] : [field('Retainage held by GC (logged, not deducted)', f.ret), retHint()])],
+      async () => { await api('PUT', `${base}/invoices/${i.id}`, { number: f.number.value, date: f.date.value, dueDate: f.due.value || null, payable: f.amount.value, ...(i.retainageInvoice ? {} : { retainageHeld: f.ret.value }) }); reload(); });
   };
+  // ---- retainage: the project's percent, what is held, and bringing older invoices in line
+  let retCheck = null; if (canEdit) { try { retCheck = await api('GET', `${base}/retainage-check`); } catch { /* shown without the check */ } }
+  const retErr = h('div');
+  const reviewRetainage = () => {
+    const c = retCheck, merr = h('div');
+    const bg = modal('Update Retainage On These Invoices', h('div', {},
+      h('p', {}, `This project is set to ${c.pct}% retainage. ${c.pct > 0 ? `Each invoice is what will be paid, and the GC holds back ${c.pct}% of the work on top of it.` : 'No retainage is logged.'} These invoices do not match that yet. Nothing changes until you press Apply.`),
+      h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Invoice'), h('th', {}, 'Trade'), h('th', {}, 'Date'), h('th', { class: 'n' }, 'Owed On It Now'), h('th', { class: 'n' }, 'Retainage Logged Now'), h('th', { class: 'n' }, 'Will Be Owed'), h('th', { class: 'n' }, 'Retainage Will Be'), h('th', {}, 'Why'))),
+        h('tbody', {}, c.rows.map((r) => h('tr', {}, h('td', {}, r.number), h('td', {}, r.trade || ''), h('td', {}, r.date || ''), h('td', { class: 'n' }, usd(r.owedNow)), h('td', { class: 'n' }, usd(r.loggedNow)), h('td', { class: 'n' }, h('strong', {}, usd(r.owedAfter))), h('td', { class: 'n' }, h('strong', {}, usd(r.loggedAfter))), h('td', { style: 'white-space:normal;font-size:13px' }, r.note || (r.loggedAfter > r.loggedNow ? 'Retainage was not logged yet.' : 'Follows the project percent.'))))),
+        h('tfoot', {}, h('tr', { class: 'total' }, h('td', { colspan: 3 }, 'Total'), h('td', { class: 'n' }, usd(c.totals.owedNow)), h('td', { class: 'n' }, usd(c.totals.loggedNow)), h('td', { class: 'n' }, usd(c.totals.owedAfter)), h('td', { class: 'n' }, usd(c.totals.loggedAfter)), h('td'))))),
+      c.unclear.length ? h('div', { style: 'margin-top:.6rem' }, h('label', {}, 'Left as they are (check by hand)'), c.unclear.map((u) => h('div', { class: 'muted', style: 'font-size:13px' }, `${u.number}${u.trade ? ' · ' + u.trade : ''}: ${u.note}`))) : '',
+      merr, h('div', { class: 'row', style: 'margin-top:1rem;justify-content:flex-end;gap:.5rem' }, h('button', { type: 'button', onclick: () => bg.remove() }, 'Cancel'),
+        h('button', { type: 'button', class: 'primary', onclick: guard(merr, async () => { await api('POST', `${base}/retainage-apply`, {}); bg.remove(); reload(); }) }, `Apply To ${c.rows.length} Invoice${c.rows.length === 1 ? '' : 's'}`))), { mode: 'edit' });
+  };
+  const changePct = guard(retErr, async () => {
+    const v = prompt('GC retainage % for this project (0 if the GC holds none). It applies to every trade.', String(pctNow)); if (v === null) return;
+    await api('PUT', `/projects/${p.project.id}`, { retainagePct: v }); reload();
+  });
+  const retCard = h('div', { class: 'card', style: 'padding:.8rem 1rem' }, h('div', { class: 'row spread', style: 'flex-wrap:wrap;gap:.5rem' },
+    h('div', {}, h('strong', {}, `GC retainage: ${pctNow}%`), h('span', { class: 'muted' }, pctNow > 0 ? `  Every invoice is what will be paid. The retainage is logged beside it and billed on the retainage invoice at the end.` : '  No retainage is logged on this project.'),
+      h('div', { style: 'margin-top:.25rem' }, `Held by the GC now: `, h('strong', {}, usd(T.retainageOutstanding)), T.retainageInvoiced ? ` · already on a retainage invoice: ${usd(T.retainageInvoiced)}` : '')),
+    canEdit ? h('div', { class: 'row', style: 'gap:.4rem' }, h('button', { class: 'small', onclick: changePct }, 'Change %'), h('button', { class: 'small', onclick: newRetainageInvoice }, '+ Retainage Invoice')) : ''), retErr,
+    retCheck && retCheck.rows.length ? h('div', { class: 'row spread', style: 'margin-top:.6rem;padding:.5rem .7rem;border:1px solid var(--navy);border-radius:8px;flex-wrap:wrap;gap:.5rem' }, h('span', {}, h('strong', {}, `${retCheck.rows.length} invoice${retCheck.rows.length === 1 ? ' does' : 's do'} not match the ${retCheck.pct}% yet.`), ' See what would change before anything is changed.'), h('button', { class: 'small primary', onclick: reviewRetainage }, 'Review And Update')) : '');
   const addPayment = (i, kind) => {
     const f = { date: h('input', { type: 'date', value: todayStr() }), amount: num() };
-    formModal(kind === 'Payment' ? `Payment received · ${i.number}` : `Retainage released · ${i.number}`, [field('Date', f.date), field(kind === 'Payment' ? 'Amount received' : 'Amount released', f.amount)],
+    formModal(kind === 'Payment' ? `Payment received · ${i.number}` : `Retainage received · ${i.number}`, [field('Date', f.date), field('Amount received', f.amount)],
       async () => { await api('POST', `${base}/invoices/${i.id}/payments`, { date: f.date.value, amount: f.amount.value, kind }); reload(); }, 'Record');
   };
   const list = h('div', { class: 'card' }, h('div', { class: 'row spread' }, h('h2', {}, 'Invoices to the GC'), canEdit && h('button', { class: 'primary', onclick: newInvoice }, '+ New invoice')), err,
-    inv.length ? h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, ['Invoice', 'Trade', 'Date', 'Due', 'Status'].map((t) => h('th', {}, t)), th('Amount', 1), th('Retainage', 1), th('Collected', 1), th('Outstanding', 1), canEdit && th(''))),
-      h('tbody', {}, inv.map((i) => [h('tr', {}, h('td', {}, i.number), h('td', {}, i.trade), h('td', {}, i.date), h('td', {}, i.dueDate || '—'), h('td', {}, h('span', { class: 'pill' }, i.aging)), h('td', { class: 'n' }, usd(i.amount)), h('td', { class: 'n' }, usd(i.retainageOutstanding)), h('td', { class: 'n' }, usd(i.collected)), h('td', { class: 'n' }, usd(i.outstanding)),
-        canEdit && h('td', {}, h('button', { class: 'small', onclick: () => addPayment(i, 'Payment') }, '+ Payment'), ' ', i.retainageOutstanding > 0 && h('button', { class: 'small', onclick: () => addPayment(i, 'Retainage Release') }, 'Release retainage'), ' ', h('button', { class: 'small', onclick: () => editInvoice(i) }, 'Edit'), ' ',
+    inv.length ? h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, ['Invoice', 'Trade', 'Date', 'Due', 'Status'].map((t) => h('th', {}, t)), th('Invoice Amount', 1), th('Retainage Held (Logged)', 1), th('Collected', 1), th('Still Owed', 1), canEdit && th(''))),
+      h('tbody', {}, inv.map((i) => [h('tr', {}, h('td', {}, i.number, i.retainageInvoice ? h('div', {}, h('span', { class: 'pill' }, 'Retainage Invoice')) : ''), h('td', {}, i.trade), h('td', {}, i.date), h('td', {}, i.dueDate || '—'), h('td', {}, h('span', { class: 'pill' }, i.aging)), h('td', { class: 'n' }, usd(i.payable)), h('td', { class: 'n' }, i.retainageInvoice ? '—' : usd(i.retainageHeld)), h('td', { class: 'n' }, usd(i.collected)), h('td', { class: 'n' }, usd(i.owed)),
+        canEdit && h('td', {}, h('button', { class: 'small', onclick: () => addPayment(i, 'Payment') }, '+ Payment'), ' ', !i.retainageInvoice && i.retainageOutstanding > 0 && h('button', { class: 'small', title: 'Only when the GC paid this retainage without a separate retainage invoice.', onclick: () => addPayment(i, 'Retainage Release') }, 'Retainage Received'), ' ', h('button', { class: 'small', onclick: () => editInvoice(i) }, 'Edit'), ' ',
           h('button', { class: 'small danger', onclick: guard(err, async () => { if (confirm(`Delete invoice ${i.number} and its payments?`)) { await api('DELETE', `${base}/invoices/${i.id}`); reload(); } }) }, 'Delete'))),
-        ...i.payments.map((pm) => h('tr', { class: 'muted' }, h('td', { colspan: 2, style: 'padding-left:1.5rem' }, pm.kind === 'Payment' ? '↳ Payment' : '↳ Retainage released'), h('td', {}, pm.date), h('td', { colspan: 5 }), h('td', { class: 'n' }, usd(pm.amount)),
+        ...i.payments.map((pm) => h('tr', { class: 'muted' }, h('td', { colspan: 2, style: 'padding-left:1.5rem' }, pm.kind === 'Payment' ? '↳ Payment' : '↳ Retainage received'), h('td', {}, pm.date), h('td', { colspan: 5 }), h('td', { class: 'n' }, usd(pm.amount)),
           canEdit && h('td', {}, h('button', { class: 'small danger', onclick: guard(err, async () => { await api('DELETE', `${base}/invoices/${i.id}/payments/${pm.id}`); reload(); }) }, 'Remove'))))])))) : h('p', { class: 'muted' }, 'No invoices yet.'));
-  return h('div', {}, qbCard, billingMatrix(p, inv, canEdit, editInvoice), sov, list);
+  return h('div', {}, qbCard, retCard, billingMatrix(p, inv, canEdit, editInvoice), sov, list);
 }
 
 // ------------------------------------------------------------------ costs & payables
@@ -928,10 +962,17 @@ const spreadCents = (amount, weights) => { const total = weights.reduce((a, b) =
 async function qboReview(inv) {
   const projects = await api('GET', '/projects'); const err = h('div'), body = h('div');
   const proj = h('select', {}, h('option', { value: '' }, 'Choose the project…'), projects.map((p) => h('option', { value: p.id }, `${p.name} (${p.gc})`))); proj.value = inv.projectId || inv.suggestedProjectId || '';
-  const ret = num(''); let info = null, ui = [];
+  const ret = num(''), retBox = h('div'), retInv = h('input', { type: 'checkbox' }); let info = null, ui = [], retTouched = false, first = true; ret.oninput = () => { retTouched = true; };
   const draw = async () => {
     ui = []; if (!proj.value) { body.replaceChildren(h('p', { class: 'muted' }, 'Choose the project to match the lines to its trades.')); return; }
     const r = await api('GET', `/quickbooks/invoices/${inv.id}/prepare?projectId=${proj.value}`); info = r.project;
+    // retainage: the invoice's own line if it has one; otherwise what the project's percent says is held back on top of the invoice
+    if (first) { retInv.checked = !!r.retainageInvoice; first = false; }
+    if (!retTouched) ret.value = r.suggestedRetainage ? r.suggestedRetainage.toFixed(2) : '';
+    const drawRet = () => retBox.replaceChildren(retInv.checked ? h('p', { class: 'muted' }, 'This is the invoice for retainage held back earlier. It is not new work: it uses up the retainage logged on the project and is shared across the trades that had retainage held. No trades to choose.')
+      : r.hasRetainageLine ? h('p', { class: 'muted' }, 'This invoice shows its own retainage line, so that is what is logged.')
+      : h('div', {}, h('label', {}, 'Retainage held by GC (logged, not taken off the invoice)'), ret, h('div', { class: 'muted', style: 'font-size:13px' }, info.retainagePct > 0 ? `Filled in from the project's ${info.retainagePct}%: the invoice is what will be paid, and this is what the GC holds back on top of it. Clear it for none.` : 'This project is set to no retainage. Type an amount only if the GC is holding some back on this invoice.')));
+    retInv.onchange = () => { drawRet(); tableBox.style.display = retInv.checked ? 'none' : ''; }; drawRet();
     const weights = info.trades.map((t) => t.contract);
     const rowsEl = inv.lines.map((l, i) => {
       if (l.retainage) return h('tr', {}, h('td', {}, l.description || l.itemName), h('td', { class: 'n' }, usd(l.amount)), h('td', { class: 'muted' }, 'Retainage held back'));
@@ -944,15 +985,17 @@ async function qboReview(inv) {
       ui[i] = { sel, inputs };
       return h('tr', {}, h('td', {}, l.description || l.itemName || 'Line ' + (i + 1)), h('td', { class: 'n' }, usd(l.amount)), h('td', {}, sel, box));
     });
-    body.replaceChildren(h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'On the QuickBooks invoice'), h('th', { class: 'n' }, 'Amount'), h('th', {}, 'Goes to'))), h('tbody', {}, rowsEl))),
-      h('p', { class: 'muted', style: 'font-size:13px' }, info.trades.length ? `A line can go to one trade, to the entire project (shared across the trades by contract amount), or be split by hand. Retainage: leave the box blank for none (or the invoice's own retainage line, if it has one). Type an amount to hold some back.` : 'This project has no trades yet. Add them (or apply the contract) first.'));
+    tableBox.replaceChildren(h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'On the QuickBooks invoice'), h('th', { class: 'n' }, 'Amount'), h('th', {}, 'Goes to'))), h('tbody', {}, rowsEl))),
+      h('p', { class: 'muted', style: 'font-size:13px' }, info.trades.length ? 'A line can go to one trade, to the entire project (shared across the trades by contract amount), or be split by hand.' : 'This project has no trades yet. Add them (or apply the contract) first.'));
+    tableBox.style.display = retInv.checked ? 'none' : '';
+    body.replaceChildren(h('label', { style: 'text-transform:none;letter-spacing:0;font-size:15px;font-weight:400;display:block;margin:.2rem 0 .5rem' }, retInv, ' This is the retainage invoice (it bills retainage held back earlier)'), tableBox, retBox);
   };
-  proj.onchange = guard(err, draw); draw().catch((e) => notice(err, e.message));
+  const tableBox = h('div'); proj.onchange = guard(err, draw); draw().catch((e) => notice(err, e.message));
   const pays = inv.payments.length ? h('p', { class: 'muted wide' }, `Payments already received in QuickBooks: ${inv.payments.map((p) => `${usd(p.amount)} on ${p.date}`).join(', ')}. They are added with the invoice.`) : '';
-  formModal(`QuickBooks invoice ${inv.number || inv.qbId} · ${usd(inv.total)} · ${inv.date || ''}`, [h('p', { class: 'muted wide' }, `Customer in QuickBooks: ${inv.customer || '—'}${inv.suggestedBy ? ' · suggested from ' + inv.suggestedBy : ''}`), field('Project', proj, 'wide'), h('div', { class: 'wide' }, body), field('Retainage held (optional)', ret), pays, err],
+  formModal(`QuickBooks invoice ${inv.number || inv.qbId} · ${usd(inv.total)} · ${inv.date || ''}`, [h('p', { class: 'muted wide' }, `Customer in QuickBooks: ${inv.customer || '—'}${inv.suggestedBy ? ' · suggested from ' + inv.suggestedBy : ''}`), field('Project', proj, 'wide'), h('div', { class: 'wide' }, body), pays, err],
     async () => {
       const lines = ui.map((u, i) => { if (!u) return null; const v = u.sel.value; if (!v) return null; if (v === '__spread') return { index: i, spread: true }; if (v === '__split') return { index: i, split: u.inputs.filter((x) => Number(x.el.value)).map((x) => ({ projectTradeId: x.t.id, amount: x.el.value })) }; return { index: i, projectTradeId: v }; }).filter(Boolean);
-      await api('POST', `/quickbooks/invoices/${inv.id}/import`, { projectId: proj.value, lines, retainageHeld: ret.value }); render();
+      await api('POST', `/quickbooks/invoices/${inv.id}/import`, { projectId: proj.value, lines, retainageHeld: ret.value, retainageInvoice: retInv.checked }); render();
     }, 'Import');
 }
 // The invoice-matching page: for anyone given that area, without going through Admin.

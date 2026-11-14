@@ -11,7 +11,10 @@ export type ClientInvoice = {
   payments: number; // regular payments received
   retainageReleased: number; // retainage released and collected
   dueDate?: string | null;
+  retainageInvoice?: boolean; // this invoice bills retainage held back earlier: it is not new work
 };
+// Retainage the GC holds back on an invoice that is already net of it: a 45,000 invoice at 10% is 50,000 of work with 5,000 held back.
+export const retainageOn = (payable: number, pct: number): number => (pct > 0 && pct < 100 ? toDollars(Math.round(toCents(payable) * pct / (100 - pct))) : 0);
 export type SubCommitment = {
   contract: number;
   invoiced: number;
@@ -43,14 +46,21 @@ export function tradeStats(t: TradeInput) {
   const contract = toCents(t.original) + approved; // Original Contract + COs
 
   // Customer side
-  const billed = sum(t.invoices, i => i.amount);
-  const retHeld = sum(t.invoices, i => i.retainageHeld);
-  const retReleased = sum(t.invoices, i => i.retainageReleased);
-  const payments = sum(t.invoices, i => i.payments);
-  const received = payments + retReleased;
-  const retainageOutstanding = retHeld - retReleased;
+  // An invoice row holds the work billed (amount) and the part of it the GC keeps back (retainageHeld); what the invoice asks for, and what is
+  // paid, is the difference. A retainage invoice bills what was kept back: it uses up the retainage logged and is not new work. If more
+  // retainage is invoiced than was ever logged, the extra counts as work billed, so the totals still add up to the contract.
+  const prog = t.invoices.filter(i => !i.retainageInvoice), rinv = t.invoices.filter(i => i.retainageInvoice);
+  const retHeld = sum(prog, i => i.retainageHeld);
+  const retReleased = sum(prog, i => i.retainageReleased);
+  const retInvoicedAll = sum(rinv, i => i.amount);
+  const retInvoiced = Math.min(retInvoicedAll, Math.max(0, retHeld - retReleased));
+  const billed = sum(prog, i => i.amount) + (retInvoicedAll - retInvoiced);
+  const payments = sum(prog, i => i.payments), retPayments = sum(rinv, i => i.payments);
+  const received = payments + retReleased + retPayments;
+  const retainageOutstanding = retHeld - retReleased - retInvoiced; // held back by the GC and not invoiced or collected yet
   const totalOwed = billed - received; // includes retained amounts
-  const currentlyDue = Math.max(0, billed - retHeld - payments); // collectable now
+  const currentlyDue = Math.max(0, sum(prog, i => i.amount) - retHeld - payments) + Math.max(0, retInvoicedAll - retPayments); // collectable now
+  const invoiced = sum(prog, i => i.amount) - retHeld + retInvoicedAll; // what the invoices sent add up to
   const unbilled = contract - billed;
 
   // Vendor side
@@ -75,7 +85,7 @@ export function tradeStats(t: TradeInput) {
   return {
     original: t.original, approvedCOs: d(approved), pendingCOs: d(pending), rejectedCOs: d(rejected), contract: d(contract),
     billed: d(billed), received: d(received), retainageOutstanding: d(retainageOutstanding), totalOwed: d(totalOwed),
-    currentlyDue: d(currentlyDue), unbilled: d(unbilled),
+    currentlyDue: d(currentlyDue), unbilled: d(unbilled), invoiced: d(invoiced), retainageLogged: d(retHeld), retainageInvoiced: d(retInvoicedAll),
     subContract: d(subContract), subInvoiced: d(subInvoiced), subPaid: d(subPaid), subRemaining: d(subRemaining),
     subPayable: d(subPayable), subHeld: d(subHeld), subAvailableToPay: d(subPayable - subHeld),
     supplierCost: d(supplierCost), supplierPaid: d(supplierPaid), supplierPayable: d(supplierPayable),
@@ -94,7 +104,7 @@ export function projectStats(trades: TradeInput[], unallocated?: Partial<Pick<Tr
   const projectedProfit = toDollars(rows.reduce((n, r) => n + toCents(r.projectedProfit), 0) + toCents(u.projectedProfit));
   return {
     contract, billed: add('billed'), received: add('received'), retainageOutstanding: add('retainageOutstanding'),
-    totalOwed: add('totalOwed'), currentlyDue: add('currentlyDue'), unbilled: toDollars(rows.reduce((n, r) => n + toCents(r.unbilled), 0)),
+    totalOwed: add('totalOwed'), currentlyDue: add('currentlyDue'), invoiced: add('invoiced'), retainageLogged: add('retainageLogged'), retainageInvoiced: add('retainageInvoiced'), unbilled: toDollars(rows.reduce((n, r) => n + toCents(r.unbilled), 0)),
     subPayable: add('subPayable'), supplierPayable: add('supplierPayable'), subHeld: add('subHeld'), totalPayable: add('totalPayable'),
     actualCost: add('actualCost'), projectedCost: add('projectedCost'), laborCost: add('laborCost'), hours: add('hours'),
     subInvoiced: add('subInvoiced'), supplierCost: add('supplierCost'), subRemaining: add('subRemaining'), subContract: add('subContract'), subPaid: add('subPaid'), supplierPaid: add('supplierPaid'),
@@ -117,6 +127,7 @@ export function validateTrade(t: TradeInput): string[] {
   if (s.contract < 0) errs.push('Approved changes cannot make a trade contract negative.');
   if (s.billed > s.contract + 0.001) errs.push('Billed to date cannot exceed Original Contract + approved COs.');
   for (const i of t.invoices) {
+    if (i.retainageInvoice && i.retainageHeld > 0.001) errs.push('A retainage invoice cannot hold retainage back itself.');
     if (i.retainageHeld > i.amount + 0.001) errs.push('Retainage cannot exceed the invoice amount.');
     if (i.payments + i.retainageHeld > i.amount + 0.001) errs.push('Payments plus retainage cannot exceed the invoice amount.');
     if (i.retainageReleased > i.retainageHeld + 0.001) errs.push('Released retainage cannot exceed retainage held.');

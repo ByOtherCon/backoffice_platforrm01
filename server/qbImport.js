@@ -5,8 +5,9 @@ import { q, tx, lockProjects } from './db.js';
 import { bad, money, HttpError } from './http.js';
 import * as QB from './quickbooks.js';
 import { assertValid } from './projectApi.js';
-import { suggestProject, readLines, splitByTrade, spreadPayment, matchTrade } from '../src/lib/qbmatch.ts';
-import { toCents, toDollars } from '../src/lib/costing.ts';
+import { suggestProject, readLines, splitByTrade, spreadPayment, matchTrade, isRetainageBill } from '../src/lib/qbmatch.ts';
+import { retainageWeights } from './billingApi.js';
+import { toCents, toDollars, retainageOn } from '../src/lib/costing.ts';
 import { todayEastern } from '../src/lib/estimating.ts';
 
 const STATE = 'qbo_sync';
@@ -126,18 +127,20 @@ export async function list(status = 'New', search = '') {
 export async function projectInfo(projectId) {
   const [p] = await q('SELECT id, name, retainage_pct FROM projects WHERE id=$1', [projectId]); if (!p) throw new HttpError(404, 'Project not found.');
   const trades = await q(`SELECT pt.id, t.name, (pt.original_amount + COALESCE((SELECT SUM(amount) FROM change_orders WHERE project_trade_id=pt.id AND status='Approved'),0))::float8 AS contract,
-      GREATEST(0, pt.original_amount + COALESCE((SELECT SUM(amount) FROM change_orders WHERE project_trade_id=pt.id AND status='Approved'),0) - COALESCE((SELECT SUM(amount) FROM client_invoices WHERE project_trade_id=pt.id),0))::float8 AS room
+      GREATEST(0, pt.original_amount + COALESCE((SELECT SUM(amount) FROM change_orders WHERE project_trade_id=pt.id AND status='Approved'),0) - COALESCE((SELECT SUM(amount) FROM client_invoices WHERE project_trade_id=pt.id AND NOT is_retainage),0))::float8 AS room
     FROM project_trades pt JOIN trades t ON t.id=pt.trade_id WHERE pt.project_id=$1 ORDER BY t.sort, t.name`, [projectId]);
   return { id: p.id, name: p.name, retainagePct: Number(p.retainage_pct), trades };
 }
 // A first guess of the trade for each line, for the review screen.
 export async function guessTrades(invoiceId, projectId) {
-  const [inv] = await q('SELECT lines FROM qb_invoices WHERE id=$1', [invoiceId]); if (!inv) throw new HttpError(404, 'Invoice not found.');
+  const [inv] = await q('SELECT lines, total FROM qb_invoices WHERE id=$1', [invoiceId]); if (!inv) throw new HttpError(404, 'Invoice not found.');
   const info = await projectInfo(projectId);
   const trades = (await q('SELECT t.id, t.name FROM trades t JOIN project_trades pt ON pt.trade_id=t.id WHERE pt.project_id=$1', [projectId]));
   const byTradeId = new Map((await q('SELECT id, trade_id FROM project_trades WHERE project_id=$1', [projectId])).map((x) => [x.trade_id, x.id]));
   const guess = inv.lines.map((l) => { const t = l.retainage ? null : matchTrade(trades, l.itemName, l.description) ?? (info.trades.length === 1 ? trades[0]?.id : null); return t ? byTradeId.get(t) ?? null : null; });
-  return { project: info, guess };
+  // retainage: the invoice's own retainage line if it has one; otherwise what the project's percent says the GC is holding back on it
+  const hasRetainageLine = inv.lines.some((l) => l.retainage), retainageInvoice = isRetainageBill(inv.lines);
+  return { project: info, guess, hasRetainageLine, retainageInvoice, suggestedRetainage: hasRetainageLine || retainageInvoice ? 0 : retainageOn(Number(inv.total), info.retainagePct) };
 }
 
 export async function setProject(invoiceId, projectId) {
@@ -199,26 +202,39 @@ export async function importInvoice(invoiceId, b) {
       if (a.projectTradeId) { if (!ptIds.has(a.projectTradeId)) throw bad('A line is set to a trade that is not on that project.'); return a.projectTradeId; }
       return null;
     };
-    const heldIn = b.retainageHeld === undefined || b.retainageHeld === '' || b.retainageHeld === null ? null : money(b.retainageHeld, 'Retainage held');
-    const { splits, unassigned, badSplit } = splitByTrade(lines, assignOf, 0, heldIn, weights)   // no retainage unless the invoice has a retainage line or one is typed in;
-    if (badSplit.length) throw bad(`The amounts you split must add up to the line: ${badSplit.slice(0, 3).map((i) => lines[i].description || lines[i].itemName || 'line ' + (i + 1)).join('; ')}`);
-    if (unassigned.length) throw bad(`Choose a trade for: ${unassigned.slice(0, 3).map((i) => lines[i].description || lines[i].itemName || 'line ' + (i + 1)).join('; ')}${unassigned.length > 3 ? '…' : ''}`);
-    if (!splits.length) throw bad('There is nothing to bill on this invoice.');
-    // Say it plainly when a trade has no room left, with the numbers, before the general billing rule has to refuse it.
-    const fmt = (n) => '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    for (const sp of splits) {
-      const [r] = await t(`SELECT t.name, pt.original_amount::float8 AS orig,
-          COALESCE((SELECT SUM(amount) FROM change_orders WHERE project_trade_id=pt.id AND status='Approved'),0)::float8 AS cos,
-          COALESCE((SELECT SUM(amount) FROM client_invoices WHERE project_trade_id=pt.id),0)::float8 AS billed
-        FROM project_trades pt JOIN trades t ON t.id=pt.trade_id WHERE pt.id=$1`, [sp.projectTradeId]);
-      const contract = r.orig + r.cos;
-      if (r.billed + sp.amount > contract + 0.005) throw bad(`Not imported. ${r.name}: this invoice bills ${fmt(sp.amount)}, but the trade's contract is ${fmt(contract)} and ${fmt(r.billed)} is already billed (room left: ${fmt(Math.max(0, contract - r.billed))}). Raise the trade's contract amount on the project (Projects, the project, Trade Overview), or choose a different trade for those lines.`);
-    }
     const number = String(inv.doc_number || 'QB-' + inv.qb_id).slice(0, 60), d = inv.txn_date || new Date().toISOString().slice(0, 10), due = inv.due_date && inv.due_date >= d ? inv.due_date : null;
+    const fmt = (n) => '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     const rowIds = [];
-    for (const s of splits) {
-      if (!(s.amount > 0)) throw bad('A trade on this invoice nets to zero or less. Check the lines.');
-      const [row] = await t(`INSERT INTO client_invoices(project_id,project_trade_id,number,invoice_date,due_date,amount,retainage_held,qb_invoice_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`, [projectId, s.projectTradeId, number, d, due, s.amount, s.retainage, inv.qb_id]); rowIds.push({ id: row.id, amount: s.amount });
+    if (b.retainageInvoice === undefined ? isRetainageBill(lines) : !!b.retainageInvoice) {
+      // The invoice for retainage held back earlier. It is not new work: it is shared over the trades by the retainage each still has held.
+      const w = await retainageWeights(t, projectId); if (!w.length) throw bad('This project has no trades yet. Add them first.');
+      const parts = spreadPayment(Number(inv.total), w.map((x) => x.weight));
+      for (let i = 0; i < w.length; i++) if (parts[i] > 0) { const [row] = await t(`INSERT INTO client_invoices(project_id,project_trade_id,number,invoice_date,due_date,amount,retainage_held,qb_invoice_id,is_retainage,net_basis) VALUES ($1,$2,$3,$4,$5,$6,0,$7,true,true) RETURNING id`, [projectId, w[i].ptId, number, d, due, parts[i], inv.qb_id]); rowIds.push({ id: row.id, amount: parts[i] }); }
+      if (!rowIds.length) throw bad('There is nothing to bill on this invoice.');
+    } else {
+      // Retainage. An invoice with its own retainage line shows the work and what is held back, so it is used as it is. Otherwise the invoice
+      // is what will be paid, and the retainage the GC holds back is logged on top of it: the amount typed in, or the project's percent.
+      const ownLine = lines.some((l) => l.retainage), typed = !(b.retainageHeld === undefined || b.retainageHeld === '' || b.retainageHeld === null);
+      const logged = ownLine ? null : typed ? money(b.retainageHeld, 'Retainage held') : b.retainageHeld === undefined ? retainageOn(Number(inv.total), Number(proj.retainage_pct)) : 0;
+      const { splits, unassigned, badSplit } = splitByTrade(lines, assignOf, 0, logged, weights);
+      if (badSplit.length) throw bad(`The amounts you split must add up to the line: ${badSplit.slice(0, 3).map((i) => lines[i].description || lines[i].itemName || 'line ' + (i + 1)).join('; ')}`);
+      if (unassigned.length) throw bad(`Choose a trade for: ${unassigned.slice(0, 3).map((i) => lines[i].description || lines[i].itemName || 'line ' + (i + 1)).join('; ')}${unassigned.length > 3 ? '…' : ''}`);
+      if (!splits.length) throw bad('There is nothing to bill on this invoice.');
+      // work billed for each trade: the lines themselves when the invoice has a retainage line, otherwise the lines plus the retainage logged
+      const rows = splits.map((sp) => ({ projectTradeId: sp.projectTradeId, retainage: sp.retainage, amount: ownLine ? sp.amount : Math.round((sp.amount + sp.retainage) * 100) / 100, invoice: ownLine ? Math.round((sp.amount - sp.retainage) * 100) / 100 : sp.amount }));
+      // Say it plainly when a trade has no room left, with the numbers, before the general billing rule has to refuse it.
+      for (const sp of rows) {
+        const [r] = await t(`SELECT t.name, pt.original_amount::float8 AS orig,
+            COALESCE((SELECT SUM(amount) FROM change_orders WHERE project_trade_id=pt.id AND status='Approved'),0)::float8 AS cos,
+            COALESCE((SELECT SUM(amount) FROM client_invoices WHERE project_trade_id=pt.id AND NOT is_retainage),0)::float8 AS billed
+          FROM project_trades pt JOIN trades t ON t.id=pt.trade_id WHERE pt.id=$1`, [sp.projectTradeId]);
+        const contract = r.orig + r.cos;
+        if (r.billed + sp.amount > contract + 0.005) throw bad(`Not imported. ${r.name}: this invoice bills ${fmt(sp.amount)}${!ownLine && sp.retainage > 0 ? ` (${fmt(sp.invoice)} on the invoice plus ${fmt(sp.retainage)} retainage held back at ${Number(proj.retainage_pct)}%)` : ''}, but the trade's contract is ${fmt(contract)} and ${fmt(r.billed)} is already billed (room left: ${fmt(Math.max(0, contract - r.billed))}). Raise the trade's contract amount on the project (Projects, the project, Trade Overview), or choose a different trade for those lines.${!ownLine && sp.retainage > 0 ? ' If the GC holds no retainage on this job, set GC retainage % to 0 on the project.' : ''}`);
+      }
+      for (const sp of rows) {
+        if (!(sp.invoice > 0)) throw bad('A trade on this invoice nets to zero or less. Check the lines.');
+        const [row] = await t(`INSERT INTO client_invoices(project_id,project_trade_id,number,invoice_date,due_date,amount,retainage_held,qb_invoice_id,net_basis) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,true) RETURNING id`, [projectId, sp.projectTradeId, number, d, due, sp.amount, sp.retainage, inv.qb_id]); rowIds.push({ id: row.id, amount: sp.invoice });
+      }
     }
     await t(`UPDATE qb_invoices SET status='Imported', project_id=$2, imported_at=now(), imported_total=$3, imported_sig=$4, hold=false, message=NULL WHERE id=$1`, [invoiceId, projectId, inv.total, sigOf(inv)]);
     if (inv.customer_id) await t(`INSERT INTO qb_customer_map(qb_customer_id,customer_name,project_id) VALUES ($1,$2,$3) ON CONFLICT (qb_customer_id) DO UPDATE SET project_id=$3, customer_name=$2`, [inv.customer_id, inv.customer_name, projectId]);
@@ -244,7 +260,7 @@ async function applyPayments(t, qbInvoiceId, rowIds) {
 async function importPayments(invoiceId) {
   return tx(async (t) => {
     const [inv] = await t('SELECT qb_id, project_id FROM qb_invoices WHERE id=$1', [invoiceId]);
-    const rows = await t(`SELECT ci.id, ci.amount::float8 AS amount FROM client_invoices ci WHERE ci.qb_invoice_id=$1 AND ci.project_id=$2 ORDER BY ci.id`, [inv.qb_id, inv.project_id]); if (!rows.length) return 0;
+    const rows = await t(`SELECT ci.id, (ci.amount - ci.retainage_held)::float8 AS amount FROM client_invoices ci WHERE ci.qb_invoice_id=$1 AND ci.project_id=$2 ORDER BY ci.id`, [inv.qb_id, inv.project_id]);   // shared by what each row of the invoice asks for if (!rows.length) return 0;
     const n = await applyPayments(t, inv.qb_id, rows); if (n) await assertValid(t, inv.project_id); return n;
   });
 }

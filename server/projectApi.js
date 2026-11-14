@@ -68,7 +68,7 @@ export async function createProject(b, outerTx = null, { trusted = false } = {})
   const ac = b.addr !== undefined ? addressColumns(b.addr, { florida: true, label: 'Project address', required: true, trusted }) : legacyAddressColumns(text(b.address, 'Project address', { max: 300 }));
   if (!b.gcId) throw bad('Choose a GC.');
   const trades = parseTrades(b.trades);
-  const retainage = b.retainagePct === undefined ? 10 : Number(b.retainagePct);
+  const retainage = b.retainagePct === undefined || b.retainagePct === '' || b.retainagePct === null ? 0 : Number(b.retainagePct);   // none unless the GC holds it: the percent decides what is logged on every invoice
   if (!(retainage >= 0 && retainage <= 100)) throw bad('Retainage must be between 0 and 100.');
   const contractUrl = httpsUrl(b.contractUrl, 'Contract link');
   try {

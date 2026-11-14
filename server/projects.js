@@ -13,7 +13,7 @@ export async function loadInputs(projectIds, q = defaultQ) {
     () => q(`SELECT pt.id, pt.project_id, pt.trade_id, t.name, pt.original_amount FROM project_trades pt JOIN trades t ON t.id=pt.trade_id
        WHERE pt.project_id = ANY($1::uuid[]) ORDER BY t.sort, t.name`, [ids]),
     () => q('SELECT project_id, project_trade_id, status, amount FROM change_orders WHERE project_id = ANY($1::uuid[])', [ids]),
-    () => q(`SELECT ci.project_id, ci.project_trade_id, ci.amount, ci.retainage_held, ci.due_date,
+    () => q(`SELECT ci.project_id, ci.project_trade_id, ci.amount, ci.retainage_held, ci.due_date, ci.is_retainage,
          COALESCE(SUM(p.amount) FILTER (WHERE p.kind='Payment'),0) payments,
          COALESCE(SUM(p.amount) FILTER (WHERE p.kind='Retainage Release'),0) released
        FROM client_invoices ci LEFT JOIN client_payments p ON p.client_invoice_id=ci.id
@@ -38,7 +38,7 @@ export async function loadInputs(projectIds, q = defaultQ) {
     else if (key !== 'cos' && key !== 'invoices') out.get(r.project_id).unallocated[key].push(item);
   };
   for (const r of cos) into(r, 'cos', { status: r.status, amount: r.amount });
-  for (const r of inv) into(r, 'invoices', { amount: r.amount, retainageHeld: r.retainage_held, payments: r.payments, retainageReleased: r.released, dueDate: r.due_date });
+  for (const r of inv) into(r, 'invoices', { amount: r.amount, retainageHeld: r.retainage_held, payments: r.payments, retainageReleased: r.released, dueDate: r.due_date, retainageInvoice: r.is_retainage });
   for (const r of subs) into(r, 'subs', { contract: r.contract_amount, invoiced: r.invoiced, paid: r.paid, hold: r.hold_amount, holdReleased: r.hold_released });
   for (const r of sups) {
     const paid = r.total > 0 ? toDollars(Math.round((toCents(r.amount) * toCents(r.paid_total)) / toCents(r.total))) : 0;

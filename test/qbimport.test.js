@@ -120,9 +120,9 @@ test('automatic log: a confident match imports itself (lines without a trade spr
     { Id: '111', DocNumber: 'C11031-10', TxnDate: '2026-11-23', TotalAmt: 90000, CustomerRef: { value: '92', name: 'Whatever 2' }, MetaData: { LastUpdatedTime: LU }, Line: [{ DetailType: 'SalesItemLineDetail', Amount: 90000, Description: 'Selective demolition', SalesItemLineDetail: { ItemRef: { name: 'Demolition' } } }] });
   const before = (await billing()).length; const r = (await call('POST', '/api/quickbooks/sync', {}, asst)).body; assert.deepEqual([r.auto, r.needLook], [1, 2]);   // C11031-9 imports; C11031-10 and the earlier too-big C11031-2 are tried and left for a person
   const a = await staged('C11031-9'); assert.equal(a.status, 'Imported'); assert.match(a.message, /Imported automatically \(matched by contract code C11031\)/);
-  const rows = (await billing()).filter((x) => x.number === 'C11031-9').sort((x, y) => x.amount - y.amount); assert.deepEqual(rows.map((x) => [x.trade, x.amount]), [['Framing & Drywall', 750], ['Demolition', 1250]]);   // 1000 to Demolition + 1000 spread 250 / 750 by contract amount
+  const rows = (await billing()).filter((x) => x.number === 'C11031-9').sort((x, y) => x.amount - y.amount); assert.deepEqual(rows.map((x) => [x.trade, x.payable, x.retainageHeld, x.amount]), [['Framing & Drywall', 750, 83.33, 833.33], ['Demolition', 1250, 138.89, 1388.89]]);   // 1000 to Demolition + 1000 spread 250 / 750 by contract amount; the project's 10% is logged on top (222.22), never taken off
   assert.equal((await billing()).length, before + 2);
-  const b = await staged('C11031-10'); assert.equal(b.status, 'New'); assert.match(b.message, /^Not imported automatically: Not imported\. Demolition: this invoice bills \$90,000\.00/);
+  const b = await staged('C11031-10'); assert.equal(b.status, 'New'); assert.match(b.message, /^Not imported automatically: Not imported\. Demolition: this invoice bills \$100,000\.00 \(\$90,000\.00 on the invoice plus \$10,000\.00 retainage held back at 10%\)/);
   await call('PUT', '/api/quickbooks/settings', { autoImport: false }, asst);
 });
 test('an invoice against the whole project, or split by hand across trades (for example 5.00 as 2.50 and 2.50)', async () => {
@@ -141,7 +141,7 @@ test("a project's own page can list the invoices that look like it", async () =>
   assert.equal((await call('GET', `/api/projects/${pid}/qb-suggestions`, null, pm)).status, 403);
 });
 
-test('no retainage is added by the import: only an invoice retainage line or an amount typed in holds any back', async () => {
+test("retainage is logged, never deducted: the invoice stays what is paid, and the project's percent says what the GC holds back on top of it", async () => {
   const mk = (id, num, total) => invoices.push({ Id: id, DocNumber: num, TxnDate: '2026-11-26', TotalAmt: total, CustomerRef: { value: '97', name: 'Paid Job' }, MetaData: { LastUpdatedTime: LU }, Line: [{ DetailType: 'SalesItemLineDetail', Amount: total, Description: 'Demolition deposit', SalesItemLineDetail: { ItemRef: { name: 'Demolition' } } }] });
   mk('140', 'PAID-1', 3409); mk('141', 'PART-1', 1000);
   payments.push({ Id: '950', TxnDate: '2026-11-27', TotalAmt: 3409, MetaData: { LastUpdatedTime: LU }, Line: [{ Amount: 3409, LinkedTxn: [{ TxnId: '140', TxnType: 'Invoice' }] }] });
@@ -150,15 +150,41 @@ test('no retainage is added by the import: only an invoice retainage line or an 
   const full = await staged('PAID-1'), part = await staged('PART-1');
   const a = await call('POST', `/api/quickbooks/invoices/${full.id}/import`, { projectId: pid, lines: [{ index: 0, projectTradeId: ptDemo }] }, asst); assert.equal(a.status, 200, JSON.stringify(a.body));
   const b = await call('POST', `/api/quickbooks/invoices/${part.id}/import`, { projectId: pid, lines: [{ index: 0, projectTradeId: ptDemo }] }, asst); assert.equal(b.status, 200, JSON.stringify(b.body));
-  const rows = (await q(`SELECT number, amount::float8 AS amount, retainage_held::float8 AS ret FROM client_invoices WHERE number IN ('PAID-1','PART-1') ORDER BY number`));
-  assert.deepEqual(rows.map((r) => [r.number, r.amount, r.ret]), [['PAID-1', 3409, 0], ['PART-1', 1000, 0]]);   // the project's 10% is not applied on its own
+  const rows = (await billing()).filter((r) => ['PAID-1', 'PART-1'].includes(r.number)).sort((x, y) => x.number.localeCompare(y.number));
+  // 10% project: a 3,409.00 invoice is 3,787.78 of work with 378.78 held back. The invoice is owed in full and the QuickBooks payment of the whole invoice fits.
+  assert.deepEqual(rows.map((r) => [r.number, r.payable, r.retainageHeld, r.amount, r.collected, r.owed]), [['PAID-1', 3409, 378.78, 3787.78, 3409, 0], ['PART-1', 1000, 111.11, 1111.11, 950, 50]]);
+  const prep = (await call('GET', `/api/quickbooks/invoices/${part.id}/prepare?projectId=${pid}`, null, asst)).body; assert.deepEqual([prep.hasRetainageLine, prep.retainageInvoice, prep.suggestedRetainage], [false, false, 111.11]);   // what the review screen starts with
 });
 
-test('retainage typed on the review screen is used', async () => {
+test('retainage typed on the review screen is logged on top of the invoice; a blank box logs none', async () => {
   invoices.push({ Id: '142', DocNumber: 'TYPED-1', TxnDate: '2026-11-28', TotalAmt: 2000, CustomerRef: { value: '98', name: 'Typed Job' }, MetaData: { LastUpdatedTime: LU }, Line: [{ DetailType: 'SalesItemLineDetail', Amount: 2000, Description: 'Demolition', SalesItemLineDetail: { ItemRef: { name: 'Demolition' } } }] });
   await call('POST', '/api/quickbooks/sync', {}, asst); const t = await staged('TYPED-1');
   const r = await call('POST', `/api/quickbooks/invoices/${t.id}/import`, { projectId: pid, lines: [{ index: 0, projectTradeId: ptDemo }], retainageHeld: 150 }, asst); assert.equal(r.status, 200, JSON.stringify(r.body));
-  assert.equal((await q(`SELECT retainage_held::float8 AS r FROM client_invoices WHERE number='TYPED-1'`))[0].r, 150);
+  assert.deepEqual((await billing()).filter((x) => x.number === 'TYPED-1').map((x) => [x.payable, x.retainageHeld, x.amount]), [[2000, 150, 2150]]);
+  invoices.push({ Id: '143', DocNumber: 'NONE-1', TxnDate: '2026-11-28', TotalAmt: 500, CustomerRef: { value: '98', name: 'Typed Job' }, MetaData: { LastUpdatedTime: LU }, Line: [{ DetailType: 'SalesItemLineDetail', Amount: 500, Description: 'Demolition', SalesItemLineDetail: { ItemRef: { name: 'Demolition' } } }] });
+  await call('POST', '/api/quickbooks/sync', {}, asst); const n = await staged('NONE-1');
+  assert.equal((await call('POST', `/api/quickbooks/invoices/${n.id}/import`, { projectId: pid, lines: [{ index: 0, projectTradeId: ptDemo }], retainageHeld: '' }, asst)).status, 200);
+  assert.deepEqual((await billing()).filter((x) => x.number === 'NONE-1').map((x) => [x.payable, x.retainageHeld, x.amount]), [[500, 0, 500]]);
+});
+
+test('the final retainage invoice uses up the retainage logged: it is not new work, it is owed until paid, and it is shared over the trades that had retainage held', async () => {
+  const [g] = await q(`SELECT id FROM gcs LIMIT 1`), [{ id: rp }] = await q(`INSERT INTO projects(name,gc_id,client,address,retainage_pct) VALUES ('Retainage Job',$1,'Owner','7 Oak St',10) RETURNING id`, [g.id]);
+  const [{ id: rDemo }, { id: rDry }] = await q('INSERT INTO project_trades(project_id,trade_id,original_amount) VALUES ($1,$2,40000),($1,$3,60000) RETURNING id', [rp, tDemo, tDry]);
+  const ln = (a, d, i) => ({ DetailType: 'SalesItemLineDetail', Amount: a, Description: d, SalesItemLineDetail: { ItemRef: { name: i } } });
+  invoices.push({ Id: '201', DocNumber: 'R-1', TxnDate: '2026-11-05', TotalAmt: 90000, CustomerRef: { value: '400', name: 'Retainage Customer' }, MetaData: { LastUpdatedTime: LU }, Line: [ln(36000, 'Demolition', 'Demolition'), ln(54000, 'Drywall', 'Services')] },
+    { Id: '202', DocNumber: 'R-2', TxnDate: '2026-11-30', TotalAmt: 10000, CustomerRef: { value: '400', name: 'Retainage Customer' }, MetaData: { LastUpdatedTime: LU }, Line: [ln(10000, 'Retainage release', 'Retainage')] });
+  payments.push({ Id: '960', TxnDate: '2026-11-20', TotalAmt: 90000, MetaData: { LastUpdatedTime: LU }, Line: [{ Amount: 90000, LinkedTxn: [{ TxnId: '201', TxnType: 'Invoice' }] }] });
+  await call('POST', '/api/quickbooks/sync', {}, asst); const one = await staged('R-1'), two = await staged('R-2');
+  assert.equal((await call('POST', `/api/quickbooks/invoices/${one.id}/import`, { projectId: rp, lines: [{ index: 0, projectTradeId: rDemo }, { index: 1, projectTradeId: rDry }] }, asst)).status, 200);
+  const proj = async () => (await call('GET', `/api/projects/${rp}`, null, owner)).body;
+  let p = await proj(); assert.deepEqual([p.totals.contract, p.totals.billed, p.totals.invoiced, p.totals.received, p.totals.retainageOutstanding, p.totals.currentlyDue], [100000, 100000, 90000, 90000, 10000, 0]);   // the job is fully billed; 10,000 is held back
+  const prep = (await call('GET', `/api/quickbooks/invoices/${two.id}/prepare?projectId=${rp}`, null, asst)).body; assert.equal(prep.retainageInvoice, true);
+  const r = await call('POST', `/api/quickbooks/invoices/${two.id}/import`, { projectId: rp }, asst); assert.equal(r.status, 200, JSON.stringify(r.body));   // no trades to choose: it is recognised as the retainage invoice
+  const rows = (await call('GET', `/api/projects/${rp}/billing`, null, owner)).body.filter((x) => x.number === 'R-2').sort((x, y) => x.amount - y.amount);
+  assert.deepEqual(rows.map((x) => [x.trade, x.amount, x.retainageInvoice, x.owed]), [['Demolition', 4000, true, 4000], ['Framing & Drywall', 6000, true, 6000]]);
+  p = await proj(); assert.deepEqual([p.totals.billed, p.totals.invoiced, p.totals.retainageOutstanding, p.totals.currentlyDue], [100000, 100000, 0, 10000]);   // still 100% billed; the retainage is now owed
+  payments.push({ Id: '961', TxnDate: '2026-12-15', TotalAmt: 10000, MetaData: { LastUpdatedTime: LU }, Line: [{ Amount: 10000, LinkedTxn: [{ TxnId: '202', TxnType: 'Invoice' }] }] });
+  await call('POST', '/api/quickbooks/sync', {}, asst); p = await proj(); assert.deepEqual([p.totals.received, p.totals.currentlyDue, p.totals.retainageOutstanding, p.totals.totalOwed], [100000, 0, 0, 0]);
 });
 
 // ---- an invoice changed in QuickBooks after it was imported

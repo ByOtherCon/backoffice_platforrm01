@@ -160,3 +160,54 @@ test('retainage typed on the review screen is used', async () => {
   const r = await call('POST', `/api/quickbooks/invoices/${t.id}/import`, { projectId: pid, lines: [{ index: 0, projectTradeId: ptDemo }], retainageHeld: 150 }, asst); assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.equal((await q(`SELECT retainage_held::float8 AS r FROM client_invoices WHERE number='TYPED-1'`))[0].r, 150);
 });
+
+// ---- an invoice changed in QuickBooks after it was imported
+let pid2, p2Demo, p2Dry;
+const line = (amount, desc, item) => ({ DetailType: 'SalesItemLineDetail', Amount: amount, Description: desc, SalesItemLineDetail: { ItemRef: { name: item } } });
+const rows2 = async () => (await q(`SELECT ci.id, ci.amount::float8 AS amount, t.name AS trade, COALESCE((SELECT SUM(amount) FROM client_payments WHERE client_invoice_id=ci.id),0)::float8 AS paid FROM client_invoices ci JOIN project_trades pt ON pt.id=ci.project_trade_id JOIN trades t ON t.id=pt.trade_id WHERE ci.project_id=$1 ORDER BY t.sort`, [pid2]));
+test('Update From QuickBooks: an imported invoice that was changed is taken off the project, read again, reviewed and imported again', async () => {
+  const [g] = await q(`SELECT id FROM gcs LIMIT 1`); [{ id: pid2 }] = await q(`INSERT INTO projects(name,gc_id,client,address,retainage_pct) VALUES ('Reopen Job',$1,'Owner','9 Elm St',0) RETURNING id`, [g.id]);
+  [{ id: p2Demo }, { id: p2Dry }] = await q('INSERT INTO project_trades(project_id,trade_id,original_amount) VALUES ($1,$2,50000),($1,$3,50000) RETURNING id', [pid2, tDemo, tDry]);
+  await call('PUT', '/api/quickbooks/settings', { startDate: '2026-01-01', autoImport: false }, asst);
+  invoices.push({ Id: '1457', DocNumber: '1457', TxnDate: '2026-11-10', TotalAmt: 3000, CustomerRef: { value: '300', name: 'Reopen Customer' }, MetaData: { LastUpdatedTime: LU }, Line: [line(1000, 'Demolition', 'Demolition'), line(2000, 'Drywall', 'Services')] });
+  payments.push({ Id: '950', TxnDate: '2026-11-12', TotalAmt: 600, MetaData: { LastUpdatedTime: LU }, Line: [{ Amount: 600, LinkedTxn: [{ TxnId: '1457', TxnType: 'Invoice' }] }] });
+  await call('POST', '/api/quickbooks/sync', {}, asst); const inv = await staged('1457');
+  const imp = (ln) => call('POST', `/api/quickbooks/invoices/${inv.id}/import`, { projectId: pid2, lines: ln }, asst), both = [{ index: 0, projectTradeId: p2Demo }, { index: 1, projectTradeId: p2Dry }];
+  assert.equal((await imp(both)).status, 200); assert.deepEqual((await rows2()).map((r) => [r.trade, r.amount, r.paid]), [['Demolition', 1000, 200], ['Framing & Drywall', 2000, 400]]);
+  assert.equal((await call('POST', `/api/quickbooks/invoices/${inv.id}/reopen`, {}, pm)).status, 403);
+  // changed in QuickBooks: same total, different lines. The sync notices and says so; the project is not touched.
+  invoices.find((i) => i.Id === '1457').Line = [line(1500, 'Demolition', 'Demolition'), line(1500, 'Drywall', 'Services')];
+  await call('POST', '/api/quickbooks/sync', {}, asst); let s = await staged('1457'); assert.equal(s.status, 'Changed'); assert.match(s.message, /changed in QuickBooks after it was imported \(same total/); assert.match(s.message, /Update From QuickBooks/);
+  assert.deepEqual((await rows2()).map((r) => r.amount), [1000, 2000]);
+  // Update From QuickBooks: off the project, back in the review list as it is today
+  const r = await call('POST', `/api/quickbooks/invoices/${inv.id}/reopen`, {}, asst); assert.equal(r.status, 200, JSON.stringify(r.body)); assert.deepEqual([r.body.removed, r.body.refreshed], [2, true]);
+  assert.equal((await rows2()).length, 0); s = await staged('1457'); assert.equal(s.status, 'New'); assert.deepEqual(s.lines.map((l) => l.amount), [1500, 1500]); assert.equal(s.projectId, pid2); assert.match(s.message, /Taken off the project to be updated/);
+  assert.ok((await call('GET', '/api/quickbooks/invoices?status=New', null, asst)).body.some((i) => i.number === '1457'));
+  assert.equal((await call('POST', `/api/quickbooks/invoices/${inv.id}/reopen`, {}, asst)).status, 409);   // it is already waiting for review
+  assert.equal((await imp(both)).status, 200);
+  assert.deepEqual((await rows2()).map((r) => [r.trade, r.amount, r.paid]), [['Demolition', 1500, 300], ['Framing & Drywall', 1500, 300]]);   // the new split, and the QuickBooks payment is on it again
+  assert.equal((await staged('1457')).status, 'Imported');
+});
+
+test('an imported invoice deleted from the project by hand comes back to the review list by itself, as it is in QuickBooks now, and is never put back automatically', async () => {
+  const inv = await staged('1457');
+  invoices.find((i) => i.Id === '1457').TotalAmt = 4000; invoices.find((i) => i.Id === '1457').Line = [line(4000, 'Demolition', 'Demolition')];   // modified in QuickBooks, total too
+  for (const r of await rows2()) assert.equal((await call('DELETE', `/api/projects/${pid2}/invoices/${r.id}`, null, owner)).status, 200);
+  const list = (await call('GET', '/api/quickbooks/invoices?status=New', null, asst)).body, s = list.find((i) => i.number === '1457');
+  assert.ok(s, 'it is back in the review list'); assert.equal(s.total, 4000); assert.deepEqual(s.lines.map((l) => l.amount), [4000]); assert.match(s.message, /removed from the project/); assert.deepEqual(s.payments.map((p) => p.imported), [false]);
+  await call('PUT', '/api/quickbooks/settings', { startDate: '2026-01-01', autoImport: true }, asst); await call('POST', '/api/quickbooks/sync', {}, asst);
+  assert.equal((await staged('1457')).status, 'New'); assert.equal((await rows2()).length, 0);   // waits for a person even with automatic import on
+  await call('PUT', '/api/quickbooks/settings', { startDate: '2026-01-01', autoImport: false }, asst);
+  assert.equal((await call('POST', `/api/quickbooks/invoices/${inv.id}/import`, { projectId: pid2, lines: [{ index: 0, projectTradeId: p2Demo }] }, asst)).status, 200);
+  assert.deepEqual((await rows2()).map((r) => [r.trade, r.amount, r.paid]), [['Demolition', 4000, 600]]);
+});
+
+test('Update From QuickBooks is refused while the invoice has a payment entered by hand, so nothing typed in is lost; if QuickBooks cannot be reached it says so', async () => {
+  const inv = await staged('1457'), [row] = await rows2();
+  assert.equal((await call('POST', `/api/projects/${pid2}/invoices/${row.id}/payments`, { amount: 100, date: '2026-11-20' }, owner)).status, 200);
+  const no = await call('POST', `/api/quickbooks/invoices/${inv.id}/reopen`, {}, asst); assert.equal(no.status, 409); assert.match(no.body.error, /1 payment entered by hand/); assert.equal((await rows2()).length, 1);
+  await q(`DELETE FROM client_payments WHERE client_invoice_id=$1 AND qb_payment_id IS NULL`, [row.id]);
+  const keep = invoices; invoices = [];   // QuickBooks answers, but without the invoice (stands in for not reachable)
+  const r = await call('POST', `/api/quickbooks/invoices/${inv.id}/reopen`, {}, asst); invoices = keep; assert.equal(r.status, 200); assert.equal(r.body.refreshed, false);
+  assert.match((await staged('1457')).message, /QuickBooks could not be reached/);
+});

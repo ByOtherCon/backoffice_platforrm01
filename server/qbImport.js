@@ -1,6 +1,7 @@
 // QuickBooks invoices and payments -> Job Costing. Sync pulls them into a review list (nothing touches billing yet); a person confirms the
 // project and trades; import then creates the billing records through the same rules as entering them by hand.
-import { q, tx } from './db.js';
+import crypto from 'node:crypto';
+import { q, tx, lockProjects } from './db.js';
 import { bad, money, HttpError } from './http.js';
 import * as QB from './quickbooks.js';
 import { assertValid } from './projectApi.js';
@@ -22,6 +23,22 @@ export async function saveSettings(b) {
 const date = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(v || '') ? v : null);
 const lit = (iso) => String(iso).replace(/[^0-9T:.+\-Z]/g, '');   // only ever our own timestamp goes into a query
 
+// What an invoice looks like, boiled down to what matters for billing: number, date, total and every line. Two invoices with the same
+// signature bill the same thing.
+const sigOf = (r) => crypto.createHash('sha1').update(JSON.stringify([r.doc_number ?? null, String(r.txn_date ?? '').slice(0, 10), Number(r.total).toFixed(2), (r.lines || []).map((l) => [l.itemName ?? '', l.description ?? '', Number(l.amount || 0).toFixed(2), !!l.retainage])])).digest('hex');
+// The parts of a QuickBooks invoice we keep, in column order (used for a new row and to refresh a waiting one).
+const staged = (inv) => { const lines = readLines(inv.Line), total = Math.round(Number(inv.TotalAmt) * 100) / 100;
+  return { total, lines, memo: [inv.PrivateNote, inv.CustomerMemo?.value].filter(Boolean).join(' ').slice(0, 500) || null, number: inv.DocNumber ?? null, txn: date(inv.TxnDate), due: date(inv.DueDate), balance: inv.Balance != null ? Number(inv.Balance) : null,
+    customerId: inv.CustomerRef?.value ?? null, customer: inv.CustomerRef?.name ?? null, updated: inv.MetaData?.LastUpdatedTime ?? null }; };
+// Reads one invoice from QuickBooks again and stores how it looks now (its status and project are left alone). Returns false when QuickBooks cannot be reached.
+async function refreshOne(qbId) {
+  try {
+    const r = await QB.query(`select * from Invoice where Id = '${String(qbId).replace(/[^0-9]/g, '')}'`), inv = (r?.QueryResponse?.Invoice ?? []).find((x) => String(x.Id) === String(qbId)); if (!inv) return false;
+    const v = staged(inv); if (!Number.isFinite(v.total)) return false;
+    await q(`UPDATE qb_invoices SET doc_number=$2, txn_date=$3, due_date=$4, total=$5, balance=$6, customer_id=$7, customer_name=$8, memo=$9, lines=$10, qb_updated=$11, synced_at=now() WHERE qb_id=$1`, [String(qbId), v.number, v.txn, v.due, v.total, v.balance, v.customerId, v.customer, v.memo, JSON.stringify(v.lines), v.updated]);
+    return true;
+  } catch { return false; }
+}
 export async function pages(entity, since, startDate) {
   const out = []; const conds = [`TxnDate >= '${lit(startDate)}'`]; if (since) conds.push(`MetaData.LastUpdatedTime >= '${lit(since)}'`); const where = ' where ' + conds.join(' and ');
   for (let start = 1; start < 5000; start += 100) {
@@ -36,6 +53,7 @@ const projectsForMatching = async () => (await q(`SELECT p.id, p.name, g.name AS
 let syncing = null;
 export function sync() { return (syncing ||= doSync().finally(() => { syncing = null; })); }
 async function doSync() {
+  await healOrphans();
   const st = await getState(), cfg = await getSettings(), started = new Date().toISOString(), since = st.since ? new Date(Date.parse(st.since) - 5 * 60000).toISOString() : null;   // a small overlap so nothing slips between runs
   const [invoices, payments] = await Promise.all([pages('Invoice', since, cfg.startDate), pages('Payment', since, cfg.startDate)]);
   const projects = await projectsForMatching(); let added = 0, changed = 0, paymentsNew = 0, autoPaid = 0;
@@ -44,13 +62,15 @@ async function doSync() {
     const lines = readLines(inv.Line), total = Math.round(Number(inv.TotalAmt) * 100) / 100; if (!Number.isFinite(total)) continue;
     const memo = [inv.PrivateNote, inv.CustomerMemo?.value].filter(Boolean).join(' ').slice(0, 500) || null;
     const sug = maps.get(inv.CustomerRef?.value) ? { projectId: maps.get(inv.CustomerRef.value), how: 'remembered for this QuickBooks customer', confident: true } : suggestProject({ docNumber: inv.DocNumber, customerName: inv.CustomerRef?.name, memo, lines }, projects);
-    const [cur] = await q('SELECT id, status, imported_total FROM qb_invoices WHERE qb_id=$1', [String(inv.Id)]);
+    const [cur] = await q('SELECT id, status, imported_total, imported_sig FROM qb_invoices WHERE qb_id=$1', [String(inv.Id)]);
     const vals = [String(inv.Id), inv.DocNumber ?? null, date(inv.TxnDate), date(inv.DueDate), total, inv.Balance != null ? Number(inv.Balance) : null, inv.CustomerRef?.value ?? null, inv.CustomerRef?.name ?? null, memo, JSON.stringify(lines), inv.MetaData?.LastUpdatedTime ?? null, sug?.projectId ?? null, sug?.how ?? null, !!sug?.confident];
     if (!cur) { await q(`INSERT INTO qb_invoices(qb_id,doc_number,txn_date,due_date,total,balance,customer_id,customer_name,memo,lines,qb_updated,suggested_project_id,suggested_by,confident,project_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$12)`, vals); added++; }
     else if (cur.status === 'Imported' || cur.status === 'Changed') {
-      // already in Job Costing: never rewritten behind anyone's back; a changed total is flagged for a person to look at
-      const moved = Math.abs(Number(cur.imported_total) - total) > 0.005;
-      await q(`UPDATE qb_invoices SET balance=$2, qb_updated=$3, synced_at=now(), status=$4, message=$5 WHERE id=$1`, [cur.id, vals[5], vals[10], moved ? 'Changed' : 'Imported', moved ? `The total in QuickBooks is now ${total.toFixed(2)}; it was ${Number(cur.imported_total).toFixed(2)} when imported. Job Costing was not changed.` : null]); if (moved) changed++;
+      // already in Job Costing: the project is never rewritten behind anyone's back. The latest copy from QuickBooks is kept here, and a change
+      // to the total or to the lines is flagged so a person can bring it in with "Update From QuickBooks".
+      const now = sigOf({ doc_number: vals[1], txn_date: vals[2], total, lines }), totalMoved = Math.abs(Number(cur.imported_total) - total) > 0.005, moved = totalMoved || (!!cur.imported_sig && cur.imported_sig !== now);
+      const msg = !moved ? null : totalMoved ? `The total in QuickBooks is now ${total.toFixed(2)}; it was ${Number(cur.imported_total).toFixed(2)} when imported. The project was not changed. Press Update From QuickBooks to bring the change in.` : 'This invoice was changed in QuickBooks after it was imported (same total, different lines, date or number). The project was not changed. Press Update From QuickBooks to bring the change in.';
+      await q(`UPDATE qb_invoices SET doc_number=$2,txn_date=$3,due_date=$4,total=$5,balance=$6,customer_id=$7,customer_name=$8,memo=$9,lines=$10,qb_updated=$11, synced_at=now(), status=$12, message=$13, imported_sig=COALESCE(imported_sig, $14) WHERE id=$1`, [cur.id, ...vals.slice(1, 11), moved ? 'Changed' : 'Imported', msg, moved ? null : now]); if (moved) changed++;
     } else await q(`UPDATE qb_invoices SET doc_number=$2,txn_date=$3,due_date=$4,total=$5,balance=$6,customer_id=$7,customer_name=$8,memo=$9,lines=$10,qb_updated=$11,suggested_project_id=$12,suggested_by=$13,confident=$14,synced_at=now(), project_id=COALESCE(project_id,$12) WHERE id=$1`, [cur.id, ...vals.slice(1)]);
   }
   for (const p of payments) {
@@ -62,7 +82,7 @@ async function doSync() {
   for (const inv of await q(`SELECT id FROM qb_invoices WHERE status IN ('Imported','Changed')`)) { try { autoPaid += await importPayments(inv.id); } catch { /* shown on the invoice; the rest carry on */ } }
   // confident matches go in without anyone: the project is clear and every line either has a trade or is spread over the whole project
   let auto = 0, needLook = 0;
-  if (cfg.autoImport) for (const c of await q(`SELECT id, project_id FROM qb_invoices WHERE status='New' AND confident AND project_id IS NOT NULL AND project_id = suggested_project_id ORDER BY txn_date`)) {
+  if (cfg.autoImport) for (const c of await q(`SELECT id, project_id FROM qb_invoices WHERE status='New' AND confident AND NOT hold AND project_id IS NOT NULL AND project_id = suggested_project_id ORDER BY txn_date`)) {
     try { await autoImport(c.id, c.project_id); auto++; }
     catch (e) { needLook++; await q(`UPDATE qb_invoices SET message=$2 WHERE id=$1`, [c.id, 'Not imported automatically: ' + String(e.message || e).slice(0, 400)]); }
   }
@@ -89,6 +109,7 @@ export async function projectSuggestions(projectId) {
 }
 
 export async function list(status = 'New', search = '') {
+  await healOrphans();
   if (!['New', 'Imported', 'Ignored', 'Changed', 'All'].includes(status)) throw bad('Unknown status.');
   const { startDate } = await getSettings(), params = [], where = [];
   if (status !== 'All') { params.push(status); where.push(`i.status=$${params.length}`); }
@@ -125,6 +146,39 @@ export async function setProject(invoiceId, projectId) {
 }
 export async function ignore(invoiceId, on = true) {
   const r = await q(`UPDATE qb_invoices SET status=$2 WHERE id=$1 AND status IN ${on ? "('New')" : "('Ignored')"} RETURNING id`, [invoiceId, on ? 'Ignored' : 'New']); if (!r.length) throw new HttpError(409, 'That invoice cannot be changed.');
+}
+
+// An imported invoice whose billing was removed from the project by hand is not "imported" any more: it goes back to the review list, with
+// how it looks in QuickBooks now, and waits for a person (it is never put back automatically).
+async function healOrphans() {
+  const rows = await q(`UPDATE qb_invoices i SET status='New', hold=true, imported_at=NULL, imported_total=NULL, imported_sig=NULL, message='Its invoice was removed from the project, so it is back here to review and import again.'
+    WHERE i.status IN ('Imported','Changed') AND NOT EXISTS (SELECT 1 FROM client_invoices ci WHERE ci.qb_invoice_id=i.qb_id) RETURNING i.qb_id`);
+  if (!rows.length) return 0;
+  const ids = rows.map((r) => r.qb_id);
+  await q(`UPDATE qb_payments SET imported=false WHERE invoice_qb_id = ANY($1::text[])`, [ids]);   // its payments come back with it
+  for (const id of ids) await refreshOne(id);
+  return rows.length;
+}
+// "Update From QuickBooks": an invoice that was imported and then changed in QuickBooks. Its billing is taken off the project (the QuickBooks
+// payments on it come back when it is imported again), the invoice is read from QuickBooks again, and it returns to the review list.
+export async function reopen(invoiceId) {
+  const out = await tx(async (t) => {
+    const [inv] = await t('SELECT * FROM qb_invoices WHERE id=$1 FOR UPDATE', [invoiceId]); if (!inv) throw new HttpError(404, 'Invoice not found.');
+    if (!['Imported', 'Changed'].includes(inv.status)) throw new HttpError(409, 'Only an imported invoice can be updated. This one is already waiting in the review list.');
+    if (inv.project_id) await lockProjects(t, [inv.project_id]);
+    const rows = await t('SELECT id, project_id FROM client_invoices WHERE qb_invoice_id=$1', [inv.qb_id]), ids = rows.map((r) => r.id);
+    const [{ n }] = await t(`SELECT count(*)::int AS n FROM client_payments WHERE client_invoice_id = ANY($1::uuid[]) AND qb_payment_id IS NULL`, [ids]);
+    if (n) throw new HttpError(409, `This invoice has ${n} payment${n === 1 ? '' : 's'} entered by hand on the project (not from QuickBooks). Remove ${n === 1 ? 'it' : 'them'} on the project's Progress Billing tab first, so nothing entered by hand is lost, then update again.`);
+    await t(`UPDATE invoice_schedule SET status='Tentative', client_invoice_id=NULL WHERE client_invoice_id = ANY($1::uuid[])`, [ids]);
+    await t('DELETE FROM client_invoices WHERE id = ANY($1::uuid[])', [ids]);                                  // their payments go with them
+    await t('UPDATE qb_payments SET imported=false WHERE invoice_qb_id=$1', [inv.qb_id]);                        // and are applied again at the next import
+    await t(`UPDATE qb_invoices SET status='New', hold=true, imported_at=NULL, imported_total=NULL, imported_sig=NULL, message='Taken off the project to be updated. Review it and import it again.' WHERE id=$1`, [invoiceId]);
+    for (const pid of new Set(rows.map((r) => r.project_id))) await assertValid(t, pid);
+    return { qbId: inv.qb_id, removed: ids.length };
+  });
+  const fresh = await refreshOne(out.qbId);
+  if (!fresh) await q(`UPDATE qb_invoices SET message='Taken off the project to be updated. QuickBooks could not be reached just now, so this still shows the invoice as it was; press Sync Now before importing it again.' WHERE id=$1`, [invoiceId]);
+  return { id: invoiceId, removed: out.removed, refreshed: fresh };
 }
 
 // Creates the billing: one invoice row per trade, payments spread across them. All or nothing, and the billing rules must still hold.
@@ -166,7 +220,7 @@ export async function importInvoice(invoiceId, b) {
       if (!(s.amount > 0)) throw bad('A trade on this invoice nets to zero or less. Check the lines.');
       const [row] = await t(`INSERT INTO client_invoices(project_id,project_trade_id,number,invoice_date,due_date,amount,retainage_held,qb_invoice_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`, [projectId, s.projectTradeId, number, d, due, s.amount, s.retainage, inv.qb_id]); rowIds.push({ id: row.id, amount: s.amount });
     }
-    await t(`UPDATE qb_invoices SET status='Imported', project_id=$2, imported_at=now(), imported_total=$3, message=NULL WHERE id=$1`, [invoiceId, projectId, inv.total]);
+    await t(`UPDATE qb_invoices SET status='Imported', project_id=$2, imported_at=now(), imported_total=$3, imported_sig=$4, hold=false, message=NULL WHERE id=$1`, [invoiceId, projectId, inv.total, sigOf(inv)]);
     if (inv.customer_id) await t(`INSERT INTO qb_customer_map(qb_customer_id,customer_name,project_id) VALUES ($1,$2,$3) ON CONFLICT (qb_customer_id) DO UPDATE SET project_id=$3, customer_name=$2`, [inv.customer_id, inv.customer_name, projectId]);
     // the contract's schedule: a tentative line for exactly this amount is now invoiced
     const [sch] = await t(`SELECT id FROM invoice_schedule WHERE project_id=$1 AND status='Tentative' AND amount IS NOT NULL AND abs(amount-$2)<0.005 ORDER BY seq LIMIT 1`, [projectId, inv.total]);

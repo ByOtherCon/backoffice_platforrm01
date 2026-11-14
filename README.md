@@ -205,6 +205,12 @@ Pages use the whole screen width. Tables wrap their column headings, tighten the
 - **How it is sent.** From the Gmail mailbox connected in Admin (the same one that sends password-reset emails; it needs the send permission granted when Gmail was connected). The email is queued in `email_outbox` with kind `user_alert` and sent in the background, so sending a message is never slowed down or blocked by email. One email per event and person, never twice. If Gmail is down it is tried again by the regular check for two days.
 - **Kept apart from vendor email.** Insurance requests to subcontractors still go only through SMTP, exactly as before; connecting Gmail does not start sending them. Alert emails are not listed on the Compliance page.
 
+## A QuickBooks invoice changed after it was imported
+- **Noticed at sync.** For an invoice already imported, the sync keeps the latest copy from QuickBooks and marks it **Changed** when the total, the lines, the date or the number differ from what was imported (`imported_sig`). The project is never rewritten on its own.
+- **Update From QuickBooks** (button on Imported and Changed invoices, QuickBooks page): takes the invoice's billing off the project, reads the invoice from QuickBooks again, and opens it for review like a new one. Payments that came from QuickBooks are put back when it is imported again. It is refused while the invoice has a payment entered by hand on the project, so nothing typed in is lost.
+- **Deleted on the project by hand.** An imported invoice whose billing rows were all deleted on the project goes back to the review list by itself (status New), as it is in QuickBooks now, with its payments ready to be applied again.
+- **Waits for a person.** An invoice that came back either way is on hold (`hold`): automatic import never puts it back; someone reviews and imports it.
+
 ## On a phone
 The app adapts to a phone screen (width 700 pixels or less); there is no separate phone version to keep in step.
 - **Bottom tab bar** with Dashboard, Projects, Estimating and Messages (with its unread number), and **More** for the rest plus Alerts, Change Password and Sign Out. The top menu is hidden on a phone.

@@ -257,6 +257,7 @@ route('POST', '/api/quickbooks/sync', async ({ user }) => { manage(user); return
 route('GET', '/api/quickbooks/invoices/:id/prepare', async ({ req, user, params }) => { manage(user); return qbi.guessTrades(uuid(params.id), uuid(q1(req, 'projectId') || '')); });
 route('PUT', '/api/quickbooks/invoices/:id/project', async ({ user, params, body }) => { manage(user); await qbi.setProject(uuid(params.id), body.projectId ? uuid(body.projectId) : null); return { ok: true }; });
 route('POST', '/api/quickbooks/invoices/:id/import', async ({ user, params, body }) => { manage(user); return qbi.importInvoice(uuid(params.id), body); });
+route('POST', '/api/quickbooks/invoices/:id/reopen', async ({ user, params }) => { manage(user); return qbi.reopen(uuid(params.id)); });
 route('POST', '/api/quickbooks/invoices/:id/ignore', async ({ user, params }) => { manage(user); await qbi.ignore(uuid(params.id), true); return { ok: true }; });
 route('POST', '/api/quickbooks/invoices/:id/restore', async ({ user, params }) => { manage(user); await qbi.ignore(uuid(params.id), false); return { ok: true }; });
 // QuickBooks costs (bills, checks, expenses, card charges): reviewed, then imported as vendor invoices; non-project vendors can be hidden.

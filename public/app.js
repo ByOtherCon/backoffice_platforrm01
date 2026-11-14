@@ -901,7 +901,14 @@ function qboInvoices(s, rows, err) {
       h('td', {}, r.project || (r.suggestedProjectId ? h('span', { class: 'muted', title: r.suggestedBy || '' }, 'Suggested (' + (r.suggestedBy || 'match') + ')') : h('span', { class: 'muted' }, 'Not matched'))),
       h('td', {}, h('span', { class: 'pill ' + (r.status === 'Imported' ? 'Approved' : r.status === 'Changed' ? 'Rejected' : r.status === 'Ignored' ? '' : 'Pending'), title: r.message || '' }, r.status), r.message ? h('div', { class: r.status === 'New' ? 'err' : 'muted', style: 'font-size:12px;max-width:20rem;padding:.25rem .5rem;margin:.2rem 0 0' }, r.message) : ''),
       h('td', {}, r.status === 'New' ? [h('button', { class: 'small primary', onclick: () => qboReview(r) }, 'Review and import'), ' ', h('button', { class: 'small', onclick: guard(err, async () => { await api('POST', `/quickbooks/invoices/${r.id}/ignore`, {}); render(); }) }, 'Ignore')]
-        : r.status === 'Ignored' ? h('button', { class: 'small', onclick: guard(err, async () => { await api('POST', `/quickbooks/invoices/${r.id}/restore`, {}); render(); }) }, 'Restore') : ''))))))
+        : r.status === 'Ignored' ? h('button', { class: 'small', onclick: guard(err, async () => { await api('POST', `/quickbooks/invoices/${r.id}/restore`, {}); render(); }) }, 'Restore')
+        // imported, then changed in QuickBooks (or imported wrong): take it off the project, read it again, and review it like a new one
+        : h('button', { class: 'small' + (r.status === 'Changed' ? ' primary' : ''), title: 'Takes this invoice off the project, reads it from QuickBooks again, and opens it for review so it can be imported again.', onclick: guard(err, async () => {
+            if (!confirm(`Update invoice ${r.number || r.qbId} from QuickBooks?\n\nIts billing is taken off ${r.project || 'the project'} now, and it comes back to the review list as it is in QuickBooks today. Payments from QuickBooks are added again when you import it.`)) return;
+            const out = await api('POST', `/quickbooks/invoices/${r.id}/reopen`, {}); qbFilter = 'New'; qbSearch = '';
+            const fresh = (await api('GET', '/quickbooks/invoices?status=New')).find((x) => x.id === r.id); await render();
+            if (!out.refreshed) alert('QuickBooks could not be reached, so the invoice still shows as it was. Press Sync From QuickBooks, then review it.'); else if (fresh) qboReview(fresh);
+          }) }, 'Update From QuickBooks')))))))
     : h('p', { class: 'muted' }, qbSearch ? 'No invoice matches that search.' : qbFilter === 'New' ? 'Nothing waiting. Press Sync from QuickBooks to look for new invoices.' : 'Nothing here.');
   return h('div', { style: 'margin-top:1.2rem;border-top:1px solid var(--line);padding-top:1rem' }, h('div', { class: 'row spread' }, h('h3', { style: 'margin:0' }, 'Client Invoices From QuickBooks (We Billed Them)'), h('div', { class: 'row' }, pick, sync)),
     h('p', { class: 'muted', style: 'font-size:13px' }, (last ? `Last read ${new Date(last.at).toLocaleString()} (${last.invoicesSeen} invoices looked at). ` : 'Not read yet. ') + 'It also checks by itself every hour.'),

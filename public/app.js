@@ -450,11 +450,17 @@ async function billingTab(p, canEdit, reload) {
     h('tfoot', {}, h('tr', { class: 'total' }, h('td', {}, 'Project'), h('td', { class: 'n' }, usd(T.contract)), h('td', { class: 'n' }, usd(T.billed)), h('td', { class: 'n' }, T.contract > 0 ? pct((T.billed / T.contract) * 100) : '—'), h('td', { class: 'n' }, usd(T.retainageOutstanding)), h('td', { class: 'n' }, usd(T.received)), h('td', { class: 'n' }, usd(T.currentlyDue)), h('td', { class: 'n' }, usd(T.unbilled)))))),
     h('div', { class: 'row', style: 'gap:2rem;margin-top:1.2rem;align-items:center' }, pie(slices), h('div', { style: 'min-width:260px' }, h('h2', {}, 'Where the contract stands'), legend(slices))));
 
-  let qbSug = []; if (canEdit) { try { qbSug = await api('GET', `${base}/qb-suggestions`); } catch { /* QuickBooks is not connected, or this person may not match invoices */ } }
+  const qbErr = h('div'); let qbSug = []; if (canEdit) { try { qbSug = await api('GET', `${base}/qb-suggestions`); } catch { /* QuickBooks is not connected, or this person may not match invoices */ } }
   const qbCard = qbSug.length ? h('div', { class: 'card' }, h('div', { class: 'row spread' }, h('h2', {}, `QuickBooks invoices that may belong here (${qbSug.length})`), h('a', { class: 'small', href: '#/quickbooks', style: 'text-decoration:none' }, 'Open the QuickBooks page')),
-    h('p', { class: 'muted', style: 'margin-top:0' }, 'Waiting for someone to confirm. Nothing is billed until they are imported.'),
-    h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, ['Invoice', 'Date', 'QuickBooks customer', 'Total', 'Why it matches'].map((t, i) => h('th', { class: i === 3 ? 'n' : '' }, t)))),
-      h('tbody', {}, qbSug.map((x) => h('tr', {}, h('td', {}, x.number || ''), h('td', {}, x.date || ''), h('td', {}, x.customer || ''), h('td', { class: 'n' }, usd(x.total)), h('td', {}, x.why || '', x.message ? h('div', { class: 'muted', style: 'font-size:12px' }, x.message) : ''))))))) : '';
+    h('p', { class: 'muted', style: 'margin-top:0' }, 'Waiting for someone to confirm. Nothing is billed until they are imported. Press Review And Import to confirm one right here.'), qbErr,
+    h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, ['Invoice', 'Date', 'QuickBooks customer', 'Total', 'Why it matches'].map((t, i) => h('th', { class: i === 3 ? 'n' : '' }, t)), h('th'))),
+      h('tbody', {}, qbSug.map((x) => h('tr', {}, h('td', {}, x.number || ''), h('td', {}, x.date || ''), h('td', {}, x.customer || ''), h('td', { class: 'n' }, usd(x.total)), h('td', {}, x.why || '', x.message ? h('div', { class: 'muted', style: 'font-size:12px' }, x.message) : ''),
+        // the same review window as the QuickBooks page, with this project already chosen; the page reloads when it is imported
+        h('td', { style: 'white-space:nowrap' }, h('button', { class: 'small primary', onclick: guard(qbErr, async () => {
+          const full = (await api('GET', '/quickbooks/invoices?status=New&search=' + encodeURIComponent(x.number || ''))).find((i) => i.id === x.id);
+          if (!full) throw new Error('That invoice is no longer waiting. It may have been imported or ignored from the QuickBooks page.');
+          await qboReview({ ...full, projectId: p.project.id });
+        }) }, 'Review And Import')))))))) : '';
   const newInvoice = () => {
     const f = { trade: tradeSelect(p), number: h('input'), date: h('input', { type: 'date', value: todayStr() }), due: h('input', { type: 'date' }), amount: num(), ret: num('', { placeholder: 'Blank = none' }) };
     formModal('New invoice', [field('Trade', f.trade), field('Invoice #', f.number), field('Invoice date', f.date), field('Due date', f.due), field('Invoice amount', f.amount), field('Retainage withheld by GC', f.ret)],

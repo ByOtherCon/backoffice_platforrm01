@@ -74,6 +74,8 @@ async function gmailClient() {
   return { email: d.email, request, send };
 }
 export async function sendMail(msg) { return (await gmailClient()).send(msg); }
+// True when Gmail is connected with permission to send (asked for when it was connected).
+export async function canSendMail() { const d = await stored(); return !!d?.canSend; }
 
 // ------------------------------------------------------------------ reading email
 const b64 = (s) => Buffer.from(s.replaceAll('-', '+').replaceAll('_', '/'), 'base64').toString('utf8');

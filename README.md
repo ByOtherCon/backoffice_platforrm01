@@ -199,6 +199,12 @@ Pages use the whole screen width. Tables wrap their column headings, tighten the
   - *New leads:* typing a job that is already on the list under another GC asks "Bundle With This Job / Create Separately". Gmail refresh adds a re-sent invitation for any bundled GC to the one lead.
   - *Nothing is deleted.* The joined rows stay in the database with `merged_into` set, are hidden from every list, and **Split Out** on the main lead makes one a separate lead again (notes and files stay with the main lead).
 
+## Email alerts for messages and to-dos
+- **When.** A new message (a new conversation or a reply) emails every other person in the conversation. A to-do assigned to someone else, when it is added or handed over later, emails that person. Nothing is emailed for a to-do you give yourself, or to the person who sent the message.
+- **What it says.** Who sent it, the subject and text of the message (or the to-do with its priority, due date and notes), and a link that opens it in the app. It goes to the email address the person signs in with.
+- **How it is sent.** From the Gmail mailbox connected in Admin (the same one that sends password-reset emails; it needs the send permission granted when Gmail was connected). The email is queued in `email_outbox` with kind `user_alert` and sent in the background, so sending a message is never slowed down or blocked by email. One email per event and person, never twice. If Gmail is down it is tried again by the regular check for two days.
+- **Kept apart from vendor email.** Insurance requests to subcontractors still go only through SMTP, exactly as before; connecting Gmail does not start sending them. Alert emails are not listed on the Compliance page.
+
 ## On a phone
 The app adapts to a phone screen (width 700 pixels or less); there is no separate phone version to keep in step.
 - **Bottom tab bar** with Dashboard, Projects, Estimating and Messages (with its unread number), and **More** for the rest plus Alerts, Change Password and Sign Out. The top menu is hidden on a phone.

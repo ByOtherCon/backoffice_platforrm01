@@ -1,4 +1,5 @@
 import nodemailer from 'nodemailer';
+import { sendMail, canSendMail, baseUrl } from './bids.js';
 import { q, tx } from './db.js';
 import { bad, text, dateStr, httpsUrl, HttpError } from './http.js';
 import { MANAGE } from './auth.js';
@@ -67,6 +68,7 @@ export async function purgeOld() {
   await q(`DELETE FROM sessions WHERE expires_at < now() - interval '1 day'`);
   await q(`DELETE FROM login_attempts WHERE attempted_at < now() - interval '30 days'`);
   await q(`DELETE FROM notifications WHERE cleared_at IS NOT NULL AND cleared_at < now() - interval '180 days'`);
+  await q(`DELETE FROM email_outbox WHERE kind='user_alert' AND created_at < now() - interval '90 days'`);
 }
 export const markRead = (userId, ids) => ids === 'all' ? q('UPDATE notifications SET read_at=now() WHERE user_id=$1 AND read_at IS NULL', [userId]) : q('UPDATE notifications SET read_at=now() WHERE user_id=$1 AND id = ANY($2::uuid[])', [userId, ids]);
 // Clearing hides an alert for good (the row stays so the same alert is not raised again).
@@ -79,16 +81,40 @@ let transport = null;
 export const setTransport = (t) => { transport = t; };
 const getTransport = () => transport ?? (process.env.SMTP_URL ? (transport = nodemailer.createTransport(process.env.SMTP_URL)) : null);
 export const emailConnected = () => !!getTransport();
-export async function sendQueued() {
-  const t = getTransport(); if (!t) return { sent: 0, failed: 0, connected: false };
+// Sends what is waiting. Alerts to our own people (a new message, a to-do from someone else) go out through the connected Gmail mailbox,
+// or through SMTP when that is what is set up. Emails to vendors go through SMTP only, exactly as before.
+// Each email is claimed before it is sent, so two runs at the same moment never send it twice.
+export async function sendQueued({ only } = {}) {
+  const t = getTransport(), gmail = await canSendMail().catch(() => false);
+  if (!t && !gmail) return { sent: 0, failed: 0, connected: false };
   let sent = 0, failed = 0;
-  for (const m of await q(`SELECT * FROM email_outbox WHERE status='Queued' ORDER BY created_at LIMIT 50`)) {
-    try { await t.sendMail({ from: process.env.EMAIL_FROM || 'ByOther Construction <no-reply@byother.net>', to: m.to_email, subject: m.subject, text: m.body }); await q(`UPDATE email_outbox SET status='Sent', sent_at=now(), error=NULL WHERE id=$1`, [m.id]); sent++; }
-    catch (e) { await q(`UPDATE email_outbox SET status='Failed', error=$2 WHERE id=$1`, [m.id, String(e.message).slice(0, 300)]); failed++; }
+  const rows = await q(`SELECT * FROM email_outbox WHERE status='Queued' AND ($1::text IS NULL OR kind=$1) AND ($2::boolean OR kind='user_alert') ORDER BY created_at LIMIT 50`, [only ?? null, !!t]);
+  for (const m of rows) {
+    if (!(await q(`UPDATE email_outbox SET status='Sent', sent_at=now(), error=NULL WHERE id=$1 AND status='Queued' RETURNING id`, [m.id])).length) continue;
+    try {
+      if (m.kind === 'user_alert' && gmail) await sendMail({ to: m.to_email, subject: m.subject, text: m.body });
+      else await t.sendMail({ from: process.env.EMAIL_FROM || 'ByOther Construction <no-reply@byother.net>', to: m.to_email, subject: m.subject, text: m.body });
+      sent++;
+    } catch (e) { await q(`UPDATE email_outbox SET status='Failed', sent_at=NULL, error=$2 WHERE id=$1`, [m.id, String(e.message).slice(0, 300)]); failed++; }
   }
   return { sent, failed, connected: true };
 }
-export const listOutbox = () => q('SELECT id, to_email, subject, status, kind, error, created_at, sent_at FROM email_outbox ORDER BY created_at DESC LIMIT 100');
+// An email to one of our own people about something sent to them in the app. Queued (once per event and person) and sent straight away in the
+// background; if it cannot go out now it stays in the outbox and goes with the next run. Never slows down or fails the action that caused it.
+export async function emailUser(userId, { subject, text, dedupe }) {
+  try {
+    const [u] = await q('SELECT email, name FROM app_users WHERE id=$1 AND active', [userId]); if (!u?.email) return 0;
+    let link = ''; try { link = baseUrl(); } catch { /* the server does not know its address: the email goes without a link */ }
+    const body = `Hello${u.name ? ' ' + u.name : ''},\n\n${text(link)}\n\nThis email was sent by by Other Desk Platform because it was addressed to you there.\n`;
+    const n = await queueEmail({ to: u.email, subject: String(subject).replace(/\s+/g, ' ').slice(0, 200), body, kind: 'user_alert', relatedId: userId, dedupe });
+    if (n) sendQueued({ only: 'user_alert' }).catch((e) => console.error('alert email not sent:', e.message));
+    return n;
+  } catch (e) { console.error('alert email not queued:', e.message); return 0; }
+}
+// The outbox list on the Compliance page is the email to subcontractors; alerts to our own people (which carry message subjects) are not shown there.
+export const listOutbox = () => q(`SELECT id, to_email, subject, status, kind, error, created_at, sent_at FROM email_outbox WHERE kind IS DISTINCT FROM 'user_alert' ORDER BY created_at DESC LIMIT 100`);
+// An alert email that failed (Gmail was down) is tried again by the regular check for two days, then left.
+export const retryAlerts = () => q(`UPDATE email_outbox SET status='Queued', error=NULL WHERE kind='user_alert' AND status='Failed' AND created_at > now() - interval '2 days'`);
 export const retryEmail = (id) => q(`UPDATE email_outbox SET status='Queued', error=NULL WHERE id=$1 AND status='Failed'`, [id]);
 
 // Expiry watch: notify the team, and email the vendor, only while the vendor is on a project that is still active.

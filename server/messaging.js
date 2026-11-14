@@ -1,6 +1,6 @@
 import { q, tx } from './db.js';
 import { bad, text, dateStr, HttpError } from './http.js';
-import { notifyUser } from './compliance.js';
+import { notifyUser, emailUser } from './compliance.js';
 import { todayEastern } from '../src/lib/estimating.ts';
 
 export const STAFF = ['Super Admin', 'Sub Admin', 'Exec Assistant', 'Estimator', 'Project Manager'];
@@ -49,6 +49,12 @@ export const listThreads = (userId) => q(`SELECT th.id, th.subject, th.updated_a
     (SELECT COUNT(*)::int FROM messages m WHERE m.thread_id=th.id AND m.sender_id <> $1 AND (tm.last_read_at IS NULL OR m.created_at > tm.last_read_at)) AS unread,
     (SELECT json_agg(u.name ORDER BY u.name) FROM thread_members x JOIN app_users u ON u.id=x.user_id WHERE x.thread_id=th.id) AS members
   FROM threads th JOIN thread_members tm ON tm.thread_id=th.id AND tm.user_id=$1 ORDER BY th.updated_at DESC LIMIT 100`, [userId]);
+// The email that goes with a new message or a to-do from someone else.
+const clip = (s, n) => (String(s).length > n ? String(s).slice(0, n) + '…' : String(s));
+const mailMessage = (to, user, subject, body, threadId, messageId) => emailUser(to, { subject: `New message from ${user.name || user.email}: ${subject}`, dedupe: `alert:msg:${messageId}:${to}`,
+  text: (base) => `${user.name || user.email} sent you a message.\n\nSubject: ${subject}\n\n${clip(body, 2000)}${base ? `\n\nOpen it and reply: ${base}/#/messages/${threadId}` : ''}` });
+const mailTodo = (to, user, todo, id, fresh) => emailUser(to, { subject: `${fresh ? 'New to-do' : 'To-do assigned to you'} from ${user.name || user.email}: ${todo.title}`, dedupe: `alert:todo:${id}:${to}`,
+  text: (base) => `${user.name || user.email} assigned you a to-do.\n\n${todo.title}\nPriority: ${todo.priority || 'Normal'}${todo.due ? `\nDue: ${todo.due}` : ''}${todo.notes ? `\n\n${clip(todo.notes, 1500)}` : ''}${base ? `\n\nOpen your to-dos: ${base}/#/messages/todos` : ''}` });
 export async function createThread(user, b) {
   const subject = text(b.subject, 'Subject', { max: 200 }), body = text(b.body, 'Message', { max: 5000 });
   const ids = [...new Set([user.id, ...(Array.isArray(b.memberIds) ? b.memberIds : [])])];
@@ -61,7 +67,7 @@ export async function createThread(user, b) {
     const [m] = await t('INSERT INTO messages(thread_id,sender_id,body) VALUES ($1,$2,$3) RETURNING id', [th.id, user.id, body]); await saveLinks(t, 'message', m.id, links);
     return { id: th.id, messageId: m.id, ids };
   });
-  for (const id of r.ids.filter((x) => x !== user.id)) await notifyUser(id, { kind: 'message', title: `${user.name || user.email}: ${subject}`, body: body.slice(0, 140), link: `#/messages/${r.id}`, dedupe: `msg:${r.messageId}` });
+  for (const id of r.ids.filter((x) => x !== user.id)) { await notifyUser(id, { kind: 'message', title: `${user.name || user.email}: ${subject}`, body: body.slice(0, 140), link: `#/messages/${r.id}`, dedupe: `msg:${r.messageId}` }); await mailMessage(id, user, subject, body, r.id, r.messageId); }
   return { id: r.id };
 }
 export async function getThread(user, id) {
@@ -82,7 +88,7 @@ export async function reply(user, id, b) {
     await t('UPDATE threads SET updated_at=now() WHERE id=$1', [id]); await t('UPDATE thread_members SET last_read_at=now() WHERE thread_id=$1 AND user_id=$2', [id, user.id]);
     return { mid: m.id, subject: (await t('SELECT subject FROM threads WHERE id=$1', [id]))[0].subject, others: (await t('SELECT user_id FROM thread_members WHERE thread_id=$1 AND user_id <> $2', [id, user.id])).map((x) => x.user_id) };
   });
-  for (const u of r.others) await notifyUser(u, { kind: 'message', title: `${user.name || user.email}: ${r.subject}`, body: body.slice(0, 140), link: `#/messages/${id}`, dedupe: `msg:${r.mid}` });
+  for (const u of r.others) { await notifyUser(u, { kind: 'message', title: `${user.name || user.email}: ${r.subject}`, body: body.slice(0, 140), link: `#/messages/${id}`, dedupe: `msg:${r.mid}` }); await mailMessage(u, user, r.subject, body, id, r.mid); }
   return { id: r.mid };
 }
 export async function addMember(user, id, userId) {
@@ -126,7 +132,7 @@ export async function createTodo(user, b) {
     await note(t, row.id, null, `Added by ${user.name || user.email}${v.assigned_to && v.assigned_to !== user.id ? ' and assigned to ' + ((await t('SELECT name FROM app_users WHERE id=$1', [v.assigned_to]))[0]?.name || 'a teammate') : ''}.`);
     await saveLinks(t, 'todo', row.id, links); return row.id;
   }).catch((e) => { throw e.code === '23514' ? bad('The due date cannot be before the start date.') : e; });
-  if (v.assigned_to && v.assigned_to !== user.id) await notifyUser(v.assigned_to, { kind: 'todo', title: `New to-do from ${user.name || user.email}`, body: v.title, link: '#/messages/todos', dedupe: `todo:${r}` });
+  if (v.assigned_to && v.assigned_to !== user.id) { await notifyUser(v.assigned_to, { kind: 'todo', title: `New to-do from ${user.name || user.email}`, body: v.title, link: '#/messages/todos', dedupe: `todo:${r}` }); await mailTodo(v.assigned_to, user, { title: v.title, priority: v.priority, due: v.due_date, notes: v.notes }, r, true); }
   return { id: r };
 }
 export async function updateTodo(user, id, b) {
@@ -144,7 +150,8 @@ export async function updateTodo(user, id, b) {
     if (keys.length) await t(`UPDATE todos SET ${keys.map((k, i) => `${k}=$${i + 2}`).join(',')} WHERE id=$1`, [id, ...keys.map((k) => v[k])]);
     if (b.links) await saveLinks(t, 'todo', id, await resolveLinks(t, b.links));
   }).catch((e) => { throw e.code === '23514' ? bad('The due date cannot be before the start date.') : e; });
-  if (v.assigned_to && v.assigned_to !== user.id) await notifyUser(v.assigned_to, { kind: 'todo', title: `To-do assigned to you by ${user.name || user.email}`, link: '#/messages/todos', dedupe: `todo:${id}:${v.assigned_to}` });
+  if (v.assigned_to && v.assigned_to !== user.id) { await notifyUser(v.assigned_to, { kind: 'todo', title: `To-do assigned to you by ${user.name || user.email}`, link: '#/messages/todos', dedupe: `todo:${id}:${v.assigned_to}` });
+    const [td] = await q(`SELECT title, priority, notes, due_date::text AS due FROM todos WHERE id=$1`, [id]); if (td) await mailTodo(v.assigned_to, user, td, id, false); }
 }
 export async function deleteTodo(user, id) {
   const [t] = await q('SELECT created_by FROM todos WHERE id=$1', [id]); if (!t) throw new HttpError(404, 'To-do not found.');

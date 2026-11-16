@@ -40,6 +40,7 @@ import * as vr from './vendorRead.js';
 import * as bn from './bundles.js';
 import * as cal from './calendar.js';
 import * as sms from './sms.js';
+import * as esign from './esign.js';
 import * as ec from './estimateChat.js';
 import * as qbi from './qbImport.js';
 import * as acc from './access.js';
@@ -234,6 +235,20 @@ route('POST', '/api/opportunities', async ({ user, body }) => es.create(estWrite
 route('POST', '/api/opportunities/import', async ({ user, body }) => es.importLeads(estWrite(user), body));
 route('GET', '/api/opportunities/bundles', async ({ user }) => { estRead(user); return { groups: await bn.findDuplicates() }; });
 route('GET', '/api/opportunities/similar', async ({ req, user }) => { estRead(user); return { leads: await bn.similarFor({ name: q1(req, 'name'), city: q1(req, 'city'), address: q1(req, 'address'), gc: q1(req, 'gc') }) }; });
+// E-signatures (DocuSign). The owner connects the account; office staff and a project's manager send that project's PDFs for signature.
+const SIGN = [...auth.MANAGE, 'Project Manager'];
+route('GET', '/api/docusign/status', async ({ user }) => { auth.requireRole(user, auth.SUPER); return esign.status(); });
+route('GET', '/api/docusign/connect', async ({ user }) => { auth.requireRole(user, auth.SUPER); return { url: esign.connectUrl(user) }; });
+route('GET', '/api/docusign/callback', async ({ req, res, user }) => {
+  auth.requireRole(user, auth.SUPER); const p = new URL(req.url, 'http://x').searchParams;
+  if (p.get('error')) throw bad('DocuSign did not allow the connection (' + p.get('error') + ').');
+  await esign.finishConnect(p.get('code'), p.get('state')); res.writeHead(302, { location: '/#/admin/connections', 'cache-control': 'no-store' }); res.end(); return 'sent';
+});
+route('DELETE', '/api/docusign', async ({ user }) => { auth.requireRole(user, auth.SUPER); await esign.disconnect(); return { ok: true }; });
+route('GET', '/api/projects/:id/esign', async ({ user, params }) => { await auth.requireProject(user, uuid(params.id)); return esign.listForProject(params.id); });
+route('POST', '/api/documents/:id/esign', async ({ user, params, body }) => { auth.requireRole(user, SIGN); await auth.requireProject(user, await esign.documentProject(uuid(params.id))); return esign.send(user, params.id, body || {}); });
+route('POST', '/api/esign/:id/refresh', async ({ user, params }) => { auth.requireRole(user, SIGN); await auth.requireProject(user, await esign.envelopeProject(uuid(params.id))); return esign.refresh(params.id); });
+route('POST', '/api/esign/:id/cancel', async ({ user, params, body }) => { auth.requireRole(user, SIGN); await auth.requireProject(user, await esign.envelopeProject(uuid(params.id))); return esign.cancel(user, params.id, body || {}); });
 // Text messages (Twilio): the owner sees the set-up and the log, changes which alerts run and when, and can send a test.
 route('GET', '/api/sms/status', async ({ user }) => { auth.requireRole(user, auth.SUPER); return sms.status(); });
 route('PUT', '/api/sms/settings', async ({ user, body }) => { auth.requireRole(user, auth.SUPER); return sms.saveSettings(body || {}); });
@@ -489,7 +504,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const port = Number(process.env.PORT) || 3000;
   if (!process.env.DATABASE_URL) { console.error('DATABASE_URL is not set.'); process.exit(1); }
   bootstrapOwner().then((r) => console.log(r.created ? `Created the owner login for ${r.email}. Remove ADMIN_PASSWORD from the host settings now.` : r.reason.startsWith('Set ') ? r.reason : 'Owner login already set up.')).catch((e) => console.error('bootstrap failed', e.message));
-  server.listen(port, () => { console.log(`by Other Desk Platform on port ${port}`); bd.startScheduler(); sms.startScheduler(); bd.retierOnce().catch((e) => console.error('retier', e.message)); dc.backfillHashes().then((n) => n && console.log(`Fingerprinted ${n} saved file${n === 1 ? '' : 's'}.`)).catch((e) => console.error('fingerprint', e.message)); tc.ensureDefaultPins().then((n) => n && console.log(`Gave ${n} employee${n === 1 ? '' : 's'} the automatic time clock PIN (last 4 of the phone, else 0000).`)).catch((e) => console.error('default PINs', e.message)); setTimeout(() => folders.syncGcs(), 20000); setInterval(() => folders.syncGcs(), 3600000); setInterval(() => { qbo.status().then((st) => st.connected && st.connectedEnvironment === st.environment ? qbi.sync().then(() => qbc.sync()) : null).catch((e) => console.error('QuickBooks sync', e.message)); }, 3600000); setInterval(() => fu.closeDueCases().catch((e) => console.error('follow-up sweep', e.message)), 3600000); });
+  server.listen(port, () => { console.log(`by Other Desk Platform on port ${port}`); bd.startScheduler(); sms.startScheduler(); esign.startScheduler(); bd.retierOnce().catch((e) => console.error('retier', e.message)); dc.backfillHashes().then((n) => n && console.log(`Fingerprinted ${n} saved file${n === 1 ? '' : 's'}.`)).catch((e) => console.error('fingerprint', e.message)); tc.ensureDefaultPins().then((n) => n && console.log(`Gave ${n} employee${n === 1 ? '' : 's'} the automatic time clock PIN (last 4 of the phone, else 0000).`)).catch((e) => console.error('default PINs', e.message)); setTimeout(() => folders.syncGcs(), 20000); setInterval(() => folders.syncGcs(), 3600000); setInterval(() => { qbo.status().then((st) => st.connected && st.connectedEnvironment === st.environment ? qbi.sync().then(() => qbc.sync()) : null).catch((e) => console.error('QuickBooks sync', e.message)); }, 3600000); setInterval(() => fu.closeDueCases().catch((e) => console.error('follow-up sweep', e.message)), 3600000); });
   const watch = () => cp.scan().then(() => cp.scanNtos()).then(() => cp.retryAlerts()).then(() => cp.sendQueued()).then(() => cp.purgeOld()).catch((e) => console.error('compliance scan failed', e.message));
   setTimeout(watch, 15_000); setInterval(watch, 6 * 3600_000);
 }

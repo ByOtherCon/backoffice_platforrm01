@@ -122,7 +122,7 @@ export const listDocuments = ({ projectId, category } = {}) => {
       OR d.id IN (SELECT x.doc FROM sub_commitments c JOIN subcontractors s ON s.id=c.subcontractor_id CROSS JOIN LATERAL (VALUES (s.w9_document_id), (s.coi_document_id), (s.exemption_document_id)) AS x(doc) WHERE c.project_id=${P} AND x.doc IS NOT NULL))`);
   }
   if (category) { v.push(category); w.push(`d.category=$${v.length}`); }
-  return q(`SELECT d.id, d.category, d.name, d.url, d.expires_on, d.size, d.created_at, d.project_id, (d.storage_key IS NOT NULL) AS has_file, u.name AS uploaded_by FROM documents d LEFT JOIN app_users u ON u.id=d.created_by WHERE ${w.join(' AND ')} ORDER BY d.created_at DESC LIMIT 500`, v);
+  return q(`SELECT d.id, d.category, d.name, d.url, d.expires_on, d.size, d.mime, d.created_at, d.project_id, (d.storage_key IS NOT NULL) AS has_file, u.name AS uploaded_by FROM documents d LEFT JOIN app_users u ON u.id=d.created_by WHERE ${w.join(' AND ')} ORDER BY d.created_at DESC LIMIT 500`, v);
 };
 // Files saved before fingerprints existed get theirs now (runs in the background at start).
 export async function backfillHashes() {

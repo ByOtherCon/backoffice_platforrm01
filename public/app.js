@@ -811,6 +811,19 @@ async function uploadFile(path, file) {
 const DOC_CATS = ['Contract', 'Proposal', 'Approved CO', 'Client Invoice', 'Vendor Invoice', 'Receipt', 'Plans', 'Notice to Owner', 'Other'];
 async function projectDocs(p, canEdit, reload) {
   const docs = await api('GET', `/documents?projectId=${p.project.id}`); const err = h('div');
+  const es = await api('GET', `/projects/${p.project.id}/esign`).catch(() => ({ connected: false, envelopes: [] }));
+  const day = (d) => new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const signForm = (d) => {
+    const row = () => ({ name: h('input', { placeholder: 'Full name' }), email: h('input', { type: 'email', placeholder: 'email@company.com' }) }), sg = [row(), row(), row()];
+    const f = { cc: h('input', { type: 'email', placeholder: 'Optional' }), subject: h('input', { value: `Please sign: ${d.name.replace(/\.pdf$/i, '')} · ${p.project.name}`.slice(0, 100), maxlength: 100 }), msg: h('textarea', { rows: 3, placeholder: 'Optional note shown in the email' }) };
+    formModal(`Send For Signature · ${d.name}`, [h('p', { class: 'muted wide' }, 'DocuSign emails each signer in order: the second one gets it after the first has signed. Each person places their own signature and date on the page. When everyone has signed, the signed PDF is saved in this list.'),
+      ...sg.flatMap((r, i) => [field(i === 0 ? 'First signer' : i === 1 ? 'Second signer (optional)' : 'Third signer (optional)', r.name), field('Email', r.email)]),
+      field('Send a copy to', f.cc), field('Email subject', f.subject), field('Message', f.msg, 'wide')], async () => {
+      await api('POST', `/documents/${d.id}/esign`, { signers: sg.map((r) => ({ name: r.name.value, email: r.email.value })), cc: f.cc.value, subject: f.subject.value, message: f.msg.value }); reload();
+    }, 'Send');
+  };
+  const signLines = (d) => es.envelopes.filter((e) => e.documentId === d.id).map((e) => h('div', { style: 'font-size:13px;margin-top:.15rem' }, h('span', { class: 'pill ' + (e.status === 'completed' ? 'Approved' : e.open ? 'Pending' : 'Rejected') }, e.statusLabel), ` sent ${day(e.sentAt)} to ${e.signers.map((x) => x.name).join(', ')}${e.completedAt ? ` · signed ${day(e.completedAt)}` : ''}${e.signedDocumentId ? ' · the signed copy is in this list' : ''} `,
+    canEdit && e.open ? [h('button', { class: 'small', onclick: guard(err, async () => { await api('POST', `/esign/${e.id}/refresh`, {}); reload(); }) }, 'Check Now'), ' ', h('button', { class: 'small', onclick: guard(err, async () => { if (confirm('Cancel this signature request? The signers can no longer sign it.')) { await api('POST', `/esign/${e.id}/cancel`, {}); reload(); } }) }, 'Cancel Request')] : '', e.error ? h('div', { class: 'neg' }, e.error) : ''));
   const add = () => {
     const f = { cat: h('select', {}, DOC_CATS.map((c) => h('option', { value: c }, c))), name: h('input', { placeholder: 'Optional' }), file: h('input', { type: 'file', accept: '.pdf,.png,.jpg,.jpeg,.docx,.xlsx,.csv,.txt' }), url: h('input', { type: 'url', placeholder: 'or paste a OneDrive / iCloud link (https://…)' }) };
     formModal('Add a document', [field('Type', f.cat), field('Name', f.name), field('File', f.file, 'wide'), field('Link', f.url, 'wide')], async () => {
@@ -823,8 +836,8 @@ async function projectDocs(p, canEdit, reload) {
   const th = (t) => h('th', {}, t);
   return h('div', { class: 'card' }, h('div', { class: 'row spread' }, h('h2', {}, 'Project documents'), canEdit && h('button', { class: 'primary', onclick: add }, '+ Add document')), err,
     h('p', { class: 'muted', style: 'margin-top:0' }, 'Everything uploaded for this project is kept here for later review: its contract, change orders, receipts and invoices, plans, and the paperwork of its subcontractors. The same file is never saved twice.'),
-    docs.length ? h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, th('Type'), th('Name'), th('Added'), th('By'), th(''))), h('tbody', {}, docs.map((d) => h('tr', {}, h('td', {}, d.category), h('td', {}, d.has_file ? h('a', { href: `/api/documents/${d.id}/file`, target: '_blank', rel: 'noopener' }, d.name) : h('a', { href: d.url, target: '_blank', rel: 'noopener' }, d.name)), h('td', {}, new Date(d.created_at).toLocaleDateString()), h('td', {}, d.uploaded_by || ''),
-      h('td', {}, d.has_file && hasFolderAccess() ? [h('button', { class: 'small', title: 'Save a copy into a folder on this computer', onclick: guard(err, oneAtATime(async () => { try { notice(err, 'Saved to ' + (await saveDocToFolder(d)), 'ok'); } catch (e) { throw folderError(e); } })) }, 'Save to my folder'), ' '] : '', canEdit ? h('button', { class: 'small danger', onclick: guard(err, async () => { if (confirm(`Delete ${d.name}?`)) { await api('DELETE', `/documents/${d.id}`); reload(); } }) }, 'Delete') : ''))))) ) : h('p', { class: 'muted' }, 'No documents yet. Add the signed contract, proposals, approved change orders, invoices and plans here.'));
+    docs.length ? h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, th('Type'), th('Name'), th('Added'), th('By'), th(''))), h('tbody', {}, docs.map((d) => h('tr', {}, h('td', {}, d.category), h('td', { style: 'white-space:normal' }, d.has_file ? h('a', { href: `/api/documents/${d.id}/file`, target: '_blank', rel: 'noopener' }, d.name) : h('a', { href: d.url, target: '_blank', rel: 'noopener' }, d.name), signLines(d)), h('td', {}, new Date(d.created_at).toLocaleDateString()), h('td', {}, d.uploaded_by || ''),
+      h('td', {}, canEdit && es.connected && d.has_file && d.mime === 'application/pdf' && d.project_id === p.project.id ? [h('button', { class: 'small', title: 'Email this PDF to be signed through DocuSign', onclick: () => signForm(d) }, 'Send For Signature'), ' '] : '', d.has_file && hasFolderAccess() ? [h('button', { class: 'small', title: 'Save a copy into a folder on this computer', onclick: guard(err, oneAtATime(async () => { try { notice(err, 'Saved to ' + (await saveDocToFolder(d)), 'ok'); } catch (e) { throw folderError(e); } })) }, 'Save to my folder'), ' '] : '', canEdit ? h('button', { class: 'small danger', onclick: guard(err, async () => { if (confirm(`Delete ${d.name}?`)) { await api('DELETE', `/documents/${d.id}`); reload(); } }) }, 'Delete') : ''))))) ) : h('p', { class: 'muted' }, 'No documents yet. Add the signed contract, proposals, approved change orders, invoices and plans here.'));
 }
 
 // For a vendor typed in new: keep it for next time, or treat the purchase as a one-time one (kept on the invoice, out of the vendor dropdowns).
@@ -1162,6 +1175,23 @@ async function qboCostReview(c) {
     }, 'Import');
   draw().catch((e) => notice(err, e.message));
 }
+// DocuSign: connect the company's account once; then a project PDF can be sent for signature from the project's Documents.
+async function docusignCard() {
+  const s = await api('GET', '/docusign/status'), err = h('div'), test = s.environment !== 'production';
+  return h('div', { class: 'card' }, h('h2', {}, 'DocuSign (e-signatures)'), err,
+    !s.configured ? h('div', {}, h('p', { class: 'err' }, 'Not set up yet.'), h('ol', { class: 'muted', style: 'margin:.2rem 0 .6rem 1.2rem' },
+      h('li', {}, 'Make a free developer account at developers.docusign.com (this is DocuSign\'s test system; every new connection starts there).'),
+      h('li', {}, 'In it: Settings, Apps and Keys, Add App and Integration Key. Name it by Other Desk Platform.'),
+      h('li', {}, 'On the app: choose Authorization Code Grant, press Add Secret Key and copy the secret, and under Redirect URIs add exactly: ', h('code', {}, s.redirectUri || '(the site address)/api/docusign/callback')),
+      h('li', {}, `On Render, Environment, add: ${s.needs.join(', ')} (the Integration Key and the Secret Key).`),
+      h('li', {}, 'Come back here and press Connect DocuSign.')))
+    : !s.connected ? h('div', {}, h('p', { class: 'muted' }, `Ready to connect${test ? ' to DocuSign\'s test system' : ''}. Sign in with the DocuSign account the documents should be sent from.`), h('button', { class: 'primary', onclick: guard(err, async () => { location.href = (await api('GET', '/docusign/connect')).url; }) }, 'Connect DocuSign'))
+    : h('div', {}, h('p', { class: 'ok' }, `Connected${s.account ? ' to ' + s.account : ''}${s.email ? ' as ' + s.email : ''}.`),
+        s.connectedEnvironment !== s.environment ? h('p', { class: 'err' }, `The server is set to ${s.environment} but this connection is ${s.connectedEnvironment}. Disconnect and connect again.`) : '',
+        h('p', { class: 'muted' }, 'Send a PDF for signature from a project, Documents, Send For Signature. The signed copy is saved back into that project.'),
+        h('button', { onclick: guard(err, async () => { if (confirm('Disconnect DocuSign? Requests already sent stay in DocuSign, but the platform stops following them.')) { await api('DELETE', '/docusign'); render(); } }) }, 'Disconnect')),
+    s.configured && test ? h('p', { class: 'err', style: 'margin-top:.6rem' }, 'This is DocuSign\'s TEST system: emails are real, but signatures made here are not legally binding. To go live, DocuSign has to approve the app (Apps and Keys, Start Go Live Review, after 20 test sends), then add DOCUSIGN_ENVIRONMENT=production on Render with the live keys and connect again.') : '');
+}
 // Text messages: what is needed to turn them on, which alerts run and when, a test, and the last texts sent.
 async function smsCard() {
   const s = await api('GET', '/sms/status'), err = h('div'), st = s.settings;
@@ -1472,14 +1502,14 @@ function collapsible(card, open) {
 const ADMIN_GROUPS = [
   ['lists', 'Lists', 'Create vendors, subcontractors, employees, trades and GCs here. Projects pick from these lists. Archive instead of delete once a record has history.'],
   ['company', 'Company', 'People and access, time clock rules, and company overhead.'],
-  ['connections', 'Connections', 'Gmail bid invitations, SharePoint folders, QuickBooks and text messages.'],
+  ['connections', 'Connections', 'Gmail bid invitations, SharePoint folders, QuickBooks, DocuSign and text messages.'],
   ['ai', 'AI', 'The AI reading limits, and who has used how much.'],
 ];
 async function adminCards(group) {
   const top = ['Super Admin', 'Sub Admin'].includes(state.user.role), parts = [];
   if (group === 'lists') for (const s of SECTIONS) parts.push(await adminSection(s));
   else if (group === 'company') { if (isSuper()) parts.push(await usersSection()); parts.push(await clockSettingsCard()); if (top) parts.push(await overheadCard()); }
-  else if (group === 'connections') { if (isSuper()) parts.push(await googleSigninCard()); if (top) parts.push(await bidFeedCard()); if (isSuper()) { parts.push(await sharepointCard()); parts.push(await quickbooksCard()); parts.push(await smsCard()); } }
+  else if (group === 'connections') { if (isSuper()) parts.push(await googleSigninCard()); if (top) parts.push(await bidFeedCard()); if (isSuper()) { parts.push(await sharepointCard()); parts.push(await quickbooksCard()); parts.push(await docusignCard()); parts.push(await smsCard()); } }
   else if (group === 'ai') { parts.push(await aiCard()); if (isSuper()) parts.push(await aiReportCard()); }
   return parts;
 }

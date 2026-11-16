@@ -246,3 +246,25 @@ test('the working figures are for the signed-in estimator, or the whole company 
   const get = async (scope) => (await call('GET', `/api/opportunities?tab=proposals${scope ? '&scope=' + scope : ''}`, null, est)).body.stats;
   const all = await get('all'), mine = await get('mine'); assert.deepEqual([all.scope, mine.scope], ['all', 'mine']); const myWork = (await q(`SELECT count(*)::int n FROM opportunities WHERE status IN ('Accepted','Started') AND estimator_id=$1`, [me]))[0].n, allWork = (await q(`SELECT count(*)::int n FROM opportunities WHERE status IN ('Accepted','Started')`))[0].n; assert.deepEqual([mine.working, all.working], [myWork, allWork]); assert.ok(allWork - myWork >= 2);                     // my one, versus everyone's assert.equal(all.openLeads, mine.openLeads); void month;   // New leads are never split by person
 });
+
+test('work taken on after its bid date is left alone by the clean-up, and Decided Not To Submit can go to any status', async () => {
+  const id = (await q(`INSERT INTO opportunities(name,gc_name,city,due_date,status,source_key) VALUES ('Late on purpose','GC','Orlando',$1,'New','late-1') RETURNING id`, [shift(today, -11)]))[0].id;
+  await q('UPDATE opportunities SET keep_past_due=true WHERE id=$1', [id]);   // as a lead brought back to New is
+  const move = (status, extra = {}) => call('POST', `/api/opportunities/${id}/status`, { status, ...extra }, est), st = async () => (await q('SELECT status, keep_past_due, auto_declined, declined_reason, proposal_id FROM opportunities WHERE id=$1', [id]))[0];
+  const estId = (await q(`SELECT id FROM app_users WHERE email='est@x.net'`))[0].id;
+  assert.equal((await move('Accepted', { estimatorId: estId })).status, 200); await bidsSweep(); await call('GET', '/api/opportunities?tab=proposals', null, est);
+  let o = await st(); assert.deepEqual([o.status, o.keep_past_due], ['Accepted', true]);   // 11 days past due, accepted today: still Accepted
+  assert.equal((await call('GET', `/api/opportunities/${id}`, null, est)).body.expiry, null);
+  const pid = o.proposal_id, reasons = (await call('GET', '/api/estimating/options', null, est)).body;
+  // from Decided Not To Submit to every other place a lead can sit
+  for (const to of ['New', 'Reviewing', 'Started', 'Accepted', 'Declined']) {
+    if ((await st()).status !== 'Decided Not To Submit') { if ((await st()).status === 'Declined') assert.equal((await move('New')).status, 200); if ((await st()).status === 'New') assert.equal((await move('Accepted')).status, 200); if ((await st()).status === 'Reviewing') assert.equal((await move('Accepted')).status, 200); assert.equal((await move('Decided Not To Submit', { reason: reasons.dntsReasons[0] })).status, 200); }
+    const r = await move(to, to === 'Declined' ? { reason: reasons.declineReasons[0] } : {}); assert.equal(r.status, 200, `${to}: ${JSON.stringify(r.body)}`); await bidsSweep();
+    o = await st(); assert.equal(o.status, to); assert.equal(o.proposal_id, pid);   // it stays where it was put, and keeps its P number
+    if (to !== 'Declined') assert.deepEqual([o.auto_declined, o.declined_reason], [false, null]);
+  }
+  assert.ok((await call('GET', '/api/opportunities?tab=proposals&filter=Decided Not To Submit', null, est)).body.rows.every((x) => x.id !== id));
+  // work accepted BEFORE its bid date still expires when nothing is submitted
+  const early = (await q(`INSERT INTO opportunities(name,gc_name,city,due_date,status,accepted_date,source_key) VALUES ('Accepted in time','GC','Orlando',$1,'Accepted',$2,'late-2') RETURNING id`, [shift(today, -6), shift(today, -9)]))[0].id;
+  await bidsSweep(); assert.equal((await q('SELECT status FROM opportunities WHERE id=$1', [early]))[0].status, 'Decided Not To Submit');
+});

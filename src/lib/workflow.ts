@@ -16,14 +16,15 @@ export const DNTS_REASONS = ["Didn't get to finish", 'Complicated trades', 'GC /
 export const EXPIRED_REASON = 'No action taken (lead expired)';
 export const NOT_AWARDED_REASONS = ['Price too high', 'GC chose another subcontractor', 'GC did not win the project', 'Scope changed', 'No feedback given', 'Other (see notes)'];
 
-// Where the next move can go. Accepted work never returns to New or Reviewing. Submitting and the three results have their own steps (PDF, project).
+// Where the next move can go. Accepted work does not return to New or Reviewing, except from Decided Not To Submit, which can go anywhere
+// (it is often set by the clean-up, and a person has to be able to put the lead where it belongs). Submitting and the three results have their own steps (PDF, project).
 const NEXT: Record<string, string[]> = {
   New: ['Reviewing', 'Accepted', 'Declined'],
   Reviewing: ['Accepted', 'Decided Not To Submit'],
   Accepted: ['Started', 'Submitted', 'Decided Not To Submit'],
   Started: ['Accepted', 'Submitted', 'Decided Not To Submit'],
   Submitted: ['Awarded', 'Not Awarded', 'No Communication', 'Started'],
-  'Decided Not To Submit': ['Accepted', 'Started'],
+  'Decided Not To Submit': ['New', 'Reviewing', 'Accepted', 'Started', 'Declined'],
   Declined: ['New'],
   Awarded: [],
   'Not Awarded': ['Submitted'],
@@ -66,8 +67,8 @@ export function newLeadExpiry(createdDate: string, tier: number, today = todayEa
   return null;
 }
 // Accepted or Started work with no submission: a red "expiring" note 3 days after the bid due date, and Decided Not To Submit 2 days later.
-export function workExpiry(status: string, due: string | null, submitted: boolean, today = todayEastern()): 'expiring' | 'expired' | null {
-  if (!due || submitted || !['Accepted', 'Started'].includes(status)) return null;
+export function workExpiry(status: string, due: string | null, submitted: boolean, today = todayEastern(), keepPastDue = false): 'expiring' | 'expired' | null {
+  if (!due || submitted || keepPastDue || !['Accepted', 'Started'].includes(status)) return null;   // keepPastDue: a person put it there after the bid date, on purpose
   return today >= shift(due, 5) ? 'expired' : today >= shift(due, 3) ? 'expiring' : null;
 }
 // Row colour: green when submitted, yellow when started with time left, red on or after the due date without a submission.

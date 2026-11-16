@@ -180,6 +180,7 @@ const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 //  - New and Reviewing leads decline after their bid due date plus the configured days (undated leads never expire on that rule).
 //  - A New lead nobody took up is declined 7 working days after it arrived, and a Tier 3 or 4 lead when its week is over.
 //  - Accepted or Started work with no submission gets "expiring" 3 days after the due date and becomes Decided Not To Submit 2 days later.
+//    Work a person accepted, started or brought back AFTER its bid date had passed is left alone: that was done on purpose.
 export async function sweepDeclines(rl) {
   if (!rl) { const v = (await q(`SELECT value FROM app_settings WHERE key='estimating'`))[0]?.value ?? {}; rl = { declineNewDays: Number(v.declineNewDays ?? 2), declineReviewingDays: Number(v.declineReviewingDays ?? 2) }; }
   const today = todayEastern(); let n = 0;
@@ -193,7 +194,7 @@ export async function sweepDeclines(rl) {
       // a lead brought back on purpose is not held to the end-of-week rule
       else if (o.status === 'New') { const x = W.newLeadExpiry(o.created, o.revived ? Math.min(o.tier, 2) : o.tier, today); if (x) why = x.replace(/\.$/, '').replace(/^N/, 'n'); }
       if (why) { to = 'Declined'; reason = 'Auto-declined: ' + (/due date/.test(why) ? 'past its bid date' : why); }
-    } else if (W.workExpiry(o.status, o.due, o.submitted, today) === 'expired') { to = 'Decided Not To Submit'; reason = W.EXPIRED_REASON; why = `no proposal was submitted within 5 days of the bid due date (${o.due})`; }
+    } else if (W.workExpiry(o.status, o.due, o.submitted, today, o.keep_past_due) === 'expired') { to = 'Decided Not To Submit'; reason = W.EXPIRED_REASON; why = `no proposal was submitted within 5 days of the bid due date (${o.due})`; }
     if (!to) continue;
     const r = await tx(async (t) => {
       const [cur] = await t('SELECT status FROM opportunities WHERE id=$1 FOR UPDATE', [o.id]); if (!cur || cur.status !== o.status) return 0;

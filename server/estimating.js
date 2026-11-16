@@ -65,7 +65,7 @@ export async function loadAll(where = '', params = []) {
       consideredTrades: considered.filter((c) => c.opportunity_id === r.id).map((c) => ({ tradeId: c.trade_id, name: c.name })),
       files: files.filter((f) => f.opportunity_id === r.id).map((f) => ({ id: f.id, kind: f.kind, name: f.name, mime: f.mime, size: f.size, local: f.local, spUrl: f.sp_url, at: f.created_at, version: f.version, used: !!f.submission_id, removed: !!f.removed })),
       tradePrices: tp, total: r2(tp.reduce((n, p) => n + Math.round(p.amount * 100), 0) / 100), submissions: ss, communications: cs, lastSubmission: last,
-      countdown: E.countdown(r.due_date, !!last, today), week: E.groupFor(r.due_date, today), expiry: W.workExpiry(r.status, r.due_date, !!last, today), tone: W.rowTone(r.status, r.due_date, !!last, today), followup, calendarDate: last ? last.date : r.due_date };
+      countdown: E.countdown(r.due_date, !!last, today), week: E.groupFor(r.due_date, today), expiry: W.workExpiry(r.status, r.due_date, !!last, today, r.keep_past_due), tone: W.rowTone(r.status, r.due_date, !!last, today), followup, calendarDate: last ? last.date : r.due_date };
   });
 }
 const isWorking = (o) => ['Accepted', 'Started'].includes(o.status);
@@ -301,7 +301,9 @@ export async function transition(user, id, b = {}) {
     if (!W.canMove(from, to)) throw new HttpError(409, `${W.statusName(from)} cannot move to ${W.statusName(to)}.${from === 'Declined' ? ' Reopen it to New first.' : ''}`);
     if (to === 'Submitted' && ['Accepted', 'Started'].includes(from)) throw bad('Upload the proposal PDF and record the submission. That moves it to Submitted.');
     const set = { status: to, result: W.resultFor(to) }; let detail = '';
-    if (to === 'Accepted' || to === 'Reviewing') { set.declined_reason = null; set.auto_declined = false; }
+    if (to === 'Accepted' || to === 'Reviewing' || to === 'Started') { set.declined_reason = null; set.auto_declined = false; }
+    // Put on the working lists by hand after its bid date had already passed: that is on purpose, so the clean-up does not move it again.
+    if (['Reviewing', 'Accepted', 'Started'].includes(to) && o.due_date && o.due_date < today) set.keep_past_due = true;
     if (to === 'Accepted') {
       const due = o.due_date || dateStr(b.due, 'Bid due date'); if (!due) throw bad('Enter the bid due date before accepting.'); if (!o.due_date) set.due_date = due;
       const est = b.estimatorId || o.estimator_id || (EST_ROLES.includes(user.role) ? user.id : null);

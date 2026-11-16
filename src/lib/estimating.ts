@@ -32,7 +32,11 @@ export function nextProposalId(existing: (string | null)[], date = todayEastern(
   return prefix + (Math.max(0, ...used) + 1);
 }
 export const FOLDERS = ['01. DL', '02. Proposal', '03. Change Orders', '04. Documents', '05. Material & Equipment Specs'];
-export const cleanName = (v: string) => { const s = String(v || '').normalize('NFKC').replace(/[\x00-\x1f<>:"/\\|?*]/g, ' ').replace(/\s+/g, ' ').trim().replace(/[. ]+$/g, '').slice(0, 90); return /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(s) ? '_' + s : s; };
+const cleanTo = (v: string, max: number) => { const s = String(v || '').normalize('NFKC').replace(/[\x00-\x1f<>:"/\\|?*]/g, ' ').replace(/\s+/g, ' ').trim().replace(/[. ]+$/g, '').slice(0, max).replace(/[. ]+$/g, ''); return /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(s) ? '_' + s : s; };
+// A folder name SharePoint accepts (90 characters at most).
+export const cleanName = (v: string) => cleanTo(v, 90);
+// A file name SharePoint accepts. The ending (.pdf, .docx) is always kept: a long name is shortened before it, never through it.
+export const cleanFileName = (v: string) => { const raw = String(v || '').trim(), m = raw.match(/\.([A-Za-z0-9]{1,8})$/), ext = m ? '.' + m[1] : '', stem = cleanTo(ext ? raw.slice(0, -ext.length) : raw, 180 - ext.length); return stem ? stem + ext : ext ? 'file' + ext : ''; };
 export function folderPlan(o: { proposalId?: string | null; name: string; city?: string | null; gc: string; year: number }) {
   const project = [o.proposalId, o.name, o.city].filter(Boolean).map((x) => cleanName(x as string)).join('_');
   return { root: ['ByOther', o.year, cleanName(o.gc), project].join('/'), folders: FOLDERS };

@@ -3,7 +3,7 @@
 // This is the layout the team already uses. Everything here is best-effort for the caller: a SharePoint problem is reported, never allowed to lose a local save.
 import fs from 'node:fs';
 import { HttpError } from './http.js';
-import { cleanName, FOLDERS } from '../src/lib/estimating.ts';
+import { cleanName, cleanFileName, FOLDERS } from '../src/lib/estimating.ts';
 
 let gfetch = (u, init = {}) => fetch(u, { signal: AbortSignal.timeout(180000), ...init });   // big uploads go in pieces; a piece that stalls for three minutes gives up
 export const setGraphFetch = (f) => { gfetch = f; };   // tests stand in for Microsoft
@@ -102,9 +102,14 @@ export async function renameItem(itemId, name) {
   const d = await driveId(); const r = await graph('PATCH', `/drives/${d}/items/${itemId}`, { body: { name: cleanName(name) } });
   if (!r) throw new HttpError(404, 'That SharePoint folder no longer exists.'); return { id: r.id, name: r.name, webUrl: r.webUrl };
 }
+// Gives a file its name (keeping the ending). Used to repair copies that were saved without one.
+export async function renameFile(itemId, filename) {
+  const d = await driveId(); const r = await graph('PATCH', `/drives/${d}/items/${itemId}`, { body: { name: cleanFileName(filename) } });
+  if (!r) throw new HttpError(404, 'That SharePoint file no longer exists.'); return { id: r.id, name: r.name, webUrl: r.webUrl };
+}
 // Uploads a file into a folder. Files over 4 MB go up in pieces.
 export async function uploadFile(folderId, filename, bytes, mime = 'application/octet-stream') {
-  const d = await driveId(), name = cleanName(filename) || 'file', base = `/drives/${d}/items/${folderId}:/${encodeURIComponent(name)}:`;
+  const d = await driveId(), name = cleanFileName(filename) || 'file', base = `/drives/${d}/items/${folderId}:/${encodeURIComponent(name)}:`;
   if (bytes.length <= 4 * 1024 * 1024) { const r = await graph('PUT', base + '/content?@microsoft.graph.conflictBehavior=rename', { body: bytes, raw: true, headers: { 'content-type': mime } }); return { id: r.id, name: r.name, webUrl: r.webUrl }; }
   const sess = await graph('POST', base + '/createUploadSession', { body: { item: { '@microsoft.graph.conflictBehavior': 'rename' } } }); const chunk = 10 * 327680; let last = null;
   for (let at = 0; at < bytes.length; at += chunk) {
@@ -116,7 +121,7 @@ export async function uploadFile(folderId, filename, bytes, mime = 'application/
 }
 // Same as uploadFile, but reads the file from disk in pieces, so a large plan set never has to sit in memory.
 export async function uploadFromPath(folderId, filename, filePath, size, mime = 'application/octet-stream') {
-  const d = await driveId(), name = cleanName(filename) || 'file', base = `/drives/${d}/items/${folderId}:/${encodeURIComponent(name)}:`;
+  const d = await driveId(), name = cleanFileName(filename) || 'file', base = `/drives/${d}/items/${folderId}:/${encodeURIComponent(name)}:`;
   if (size <= 4 * 1024 * 1024) return uploadFile(folderId, filename, await fs.promises.readFile(filePath), mime);
   const sess = await graph('POST', base + '/createUploadSession', { body: { item: { '@microsoft.graph.conflictBehavior': 'rename' } } }), chunk = 10 * 327680, fh = await fs.promises.open(filePath, 'r'); let last = null;
   try {

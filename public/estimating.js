@@ -72,7 +72,7 @@ function filesPanel(o, canWrite, err) {
   };
   // Opening the lead brings the two in step: the folder is made if it should exist, files kept here are backed up, and the library is read.
   const sync = async (force) => { try { if (force) propLive.append(h('p', { class: 'muted' }, 'Syncing…')); const v = canWrite ? await api('POST', `/opportunities/${o.id}/sync`, { force: !!force }) : await api('GET', `/opportunities/${o.id}/proposal-files`); const sy = v.sync;
-    drawProps(v, sy?.error ? { bad: true, text: `The SharePoint folder could not be made: ${sy.error}` } : sy?.failed?.length ? { bad: true, text: `Not copied: ${sy.failed.join('; ')}` } : sy?.pushed ? { text: `${sy.pushed} file${sy.pushed === 1 ? '' : 's'} copied to SharePoint as a backup.` } : force ? { text: 'In step with SharePoint.' } : null);
+    drawProps(v, sy?.error ? { bad: true, text: `The SharePoint folder could not be made: ${sy.error}` } : sy?.failed?.length ? { bad: true, text: `Not copied: ${sy.failed.join('; ')}` } : sy?.pushed || sy?.fixed ? { text: [sy.pushed ? `${sy.pushed} file${sy.pushed === 1 ? '' : 's'} copied to SharePoint as a backup.` : '', sy.fixed ? `${sy.fixed} file${sy.fixed === 1 ? '' : 's'} in SharePoint given ${sy.fixed === 1 ? 'its' : 'their'} full name (.pdf, .docx).` : ''].filter(Boolean).join(' ') } : force ? { text: 'In step with SharePoint.' } : null);
   } catch (e) { drawProps({ enabled: true, linked: false, earlier: props.map((f) => ({ name: f.name, href: f.local === false ? f.spUrl : '/api/opportunity-files/' + f.id })), latestPdf: null, latestWord: null, total: props.length }, { bad: true, text: e.message }); } };
   sync(false);
   const propsBox = h('div', { style: 'margin-top:.9rem' }, h('label', {}, 'Proposals'), propLive);

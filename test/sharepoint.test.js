@@ -272,3 +272,24 @@ test('a proposal saved straight into 02. Proposal shows as the latest on the lea
   const cprop = find('ByOther', YEAR, 'Hand GC', `${code}_Hand saved job_Orlando`, '02. Proposal'); add(cprop.id, 'byOther Proposal v3 after award.pdf', false, { size: 800 });
   const pv = (await call('GET', `/api/projects/${aw.body.projectId}/lead-proposals`, null, owner)).body; assert.deepEqual([pv.latestPdf.name, pv.latestWord.name], ['byOther Proposal v3 after award.pdf', 'byOther Proposal v2 edited.docx']); assert.match(pv.proposalFolderUrl, new RegExp(`${code}_Hand%20saved%20job_Orlando/02\\.%20Proposal$`));
 });
+
+test('a long file name keeps its .pdf / .docx in SharePoint, and copies saved without it are given their full name, not copied again', async () => {
+  const { cleanFileName, cleanName } = await import('../src/lib/estimating.ts');
+  const long = 'byOther Proposal-P11151_Allstate Construction, Inc_Gandy and Palonis Park - Picnic Shelters_Tampa_11-16-2026';
+  assert.equal(cleanFileName(long + '.pdf'), long + '.pdf'); assert.equal(cleanFileName(long + '.docx'), long + '.docx'); assert.equal(cleanName(long + '.pdf').length, 90);
+  const huge = cleanFileName('x'.repeat(400) + '.docx'); assert.equal(huge.length, 180); assert.ok(huge.endsWith('.docx')); assert.equal(cleanFileName('a<b>:c?.PDF'), 'a b c.PDF'); assert.equal(cleanFileName('no ending'), 'no ending');
+  const id = await mk({ name: 'Gandy and Palonis Park - Picnic Shelters', gc: 'Allstate Construction, Inc', addr: await addrOk('1 Park Rd', 'Tampa', '33625') }); await call('POST', `/api/opportunities/${id}/status`, { status: 'Accepted' }, est);
+  const o = await opp(id), root = ['ByOther', YEAR, 'Allstate Construction, Inc', `${o.proposalId}_Gandy and Palonis Park - Picnic Shelters_Tampa`];
+  // a new upload: the whole name, with its ending
+  const a = mkPdf(); assert.equal((await call('POST', `/api/opportunities/${id}/files?kind=Proposal`, a, est, long + '.pdf')).body.sharepoint, true); assert.ok(find(...root, '02. Proposal', long + '.pdf'));
+  // two copies as they were saved before the fix: cut at 90 characters, no ending, the second one numbered by SharePoint
+  const b = Buffer.concat([mkPdf(), Buffer.from('second')]), c = Buffer.concat([mkPdf(), Buffer.from('third one')]), prop = find(...root, '02. Proposal'), cut = cleanName(long + ' (2).pdf');
+  for (const [name, bytes] of [[long + ' (2).pdf', b], [long + ' (3).pdf', c]]) { graphDown = true; await call('POST', `/api/opportunities/${id}/files?kind=Submittal`, bytes, est, name); graphDown = false; }
+  const old1 = add(prop.id, cut, false, { size: b.length }), old2 = add(prop.id, cut + ' 1', false, { size: c.length });
+  await q('UPDATE opportunity_files SET sp_url=$2 WHERE opportunity_id=$1 AND name=$3', [id, 'https://byother.sharepoint.com/old1', long + ' (2).pdf']); await q('UPDATE opportunity_files SET sp_url=$2 WHERE opportunity_id=$1 AND name=$3', [id, 'https://byother.sharepoint.com/old2', long + ' (3).pdf']);
+  const v = await syncNow(id); assert.deepEqual([v.sync.fixed, v.sync.pushed, v.sync.failed], [2, 0, []]);
+  assert.deepEqual(kids(prop.id).map((n) => n.name).sort(), [long + ' (2).pdf', long + ' (3).pdf', long + '.pdf']); assert.equal(nodes.get(old1.id).name, long + ' (2).pdf'); assert.equal(nodes.get(old2.id).name, long + ' (3).pdf');   // renamed in place, by size
+  assert.ok((await q('SELECT sp_url FROM opportunity_files WHERE opportunity_id=$1', [id])).every((f) => /\.pdf$/.test(decodeURIComponent(f.sp_url))));
+  assert.ok((await opp(id)).notes.some((n) => /had lost their ending/.test(n.body)));
+  const again = await syncNow(id); assert.deepEqual([again.sync.fixed, again.sync.pushed], [0, 0]); assert.equal(kids(prop.id).length, 3);
+});

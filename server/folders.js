@@ -7,7 +7,7 @@ import path from 'node:path';
 import { q } from './db.js';
 import { HttpError } from './http.js';
 import * as SP from './sharepoint.js';
-import { cleanName, todayEastern } from '../src/lib/estimating.ts';
+import { cleanName, cleanFileName, todayEastern } from '../src/lib/estimating.ts';
 import * as R from '../src/lib/bidrules.ts';
 
 export const enabled = () => SP.configured();
@@ -178,22 +178,29 @@ export async function syncOpportunity(id, { force = false } = {}) {
   syncing.add(id);
   try {
     let dir; try { dir = await ensureOpportunityFolder(id); } catch (e) { await q('UPDATE opportunities SET sp_error=$2 WHERE id=$1', [id, oneLine(e)]).catch(() => {}); return { enabled: true, linked: false, pushed: 0, error: oneLine(e) }; }
-    const rows = await q(`SELECT id, kind, name, storage_key, mime, size FROM opportunity_files WHERE opportunity_id=$1 AND storage_key IS NOT NULL AND sp_url IS NULL ORDER BY created_at`, [id]);
-    const { UPLOAD_DIR } = await import('./documents.js'), subs = new Map(), done = [], failed = [];
+    // every file the app holds is checked against the library by name, so one that is missing there (never copied, or removed) is copied
+    const rows = await q(`SELECT id, kind, name, storage_key, mime, size, sp_url FROM opportunity_files WHERE opportunity_id=$1 AND storage_key IS NOT NULL ORDER BY created_at`, [id]);
+    const { UPLOAD_DIR } = await import('./documents.js'), subs = new Map(), done = [], fixed = [], failed = [];
     for (const f of rows) {
       const file = path.join(UPLOAD_DIR, path.basename(f.storage_key)); if (!fs.existsSync(file)) continue;
       try {
         const subName = SUBFOLDER[f.kind] || SUBFOLDER.Other; if (!subs.has(subName)) { const sf = await SP.ensureFolder(dir.id, subName); subs.set(subName, { id: sf.id, kids: await SP.listFolder(sf.id) }); }
-        const sub = subs.get(subName), there = sub.kids.find((k) => !k.folder && k.name.toLowerCase() === (cleanName(f.name) || f.name).toLowerCase());   // copied before, but the link was never recorded
-        const up = there ?? (await SP.uploadFromPath(sub.id, f.name, file, Number(f.size) || fs.statSync(file).size, f.mime || 'application/octet-stream'));
+        const sub = subs.get(subName), want = (cleanFileName(f.name) || f.name).toLowerCase(), there = sub.kids.find((k) => !k.folder && k.name.toLowerCase() === want);   // already in the library
+        // A copy saved before file names kept their ending: the name was cut at 90 characters, which dropped ".pdf" or ".docx" from a long
+        // one. The same file (same size, the cut name, no ending) is given its real name instead of being copied a second time.
+        const cut = cleanName(f.name).toLowerCase(), broken = there || cut === want ? null : sub.kids.find((k) => !k.folder && !k.claimed && !/\.[a-z0-9]{1,8}$/i.test(k.name) && k.name.toLowerCase().startsWith(cut) && Number(k.size) === Number(f.size));
+        let up = there, how = there ? 'there' : 'copied';
+        if (broken) { try { up = await SP.renameFile(broken.id, f.name); broken.claimed = true; broken.name = up.name; how = 'fixed'; } catch { up = null; } }
+        if (!up) { up = await SP.uploadFromPath(sub.id, f.name, file, Number(f.size) || fs.statSync(file).size, f.mime || 'application/octet-stream'); sub.kids.push({ id: up.id, name: up.name ?? f.name, folder: false, webUrl: up.webUrl, size: f.size }); how = 'copied'; }
         if (f.kind === 'Plans') { await q('UPDATE opportunity_files SET sp_url=$2, storage_key=NULL WHERE id=$1', [f.id, up.webUrl ?? null]); await fs.promises.rm(file, { force: true }); }   // big plan sets live in the library only, as when they are uploaded
-        else await q('UPDATE opportunity_files SET sp_url=$2 WHERE id=$1', [f.id, up.webUrl ?? null]);
-        if (!there) done.push(f.name);
+        else if ((up.webUrl ?? null) !== f.sp_url) await q('UPDATE opportunity_files SET sp_url=$2 WHERE id=$1', [f.id, up.webUrl ?? null]);
+        if (how === 'copied') done.push(f.name); else if (how === 'fixed') fixed.push(f.name);
       } catch (e) { failed.push(`${f.name}: ${oneLine(e)}`); }
     }
     if (done.length) await note(id, `Copied to the SharePoint folder as a backup: ${done.slice(0, 12).join(', ')}${done.length > 12 ? ` and ${done.length - 12} more` : ''}.`);
+    if (fixed.length) await note(id, `Files in the SharePoint folder that had lost their ending (.pdf, .docx) were given their full name: ${fixed.slice(0, 12).join(', ')}.`);
     if (failed.length) await note(id, `Not copied to SharePoint: ${failed.slice(0, 5).join('; ')}`);
-    return { enabled: true, linked: true, pushed: done.length, failed, folderUrl: dir.webUrl };
+    return { enabled: true, linked: true, pushed: done.length, fixed: fixed.length, failed, folderUrl: dir.webUrl };
   } finally { syncing.delete(id); }
 }
 
@@ -204,7 +211,7 @@ export async function proposalView(oppId) {
   const app = await q(`SELECT id, name, created_at, sp_url, (storage_key IS NOT NULL) AS local FROM opportunity_files WHERE opportunity_id=$1 AND kind='Proposal'`, [oppId]);
   let lib = { enabled: enabled(), linked: false, proposals: [] }; try { lib = await folderFiles(oppId); } catch (e) { lib = { enabled: enabled(), linked: false, proposals: [], error: oneLine(e) }; }
   const iso = (d) => (d ? new Date(d).toISOString() : null), by = new Map();
-  for (const f of app) by.set(f.name.toLowerCase(), { name: f.name, at: iso(f.created_at), href: f.local ? `/api/opportunity-files/${f.id}` : f.sp_url, where: 'App', fileId: f.id });
+  for (const f of app) by.set((cleanFileName(f.name) || f.name).toLowerCase(), { name: f.name, at: iso(f.created_at), href: f.local ? `/api/opportunity-files/${f.id}` : f.sp_url, where: 'App', fileId: f.id });
   for (const s of lib.proposals || []) { const k = s.name.toLowerCase(), cur = by.get(k); by.set(k, { name: s.name, at: iso(s.modified) ?? cur?.at ?? null, href: s.webUrl || cur?.href, where: cur ? 'App and SharePoint' : 'SharePoint', fileId: cur?.fileId ?? null }); }
   const all = [...by.values()].filter((x) => x.href).sort((a, b) => String(b.at || '').localeCompare(String(a.at || '')));
   const latestPdf = all.find((x) => /\.pdf$/i.test(x.name)) ?? null, latestWord = all.find((x) => /\.docx?$/i.test(x.name)) ?? null;

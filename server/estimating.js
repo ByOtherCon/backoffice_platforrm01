@@ -61,7 +61,7 @@ export async function loadAll(where = '', params = []) {
     return { id: r.id, name: r.name, client: r.client_name, gc: r.gc_name, gcId: r.gc_id, additionalGcs: r.additional_gcs, gcs: R.gcNames(r.gc_name, r.invitations), folderPerGc: r.folder_per_gc, gcAddr, tierNote: r.tier_note, city: r.city, address: r.address, zip: r.zip, addrVerified: r.address_verified, state: r.state, tier: r.tier, mall: r.mall, type: r.project_type, due: r.due_date, dueTime: r.due_time,
       contact: r.contact_name, email: r.contact_email, phone: r.contact_phone, link: r.invitation_link, sourceType: r.source_type, origin: r.source, addedBy: r.added_by, plannedStart: r.planned_start,
       status: r.status, statusLabel: W.statusName(r.status), next: W.nextStatuses(r.status), lastSeenAt: r.last_seen_at, emailLink: r.email_link, invitations: r.invitations ?? [], autoDeclined: r.auto_declined, progress: r.progress, result: r.result,
-      spPath: r.sp_path, spError: r.sp_error, estimatorId: r.estimator_id, estimator: r.estimator, proposalId: r.proposal_id, acceptedDate: r.accepted_date, startDate: r.start_date, declinedReason: r.declined_reason, declinedAt: r.declined_at, lostReason: r.lost_reason, folderUrl: r.folder_url, proposalUrl: r.proposal_url, projectId: r.project_id,
+      spPath: r.sp_path, spError: r.sp_error, estimatorId: r.estimator_id, estimator: r.estimator, proposalId: r.proposal_id, acceptedDate: r.accepted_date, awardedDate: r.awarded_date, startDate: r.start_date, declinedReason: r.declined_reason, declinedAt: r.declined_at, lostReason: r.lost_reason, folderUrl: r.folder_url, proposalUrl: r.proposal_url, projectId: r.project_id,
       consideredTrades: considered.filter((c) => c.opportunity_id === r.id).map((c) => ({ tradeId: c.trade_id, name: c.name })),
       files: files.filter((f) => f.opportunity_id === r.id).map((f) => ({ id: f.id, kind: f.kind, name: f.name, mime: f.mime, size: f.size, local: f.local, spUrl: f.sp_url, at: f.created_at, version: f.version, used: !!f.submission_id, removed: !!f.removed })),
       tradePrices: tp, total: r2(tp.reduce((n, p) => n + Math.round(p.amount * 100), 0) / 100), submissions: ss, communications: cs, lastSubmission: last,
@@ -77,7 +77,7 @@ export async function list({ tab, search, showAll, filter, scope, userId } = {})
   // The working figures are for one person ("mine") or the whole company ("all"); New and Reviewing counts are always company-wide.
   const mine = scope === 'mine' && userId ? all.filter((o) => o.estimatorId === userId) : all;
   const month = today.slice(0, 7), fu = mine.filter((o) => o.followup);
-  const stats = { scope: scope === 'mine' && userId ? 'mine' : 'all', accepted: mine.filter((o) => (o.acceptedDate || '').startsWith(month)).length, working: mine.filter(isWorking).length, submitted: mine.filter((o) => o.submissions.some((s) => s.date.startsWith(month))).length,
+  const stats = { scope: scope === 'mine' && userId ? 'mine' : 'all', accepted: mine.filter((o) => (o.acceptedDate || '').startsWith(month)).length, working: mine.filter(isWorking).length, submitted: mine.filter((o) => o.submissions.some((s) => s.date.startsWith(month))).length, awarded: mine.filter((o) => o.status === 'Awarded' && String(o.awardedDate || '').startsWith(month)).length, awardedAll: mine.filter((o) => o.status === 'Awarded').length,
     openLeads: all.filter((o) => W.inBids(o.status)).length, reviewing: all.filter((o) => o.status === 'Reviewing').length,
     awaitingFollowUp: fu.filter((o) => o.followup.status === 'Active' && o.followup.due && o.followup.due <= today).length + fu.filter((o) => o.followup.status === 'Replied / Action Needed').length,
     interested: fu.filter((o) => ['Awaiting GC Award', 'Selected / Awaiting Contract'].includes(o.followup.status)).length };
@@ -267,6 +267,26 @@ const OUTCOMES = ['Awarded', 'Not Awarded', 'No Communication'];
 export async function openCase(t, oppId, subId) { await t(`INSERT INTO followup_cases(opportunity_id,submission_id) VALUES ($1,$2) ON CONFLICT (submission_id) DO NOTHING`, [oppId, subId]); }
 export async function closeCases(t, oppId, status, note) { await t(`UPDATE followup_cases SET status=$2, note=COALESCE($3,note), updated_at=now() WHERE opportunity_id=$1 AND status NOT IN ('Superseded','Closed / Awarded','Not Selected / Not Won','Closed / No Response')`, [oppId, status, note ?? null]); }
 
+// Finding several leads at once from a pasted list of job names ("Old Navy 5904 Refresh - Tampa, FL - Plaza at Citrus Park"), so they can
+// all be accepted and given to one estimator. Every lead is searched, declined ones included. Each line gets its closest matches; the best
+// one is pre-chosen only when it is clearly the best. A date in brackets ("(November 20th)") is offered as the bid date when the lead has none.
+const WORDS = (s) => String(s || '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/&/g, ' ').replace(/[^a-z0-9]+/g, ' ').split(' ').filter((w) => w && !['fl', 'florida', 'at', 'the', 'of', 'in', 'and'].includes(w));
+const MONTHS = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
+export async function findSeveral(body) {
+  const lines = (Array.isArray(body?.lines) ? body.lines : String(body?.text || '').split('\n')).map((x) => String(x).replace(/^\s*(?:[*•\-–]+|\d{1,2}[.)])\s+/, '').trim()).filter(Boolean).slice(0, 60);
+  if (!lines.length) throw bad('Paste the job names, one on each line.');
+  const rows = await q(`SELECT o.id, o.name, o.gc_name, o.client_name, o.city, o.address, o.status, o.due_date, o.proposal_id, o.estimator_id, u.name AS estimator FROM opportunities o LEFT JOIN app_users u ON u.id=o.estimator_id WHERE o.merged_into IS NULL`);
+  const leads = rows.map((r) => ({ r, words: new Set(WORDS([r.name, r.client_name, r.city, r.address].join(' '))) })), today = E.todayEastern();
+  return { lines: lines.map((line) => {
+    let due = null; const m = line.match(/\(([^)]*)\)\s*$/), d = m && m[1].toLowerCase().match(/([a-z]+)\.?\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s*(\d{4}))?/);
+    if (d) { const mi = MONTHS.findIndex((x) => x.startsWith(d[1].slice(0, 3))); if (mi >= 0 && Number(d[2]) >= 1 && Number(d[2]) <= 31) due = `${d[3] || today.slice(0, 4)}-${String(mi + 1).padStart(2, '0')}-${String(d[2]).padStart(2, '0')}`; }
+    const want = WORDS(m ? line.slice(0, m.index) : line);
+    const scored = want.length ? leads.map((l) => ({ l, score: want.filter((w) => l.words.has(w)).length / want.length })).filter((x) => x.score >= 0.5).sort((a, b) => b.score - a.score || String(b.l.r.due_date || '').localeCompare(String(a.l.r.due_date || ''))).slice(0, 5) : [];
+    const pick = scored[0] && scored[0].score >= 0.75 && (!scored[1] || scored[1].score < scored[0].score) ? scored[0].l.r.id : null;
+    return { line, due, pick, matches: scored.map(({ l, score }) => ({ id: l.r.id, name: l.r.name, gc: l.r.gc_name, city: l.r.city, status: l.r.status, statusLabel: W.statusName(l.r.status), due: l.r.due_date, proposalId: l.r.proposal_id, estimatorId: l.r.estimator_id, estimator: l.r.estimator, score: Math.round(score * 100) })) };
+  }) };
+}
+
 export async function transition(user, id, b = {}) {
   const to = String(b.status || ''); if (!W.STATUSES.includes(to)) throw bad('Choose a status.');
   const reason = W.needsReason(to) ? text(b.reason, 'Reason', { max: 200 }) : '';
@@ -309,6 +329,7 @@ export async function transition(user, id, b = {}) {
       else { set.lost_reason = null; }
       if (to === 'No Communication') await closeCases(t, id, 'Closed / No Response', 'Marked No Communication From GC');
       if (to === 'Awarded') {
+        set.awarded_date = today;
         set.tier = 0; set.tier_note = 'Awarded: Tier 0 (best)';   // an awarded job goes to the top of every list
         if (o.project_id) throw new HttpError(409, 'A project was already created for this award.');
         const tp = await t('SELECT trade_id, amount FROM opportunity_trades WHERE opportunity_id=$1 AND amount > 0', [id]); if (!tp.length) throw bad('The submitted proposal has no priced trades. The project is built from them.');

@@ -246,14 +246,14 @@ export async function estimatingView(arg, arg2) {
   const tab = TABS.some(([t]) => t === arg) ? arg : 'bids', detailId = arg && !TABS.some(([t]) => t === arg) ? arg : null, err = h('div'), w = canEstimate();
   const search = state.estSearch || '';
   const sbox = h('input', { placeholder: 'Find a project, GC, or proposal #', value: search, onchange: (e) => { state.estSearch = e.target.value; render(); } });
-  const scope = state.estScope || 'mine', q = `q=${encodeURIComponent(search)}&scope=${scope}`;
+  const scope = state.estScope || (['Super Admin', 'Sub Admin'].includes(state.user.role) ? 'all' : 'mine'), q = `q=${encodeURIComponent(search)}&scope=${scope}`;
   const data = tab === 'bids' ? await api('GET', `/opportunities?tab=bids&${q}${state.estAll ? '&all=1' : ''}`)
     : tab === 'proposals' ? await api('GET', `/opportunities?tab=proposals&${q}&filter=${encodeURIComponent(state.propFilter || 'Active')}`)
     : tab === 'submittals' ? await api('GET', `/opportunities?tab=submittals&${q}`) : null;
   const st = data?.stats || (await api('GET', `/opportunities?tab=proposals&scope=${scope}`)).stats;
   const kpi = (l, v, tone = '') => h('div', { class: 'kpi ' + tone }, h('div', { class: 'l' }, l), h('div', { class: 'v' }, v));
-  const scopeBar = h('div', { class: 'row spread', style: 'margin:.2rem 0' }, h('span', { class: 'muted', style: 'font-size:13px' }, scope === 'mine' ? 'Accepted, working, submitted and follow-up figures are yours. New and Reviewing are for the whole company.' : 'Showing the whole company.'), h('div', { class: 'seg' }, [['mine', 'Mine'], ['all', 'All']].map(([v, l]) => h('button', { type: 'button', class: v === scope ? 'on' : '', onclick: () => { state.estScope = v; render(); } }, l))));
-  const head = h('div', { class: 'grid kpis', style: 'grid-template-columns:repeat(auto-fit,minmax(140px,1fr))' }, kpi('New opportunities', st.openLeads), kpi('Reviewing', st.reviewing), kpi('Accepted this month', st.accepted), kpi('Working now', st.working), kpi('Submitted this month', st.submitted), kpi('Follow-ups due', st.awaitingFollowUp, st.awaitingFollowUp ? 'warn' : ''), kpi('Awaiting award', st.interested, st.interested ? 'good' : ''));
+  const scopeBar = h('div', { class: 'row spread', style: 'margin:.2rem 0' }, h('span', { class: 'muted', style: 'font-size:13px' }, scope === 'mine' ? 'Accepted, working, submitted, awarded and follow-up figures are yours. New and Reviewing are for the whole company.' : 'Showing the whole company.'), h('div', { class: 'seg' }, [['mine', 'Mine'], ['all', 'All']].map(([v, l]) => h('button', { type: 'button', class: v === scope ? 'on' : '', onclick: () => { state.estScope = v; render(); } }, l))));
+  const head = h('div', { class: 'grid kpis', style: 'grid-template-columns:repeat(auto-fit,minmax(140px,1fr))' }, kpi('New opportunities', st.openLeads), kpi('Reviewing', st.reviewing), kpi('Accepted this month', st.accepted), kpi('Working now', st.working), kpi('Submitted this month', st.submitted), kpi('Awarded this month', st.awarded ?? 0, st.awarded ? 'good' : ''), kpi('Awarded in all', st.awardedAll ?? 0), kpi('Follow-ups due', st.awaitingFollowUp, st.awaitingFollowUp ? 'warn' : ''), kpi('Awaiting award', st.interested, st.interested ? 'good' : ''));
   const tabs = h('div', { class: 'tabs', style: 'margin-top:1rem' }, TABS.map(([t, l]) => h('a', { class: t === tab ? 'on' : '', href: '#/estimating/' + t }, l)));
   let body;
   if (tab === 'bids') body = bidsPanel(data, err, w, await api('GET', '/bids/status'), w ? (await api('GET', '/opportunities/bundles')).groups : []);
@@ -262,7 +262,7 @@ export async function estimatingView(arg, arg2) {
   else if (tab === 'followups') body = await followUpsPanel(err, w, arg === 'followups' ? arg2 : null);
   else body = await insightsTab(err);
   const detail = detailId ? await opportunityDetail(detailId, err, w, arg2 === 'edit') : '';
-  return C.shell('estimating', [h('div', { class: 'row spread' }, h('h1', {}, 'Estimating'), h('div', { class: 'row' }, sbox, w && h('button', { onclick: importForm }, 'Import leads'), w && h('button', { class: 'primary', onclick: () => opportunityForm(null).catch((e) => alert(e.message)) }, '+ Opportunity'))),
+  return C.shell('estimating', [h('div', { class: 'row spread' }, h('h1', {}, 'Estimating'), h('div', { class: 'row' }, sbox, w && h('button', { onclick: () => acceptSeveralModal().catch((e) => alert(e.message)), title: 'Paste a list of job names, find them (declined ones too), and accept them all for one estimator.' }, 'Accept Several'), w && h('button', { onclick: importForm }, 'Import leads'), w && h('button', { class: 'primary', onclick: () => opportunityForm(null).catch((e) => alert(e.message)) }, '+ Opportunity'))),
     h('p', { class: 'sub' }, 'Florida bid invitations to proposals to awarded projects. Reviewing and Accepted work moves to the Proposal Tracker; an award builds the project in Job Costing.'), scopeBar, head, tabs, err, detail, body]);
 }
 async function importForm() {
@@ -290,11 +290,42 @@ function bundleModal(groups) {
     h('p', { class: 'muted' }, FOLDERS_SAY), err, box), { mode: 'edit' });
 }
 
+// ---------------------------------------------------------------- accept several leads at once, for one estimator
+// Paste the job names, see what each one matched (every lead is searched, declined ones too), then accept the ticked ones. Each lead goes
+// through the same steps as by hand: a declined one is reopened first, accepting gives it its P number and its folder, and one that is
+// already accepted only changes estimator. Everything is written in each lead's log.
+async function acceptSeveralModal() {
+  const op = await opts(), msg = h('div'), box = h('div'), ta = h('textarea', { rows: 10, style: 'width:100%', placeholder: 'One job on each line, for example:\nNew Balance - Orlando, FL\nVerano - Lithia, FL (November 20th)' });
+  const est = h('select', {}, h('option', { value: '' }, 'Choose the estimator…'), op.estimators.map((u) => h('option', { value: u.id }, u.name || u.email)));
+  let found = null; const chosen = new Map();
+  const draw = () => box.replaceChildren(...(found ? [h('table', {}, h('thead', {}, h('tr', {}, ['Pasted', 'Lead found', 'Now', 'Bid due', 'Result'].map((t) => h('th', {}, t)))), h('tbody', {}, found.map((l, i) => {
+    const c = chosen.get(i), m = l.matches.find((x) => x.id === c?.id), pick = h('select', { onchange: (e) => { chosen.set(i, { id: e.target.value || null, result: '' }); draw(); } }, h('option', { value: '' }, l.matches.length ? 'Leave this one out' : 'Not found'), l.matches.map((x) => h('option', { value: x.id }, `${x.proposalId ? x.proposalId + ' · ' : ''}${x.name} · ${x.gc || ''} · ${x.city || ''}`))); pick.value = c?.id || '';
+    return h('tr', {}, h('td', { style: 'white-space:normal;max-width:240px' }, l.line), h('td', { style: 'white-space:normal' }, l.matches.length ? pick : h('span', { class: 'neg' }, 'Not found. Add it with + Opportunity.')), h('td', {}, m ? `${m.statusLabel}${m.estimator ? ' · ' + m.estimator : ''}` : ''), h('td', {}, m ? (m.due ? fmtDay(m.due) : l.due ? `${fmtDay(l.due)} (from your list)` : h('span', { class: 'neg' }, 'none')) : ''), h('td', { style: 'white-space:normal' }, c?.result ? h('span', { class: c.bad ? 'neg' : 'pos' }, c.result) : '')); }))),
+    h('div', { class: 'row', style: 'justify-content:flex-end;margin-top:.8rem;gap:.5rem' }, h('button', { type: 'button', onclick: () => { bg.remove(); render(); } }, 'Close'), h('button', { type: 'button', class: 'primary', onclick: run }, `Accept And Assign (${[...chosen.values()].filter((c) => c.id && !c.done).length})`))] : []));
+  const find = guard(msg, async () => { notice(msg, ''); const r = await api('POST', '/opportunities/find-several', { text: ta.value }); found = r.lines; chosen.clear(); found.forEach((l, i) => chosen.set(i, { id: l.pick, result: '' })); draw(); });
+  const run = guard(msg, async () => {
+    if (!est.value) throw new Error('Choose the estimator first.');
+    for (const [i, c] of chosen) {
+      if (!c.id || c.done) continue; const l = found[i], m = l.matches.find((x) => x.id === c.id); c.result = 'Working…'; c.bad = false; draw();
+      try {
+        if (['Submitted', 'Awarded', 'Not Awarded', 'No Communication'].includes(m.status)) { c.result = `Left as it is: already ${m.statusLabel}.`; c.done = true; continue; }
+        if (m.status === 'Declined') await api('POST', `/opportunities/${m.id}/status`, { status: 'New' });
+        if (['Accepted', 'Started'].includes(m.status)) { if (m.estimatorId !== est.value) await api('PUT', `/opportunities/${m.id}`, { estimatorId: est.value }); c.result = `Already ${m.statusLabel}${m.proposalId ? ' (' + m.proposalId + ')' : ''}. Estimator set.`; }
+        else { const r = await api('POST', `/opportunities/${m.id}/status`, { status: 'Accepted', estimatorId: est.value, ...(m.due || !l.due ? {} : { due: l.due }) }); c.result = `Accepted${r.proposalId ? ' as ' + r.proposalId : ''}.`; }
+        c.done = true;
+      } catch (e) { c.result = e.message; c.bad = true; }
+    }
+    draw(); notice(msg, 'Done. Check the Result column; anything in red was not changed.', 'ok');
+  });
+  const bg = modal('Accept Several Leads', h('div', {}, h('p', { class: 'muted' }, 'Paste the job names, one on each line. Every lead is searched, including declined ones. You see what each line matched before anything changes.'),
+    ta, h('div', { class: 'row', style: 'gap:.6rem;flex-wrap:wrap;margin:.6rem 0;align-items:flex-end' }, h('div', { style: 'min-width:14rem' }, h('label', {}, 'Assign to'), est), h('button', { type: 'button', class: 'primary', onclick: find }, 'Find These Leads')), msg, h('div', { class: 'scroll' }, box)), { mode: 'edit' });
+}
+
 // ---------------------------------------------------------------- Bid Opportunities
 const BID_RULES = (r) => `One list of NEW opportunities, ordered by week, then closeness to Orlando, then shopping centers, then Retail, Restaurant, and Medical / Office. Weeks run Monday–Sunday: a bid due ON a Monday goes in the prior week. Undated leads stay visible. A New lead is declined ${r.declineNewDays} days after its bid due date, after 7 working days if nobody takes it up, and a Tier 3 or 4 lead is declined when its week is over; every change is written in the lead's log. Declined leads stay searchable for 30 days from the day they were declined; older ones must be added by hand. Reviewing and Accepted opportunities move to the Proposal Tracker.`;
 function bidFeedBar(feed, err, w) {
   const bar = h('div', { class: 'card', style: 'padding:.7rem 1rem' }); const refresh = guard(err, async () => { await api('POST', '/bids/refresh', {}); render(); });
-  if (!feed.connected) { bar.append(h('div', { class: 'row spread' }, h('span', {}, feed.googleSetUp ? 'Bid invitations are read from your BuildingConnected emails. The owner connects Gmail once in Admin.' : 'Bid invitations will be read from your BuildingConnected emails once Gmail is connected (see Admin).'), C.isSuper() ? h('a', { href: '#/admin/connections' }, 'Open Admin') : '')); return bar; }
+  if (!feed.connected) { bar.append(h('div', { class: 'row spread' }, h('span', {}, feed.googleSetUp ? 'Bid invitations are read from your BuildingConnected emails. The owner connects Gmail once in Admin.' : 'Bid invitations will be read from your BuildingConnected emails once Gmail is connected (see Admin).'), C.isSuper() ? h('span', { class: 'row', style: 'gap:.6rem' }, feed.googleSetUp ? h('button', { class: 'primary small', onclick: guard(err, async () => { location.href = (await api('GET', '/gmail/connect')).url; }) }, 'Connect Gmail') : '', h('a', { href: '#/admin/connections' }, 'Open Admin')) : '')); return bar; }
   const l = feed.last, ok = feed.lastGood;
   bar.append(h('div', { class: 'row spread' }, h('div', {}, feed.running ? h('strong', {}, 'Refreshing from Gmail…') : l?.status === 'Error' ? h('span', { class: 'neg' }, `Last refresh failed: ${l.error}`) : ok ? h('span', {}, 'Last refreshed ', h('strong', {}, when(ok.finished_at)), ` · ${ok.added} new, ${ok.updated} updated${ok.declined ? `, ${ok.declined} declined` : ''}${ok.skipped ? `, ${ok.skipped} outside Florida skipped` : ''}`) : 'Not refreshed yet.', h('span', { class: 'muted', style: 'margin-left:.6rem;font-size:13px' }, `Automatic at 8:00 AM and 1:00 PM · ${feed.email}`)), w ? h('button', { class: 'primary', disabled: feed.running ? true : null, onclick: refresh }, feed.running ? 'Refreshing…' : 'Refresh now') : ''));
   if (feed.running) setTimeout(() => { if (location.hash.startsWith('#/estimating')) render(); }, 2500);

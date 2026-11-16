@@ -303,3 +303,21 @@ test('an opportunity can never be deleted; BuildingConnected status is honest ab
   assert.equal((await call('DELETE', `/api/opportunities/${id}`, null, est)).status, 404); assert.equal((await call('GET', `/api/opportunities/${id}`, null, est)).status, 200);
   const c = (await call('GET', '/api/estimating/connection', null, est)).body.buildingConnected; assert.equal(c.connected, false); assert.match(c.note, /CSV/);
 });
+
+test('several leads are found from a pasted list (declined ones too) so they can be accepted for one estimator; awards are counted with their date', async () => {
+  const a = await mk({ name: 'Verano - Bayonet Point', client: 'Verano', gc: 'Paste GC', addr: await verified('12 Bay Blvd', 'Hudson', '34667') });
+  const b = await mk({ name: 'Verano - Lithia', client: 'Verano', gc: 'Paste GC', addr: await verified('16 Lithia Rd', 'Lithia', '33547') });
+  const c = await mk({ name: 'Old Navy 5904 Refresh', client: 'Old Navy', gc: 'Paste GC', addr: await verified('8021 Citrus Park Town Center', 'Tampa', '33625') });
+  const reason = (await call('GET', '/api/estimating/options', null, est)).body.declineReasons[0]; assert.equal((await status(c, 'Declined', { reason })).status, 200);
+  const text = "* Verano - Bayonet Point, FL \nVerano - Lithia, FL (November 20th)\n* Old Navy 5904 Refresh - Tampa, FL - Plaza at Citrus Park\nBob's Discount Furniture - Ocala, FL\n\n";
+  const r = await call('POST', '/api/opportunities/find-several', { text }, est); assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal((await call('POST', '/api/opportunities/find-several', { text: '* 4Ever Young - Sanford, FL\n1. Old Navy 5904 Refresh\n2) Verano - Lithia' }, est)).body.lines.map((l) => l.line).join('|'), '4Ever Young - Sanford, FL|Old Navy 5904 Refresh|Verano - Lithia');   // a bullet or a number in front is dropped, a name that starts with a digit is kept
+  assert.deepEqual(r.body.lines.map((l) => l.pick), [a, b, c, null]); assert.equal(r.body.lines[1].due, `${today.slice(0, 4)}-11-20`); assert.equal(r.body.lines[0].due, null);
+  assert.deepEqual([r.body.lines[2].matches[0].status, r.body.lines[2].matches[0].statusLabel], ['Declined', 'Declined']); assert.deepEqual(r.body.lines[3].matches, []); assert.equal(r.body.lines[3].line, "Bob's Discount Furniture - Ocala, FL");
+  assert.equal((await call('POST', '/api/opportunities/find-several', { text }, pm)).status, 403); assert.equal((await call('POST', '/api/opportunities/find-several', { text: ' \n ' }, est)).status, 400);
+  // the window then runs the same steps as by hand: reopen a declined one, accept it for the estimator
+  assert.equal((await status(c, 'New')).status, 200); const acc = await status(c, 'Accepted', { estimatorId: estId }); assert.equal(acc.status, 200); assert.match(acc.body.proposalId, /^P\d+/);
+  assert.equal((await call('PUT', `/api/opportunities/${a}`, { estimatorId: estId }, est)).status, 200);
+  // awards carry the day they were given, and the figures count them
+  const st = (await call('GET', '/api/opportunities?tab=submittals&scope=all', null, owner)).body.stats; assert.ok(st.awardedAll >= 1); assert.ok(st.awarded >= 1); assert.equal((await get(wing)).awardedDate, today);
+});

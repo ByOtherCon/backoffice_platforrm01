@@ -88,7 +88,7 @@ test('three weeks of history, Monday to Sunday, each person sees only their own 
   const all = h.weeks.flatMap((w) => w.entries); assert.ok(!all.some((e) => e.date === shift(weekStart(today), -20)));   // older than two weeks back is not shown
   assert.ok(h.weeks[1].entries.some((e) => e.hours === 8) && h.weeks[2].entries.some((e) => e.hours === 7));
   assert.ok(h.weeks.every((w) => w.pay !== null)); assert.ok(!JSON.stringify(h).includes('Dr. Smith'));   // Bob's day at the other site is not in Ann's data
-  assert.equal(h.weeks[1].pay, 160);   // 8 h at $20
+  assert.equal(h.weeks[1].pay, yesterday < weekStart(today) ? 280 : 160);   // 8 h at $20; on a Monday yesterday's 6 h belong to last week too
 });
 
 test('an employee can change today and yesterday; older days go to the office as a request that is applied or declined', async () => {

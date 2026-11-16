@@ -134,11 +134,21 @@ test('asking for the document saves a .pdf and a .docx on the lead as version 1;
   assert.ok(!second[2].content.some((b) => b.type === 'document'));
   const third = requests[2].body.messages, result = third.at(-1).content[0]; assert.equal(third.at(-2).content.at(-1).type, 'tool_use'); assert.deepEqual(third.at(-2).content.at(-1).input.trades[0].total, 12500);
   const stem = `byOther Proposal-CW Hayes Construction_Wingstop - St Cloud_St Cloud_${today.slice(5, 7)}-${today.slice(8, 10)}-${today.slice(0, 4)}`;   // byOther Proposal-P#_GC_Project Name_City_Date (no P# until the lead is accepted)
-  assert.equal(result.type, 'tool_result'); assert.equal(result.content, `Saved as version 1: ${stem}.pdf and ${stem}.docx. Prices still blank: FRAMING.`);
+  assert.equal(result.type, 'tool_result'); assert.equal(result.content, `Saved as version 1: ${stem}.pdf and ${stem}.docx. Prices still blank: FRAMING. 1 flagged item was recorded on the lead and is not printed on the proposal.`);
   const c = await chat(), last = c.messages.at(-1); assert.equal(last.text, 'Saving it now.\n\nVersion 1 is saved. Framing still needs a price.'); assert.deepEqual(last.files.map((f) => f.kind), ['PDF', 'Word']);
   const dl = await fetch(`${base}/api/opportunity-files/${last.files[0].id}`, { headers: { cookie: est } }); assert.equal(dl.status, 200); assert.equal(Buffer.from(await dl.arrayBuffer()).subarray(0, 5).toString(), '%PDF-');
-  const dx = await fetch(`${base}/api/opportunity-files/${last.files[1].id}`, { headers: { cookie: est } }); assert.equal(dx.status, 200); assert.equal(Buffer.from(await dx.arrayBuffer()).subarray(0, 2).toString(), 'PK');
-  const o = (await call('GET', `/api/opportunities/${oid}`, null, est)).body; assert.equal(o.files.filter((f) => f.kind === 'Proposal').length, 2); assert.ok(o.notes.some((n) => /Proposal version 1 written with the AI estimator by Juliana: DEMOLITION \$12,500\.00, FRAMING \$_____/.test(n.body)));
+  const dx = await fetch(`${base}/api/opportunity-files/${last.files[1].id}`, { headers: { cookie: est } }); assert.equal(dx.status, 200); const word = Buffer.from(await dx.arrayBuffer()); assert.equal(word.subarray(0, 2).toString(), 'PK');
+  // the Word file is the official template, filled in: same logo, header and footer; the blanks carry the GC, the project and its site, the trades and their scope
+  const JSZip = (await import('jszip')).default, tpl = await JSZip.loadAsync(fs.readFileSync(new URL('../server/estimator/proposal-template.docx', import.meta.url))), made = await JSZip.loadAsync(word);
+  const names = (z) => Object.keys(z.files).sort(); assert.deepEqual(names(made), names(tpl));
+  for (const same of ['word/media/image1.png', 'word/styles.xml', 'word/numbering.xml', 'word/footer1.xml', 'word/theme/theme1.xml']) assert.ok((await made.file(same).async('nodebuffer')).equals(await tpl.file(same).async('nodebuffer')), same + ' is untouched');
+  const xml = await made.file('word/document.xml').async('string'), words = xml.replace(/<[^>]+>/g, '\u0001').replace(/\u0001+/g, '|');
+  assert.match(words, /Created For\|: \|CW Hayes Construction: Wingstop - St Cloud – 1200 13th St, St Cloud, FL 34769\|/); assert.match(words, /Scope\|:\| \|DEMOLITION\/FRAMING\|/i); assert.ok(!/GC Name|Xxxxxx|Breakdown item|PXXXXX/.test(words));
+  assert.match(words, /\|DEMOLITION\|D-1: Remove and dispose of existing ACT ceiling\.\|D-2: Remove existing floor finish\.\|\*any item not explicitly listed is not included in\| \|Scope or Price\|\$12,500\.00\|FRAMING\|Type 1 partition: 3-5\/8" 20 ga\. studs — _____ LF\|\*any item/);
+  assert.match(words, /\$_____\|/); assert.equal((xml.match(/<w:numPr>/g) || []).length, 3); assert.equal((xml.match(/<w:drawing>/g) || []).length, (await tpl.file('word/document.xml').async('string')).match(/<w:drawing>/g).length);   // three bullets; the logo is still there
+  assert.ok(!/Slab cutting/.test(words));   // flagged items are for the estimator, not for the GC
+  const hdr = await made.file('word/header1.xml').async('string'); assert.ok(!/fldChar/.test(hdr)); assert.match(hdr, /[A-Z][a-z]+ \d{1,2}, \d{4}/);   // the date is the proposal's date and no longer changes when the file is opened
+  const o = (await call('GET', `/api/opportunities/${oid}`, null, est)).body; assert.equal(o.files.filter((f) => f.kind === 'Proposal').length, 2); assert.ok(o.notes.some((n) => /Proposal version 1 written with the AI estimator by Juliana: DEMOLITION \$12,500\.00, FRAMING \$_____\. Earlier versions are kept\. Permit set: RDL Architects, Project #24-118, Issued 10\/02\/2026\. Flagged for review before sending \(not printed on the proposal\): Slab cutting \(P-1\.0 keynote 4\)/.test(n.body)));
   const pr = (await call('GET', `/api/opportunity-files/${last.files[0].id}/prices`, null, est)).body; assert.deepEqual(pr.trades.map((t) => [t.trade, t.amount, !!t.tradeId]), [['DEMOLITION', 12500, true]]); assert.equal(pr.version, 1);   // matched to the app's Demolition trade, ready for the Submit window
   assert.equal((await call('GET', `/api/opportunity-files/${last.files[1].id}/prices`, null, est)).status, 400);
 });
@@ -172,4 +182,20 @@ test('plans added later are attached to the next message only; a new conversatio
   assert.equal(uploads.length, 4); const rq = requests.at(-1).body.messages; assert.equal(rq.length, 1); assert.equal(rq[0].content.filter((b) => b.type === 'document').length, 4);
   const c = await chat(); assert.equal(c.chatId, ids.chatId); assert.equal(c.chats.length, 2); assert.equal(c.messages.length, 2);
   const old = (await call('GET', `/api/opportunities/${oid}/estimate-chat?chat=${c.chats[1].id}`, null, est)).body; assert.ok(old.messages.length > 6);   // the first conversation is still there
+});
+
+test('the official proposal template: everyone estimating can see and download it; only the owner can load a newer one, and a file that is not the template is refused', async () => {
+  const info = (await call('GET', '/api/estimating/proposal-template', null, est)).body; assert.deepEqual([info.custom, info.name], [false, 'byOther Proposal template.docx']);
+  const dl = await fetch(`${base}/api/estimating/proposal-template/file`, { headers: { cookie: est } }); assert.equal(dl.status, 200); const original = Buffer.from(await dl.arrayBuffer()); assert.equal(original.subarray(0, 2).toString(), 'PK');
+  const up = (bytes, name, who = owner) => call('POST', '/api/estimating/proposal-template', bytes, who, name);
+  assert.equal((await up(original, 'New template.docx', est)).status, 403);
+  assert.equal((await up(Buffer.from('not a word file'), 'x.docx')).status, 400); assert.equal((await up(original, 'template.pdf')).status, 400);
+  const blank = await up(zipOf([['word/document.xml', Buffer.from('<w:document><w:body><w:p><w:r><w:t>Hello</w:t></w:r></w:p></w:body></w:document>'), true]]), 'Letterhead.docx'); assert.equal(blank.status, 400); assert.match(blank.body.error, /template is missing its Description\/Scope table/);
+  // a newer template (here: the same one with a different company line) takes effect for the next proposal
+  const JSZip = (await import('jszip')).default, z = await JSZip.loadAsync(original); z.file('word/document.xml', (await z.file('word/document.xml').async('string')).replace('184', '200'));
+  const ok = await up(await z.generateAsync({ type: 'nodebuffer' }), 'byOther Proposal 2027.docx'); assert.equal(ok.status, 200, JSON.stringify(ok.body)); assert.deepEqual([ok.body.custom, ok.body.name, ok.body.updatedBy], [true, 'byOther Proposal 2027.docx', 'Benny']); assert.match(ok.body.found.forLine, /GC Name/);
+  script = [toolAnswer(PROPOSAL, ''), textAnswer('Saved.')]; await say('Save it on the new template.');
+  const f = (await chat()).messages.at(-1).files.find((x) => x.kind === 'Word'), made = await JSZip.loadAsync(Buffer.from(await (await fetch(`${base}/api/opportunity-files/${f.id}`, { headers: { cookie: est } })).arrayBuffer()));
+  assert.match(await made.file('word/document.xml').async('string'), /<w:t>200<\/w:t>/);
+  assert.equal((await call('DELETE', '/api/estimating/proposal-template', null, est)).status, 403); assert.equal((await call('DELETE', '/api/estimating/proposal-template', null, owner)).body.custom, false);
 });

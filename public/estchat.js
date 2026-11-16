@@ -49,7 +49,7 @@ const when = (d) => new Date(d).toLocaleString('en-US', { month: 'short', day: '
 const STARTERS = ['Read the plans and draft the proposal with a section for each trade in our scope.', 'What is in our scope for demolition? List it by keynote.', 'List everything that should be flagged before we send a proposal.'];
 
 export async function estimateChatView(oppId, canWrite) {
-  let data = await api('GET', `/opportunities/${oppId}/estimate-chat${C.state.estChatId ? '?chat=' + C.state.estChatId : ''}`), timer = 0, alive = true;
+  let data = await api('GET', `/opportunities/${oppId}/estimate-chat${C.state.estChatId ? '?chat=' + C.state.estChatId : ''}`), timer = 0, alive = true, latest = {};
   const here = location.hash, err = h('div'), list = h('div', { class: 'chat-list' }), side = h('div'), box = h('textarea', { rows: 2, placeholder: 'Ask about the plans, price a trade, or ask for the proposal…', disabled: canWrite ? null : true });
   const send = h('button', { class: 'primary', type: 'button' }, 'Send');
   const nearBottom = () => window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 160;
@@ -75,7 +75,9 @@ export async function estimateChatView(oppId, canWrite) {
       sup ? [' ', tplUp, h('button', { class: 'small', type: 'button', onclick: () => tplUp.click() }, 'Load A New Template'), tp.custom ? [' ', h('button', { class: 'small', type: 'button', onclick: guard(err, async () => { if (!confirm('Go back to the original proposal template?')) return; await api('DELETE', '/estimating/proposal-template'); data = await load(); drawSide(); }) }, 'Back To The Original')] : ''] : '')) : '';
     side.replaceChildren(h('div', { class: 'card chat-side' },
       h('div', { class: 'row spread' }, h('label', { style: 'margin:0' }, 'Plans the AI reads'), canWrite ? h('span', {}, up, h('button', { class: 'small', type: 'button', onclick: () => up.click() }, data.plans.length ? 'Add Plans' : 'Upload Plans')) : ''), plans,
-      data.proposals.length ? h('div', { style: 'margin-top:.7rem' }, h('label', {}, 'Proposals saved from this lead'), [...new Set(data.proposals.map((p) => p.version))].map((v) => h('div', { class: 'chat-plan' }, h('strong', {}, `Version ${v}`), ' ', data.proposals.filter((p) => p.version === v).map((p) => [h('a', { href: `/api/opportunity-files/${p.id}`, target: '_blank', rel: 'noopener' }, /\.pdf$/i.test(p.name) ? 'PDF' : 'Word'), ' '])))) : '', template));
+      latest.latestPdf || latest.latestWord || latest.proposalFolderUrl ? h('div', { style: 'margin-top:.7rem' }, h('label', {}, 'Latest proposal'),
+        [['PDF', latest.latestPdf], ['Word', latest.latestWord]].filter((x) => x[1]).map(([l, f]) => h('div', { class: 'chat-plan' }, h('strong', {}, l), ' ', h('a', { href: f.href, target: '_blank', rel: 'noopener' }, f.name), h('span', { class: 'muted' }, f.at ? ` · ${when(f.at)}` : ''))),
+        latest.proposalFolderUrl ? h('div', { class: 'chat-plan' }, h('a', { href: latest.proposalFolderUrl, target: '_blank', rel: 'noopener' }, 'Open The Proposal Folder In SharePoint')) : '') : '', template));
   };
   const draw = (stick) => {
     list.replaceChildren(...(data.messages.length ? data.messages.map(bubble) : [h('div', { class: 'chat-empty' }, h('h2', {}, 'Estimate this job with the AI'),
@@ -85,7 +87,9 @@ export async function estimateChatView(oppId, canWrite) {
     if (stick) toBottom();
   };
   const load = () => api('GET', `/opportunities/${oppId}/estimate-chat${data?.chatId ? '?chat=' + data.chatId : ''}`);
-  const poll = () => { clearTimeout(timer); if (!alive || location.hash !== here) { alive = false; return; } timer = setTimeout(async () => { try { const stick = nearBottom(); const was = data.working; data = await load(); draw(stick); if (was && !data.working) drawSide(); } catch { /* try again */ } if (data.working) poll(); }, 1300); };
+  const poll = () => { clearTimeout(timer); if (!alive || location.hash !== here) { alive = false; return; } timer = setTimeout(async () => { try { const stick = nearBottom(); const was = data.working; data = await load(); draw(stick); if (was && !data.working) { drawSide(); loadLatest(); } } catch { /* try again */ } if (data.working) poll(); }, 1300); };
+  // the latest proposal (PDF and Word) wherever it was saved, and the library folder; read on opening and again after each answer
+  const loadLatest = async () => { try { latest = await api('GET', `/opportunities/${oppId}/proposal-files`); if (alive) drawSide(); } catch { /* the side card shows without it */ } };
   let startNew = false;
   const submit = guard(err, async () => {
     const t = box.value.trim(); if (!t || data.working) return; notice(err, '');
@@ -97,7 +101,7 @@ export async function estimateChatView(oppId, canWrite) {
   const newChat = () => { if (data.messages.length && !confirm('Start a new conversation? This one stays saved on the lead and you can come back to it.')) return; startNew = true; data = { ...data, messages: [], working: false }; draw(false); box.focus(); };
   const pick = data.chats.length > 1 ? h('select', { onchange: (e) => { C.state.estChatId = e.target.value; C.render(); } }, data.chats.map((c, k) => h('option', { value: c.id }, `${k === 0 ? 'Latest conversation' : 'Conversation'} · started ${when(c.startedAt)} · ${c.messages} messages`))) : ''; if (pick) pick.value = data.chatId;
   const instr = h('button', { class: 'small', type: 'button', onclick: () => instructionsModal().catch((e) => notice(err, e.message)) }, 'Estimating Instructions');
-  drawSide(); draw(false); if (data.working) poll(); setTimeout(() => { if (data.messages.length) toBottom(); }, 50);
+  drawSide(); draw(false); loadLatest(); if (data.working) poll(); setTimeout(() => { if (data.messages.length) toBottom(); }, 50);
   return C.shell('estimating', [h('div', { class: 'chat-page' },
     h('div', { class: 'row spread', style: 'flex-wrap:wrap;gap:.5rem' }, h('div', {}, h('a', { href: '#/estimating/' + oppId }, '← Back to the lead'), h('h1', { style: 'margin:.2rem 0 0' }, 'Estimate With AI'), h('p', { class: 'sub', style: 'margin:0' }, [data.opportunity.proposalId, data.opportunity.name, data.opportunity.gc].filter(Boolean).join(' · '))),
       h('div', { class: 'row', style: 'gap:.4rem;flex-wrap:wrap' }, pick, canWrite ? h('button', { class: 'small', type: 'button', onclick: newChat }, 'New Conversation') : '', instr)),

@@ -17,9 +17,11 @@ const today = todayEastern(), YEAR = today.slice(0, 4);
 let nodes, seq, graphDown, uploads;
 const reset = () => { nodes = new Map([['root', { id: 'root', name: '', parent: null, folder: true }]]); seq = 0; graphDown = false; uploads = {}; };
 const pathOf = (n) => (n.parent ? [...pathOf(nodes.get(n.parent)), n.name] : []);
-const item = (n) => ({ id: n.id, name: n.name, webUrl: 'https://byother.sharepoint.com/sites/ByOther/Shared Documents/' + pathOf(n).map(encodeURIComponent).join('/'), ...(n.folder ? { folder: {} } : {}) });
+const item = (n) => ({ id: n.id, name: n.name, webUrl: 'https://byother.sharepoint.com/sites/ByOther/Shared Documents/' + pathOf(n).map(encodeURIComponent).join('/'), size: n.size ?? 0, lastModifiedDateTime: n.mtime, ...(n.folder ? { folder: {} } : { file: {} }) });
 const kids = (id) => [...nodes.values()].filter((n) => n.parent === id);
-const add = (parent, name, folder = true, extra = {}) => { const n = { id: 'i' + ++seq, name, parent, folder, ...extra }; nodes.set(n.id, n); return n; };
+const T0 = Date.now();
+const add = (parent, name, folder = true, extra = {}) => { const n = { id: 'i' + ++seq, name, parent, folder, mtime: new Date(T0 + seq * 1000).toISOString(), ...extra }; nodes.set(n.id, n); return n; };   // each new item is a second newer than the last
+const drop = (id) => { for (const k of kids(id)) drop(k.id); nodes.delete(id); };
 const res = (body, status = 200) => ({ ok: status < 400, status, headers: { get: () => null }, json: async () => body });
 const graph = async (url, init = {}) => {
   const u = new URL(url), p = decodeURIComponent(u.pathname + (u.hostname === 'graph.microsoft.com' ? '' : '')), m = init.method || 'GET';
@@ -39,7 +41,7 @@ const graph = async (url, init = {}) => {
   if ((g = r.match(/^\/drives\/drv1\/items\/([^/]+):\/(.+):\/content$/)) && m === 'PUT') { const n = add(g[1], g[2], false, { size: init.body.length, text: Buffer.from(init.body).toString('latin1').slice(0, 20), bytes: init.body.length < 2e6 ? Buffer.from(init.body) : null }); return res(item(n), 201); }
   // reading a file back: its details, then its bytes
   if ((g = r.match(/^\/drives\/drv1\/items\/([^/]+)\/content$/)) && m === 'GET') { const n = nodes.get(g[1]); if (!n?.bytes) return res({}, 404); return { ok: true, status: 200, headers: { get: () => null }, arrayBuffer: async () => n.bytes.buffer.slice(n.bytes.byteOffset, n.bytes.byteOffset + n.bytes.length) }; }
-  if ((g = r.match(/^\/drives\/drv1\/items\/([^/]+)$/)) && m === 'GET') { const n = nodes.get(g[1]); if (!n) return res({}, 404); return res({ id: n.id, name: n.name, size: n.size, ...(n.folder ? { folder: {} } : { file: {} }) }); }
+  if ((g = r.match(/^\/drives\/drv1\/items\/([^/]+)$/)) && m === 'GET') { const n = nodes.get(g[1]); if (!n) return res({}, 404); return res(item(n)); }
   if ((g = r.match(/^\/drives\/drv1\/items\/([^/]+):\/(.+):\/createUploadSession$/))) { const key = '/' + (++seq); uploads.parent = { ...(uploads.parent || {}), [key]: g[1] }; uploads.name = { ...(uploads.name || {}), [key]: g[2] }; return res({ uploadUrl: 'https://upload.fake' + key }); }
   return res({ error: { code: 'notFound' } }, 404);
 };
@@ -219,4 +221,54 @@ test('plans that live in SharePoint are read from there for the estimating chat:
   const prep = await plans.preparePlans(id); assert.deepEqual(prep.problems, []); assert.deepEqual(prep.docs.map((d) => [d.name, d.fileId]), [['BID SET.pdf', 'file_sp_1'], ['Addendum 2.pdf', 'file_sp_2']]);
   assert.deepEqual(sent.map((x) => x[0]), ['BID SET.pdf', 'Addendum 2.pdf']); assert.match(sent[0][1], /bid set from the app/); assert.match(sent[1][1], /dropped into the folder by hand/);
   const again = await plans.preparePlans(id); assert.equal(again.docs.length, 2); assert.equal(sent.length, 2);   // nothing is fetched or sent a second time
+});
+
+// ---------------------------------------------------------------- the lead and its library folder kept in step
+const syncNow = async (id, force) => (await call('POST', `/api/opportunities/${id}/sync`, { force: !!force }, est)).body;
+test('opening a new lead makes no folder; Sync With SharePoint does; a reader cannot run it', async () => {
+  const id = await mk({ name: 'Quiet lead', gc: 'Quiet GC', addr: await addrOk('3 Calm St', 'Orlando', '32801') });
+  const v = await syncNow(id); assert.equal(v.sync.waiting, true); assert.equal(v.linked, false); assert.equal(find('ByOther', YEAR, 'Quiet GC'), null);
+  assert.equal((await call('POST', `/api/opportunities/${id}/sync`, { force: true }, pm)).status, 403);
+  const f = await syncNow(id, true); assert.equal(f.sync.linked, true); assert.equal(f.linked, true); assert.ok(find('ByOther', YEAR, 'Quiet GC', 'Quiet lead_Orlando', '02. Proposal')); assert.match(f.proposalFolderUrl, /02\.%20Proposal$/);
+});
+
+test('a lead whose folder was missed gets it at Started, and the files it already holds are copied in as a backup', async () => {
+  const id = await mk({ name: 'Allstate Pavilion', gc: 'Pavilion GC', addr: await addrOk('8 Arena Way', 'Orlando', '32801') });
+  graphDown = true; await call('POST', `/api/opportunities/${id}/status`, { status: 'Accepted' }, est);
+  await call('POST', `/api/opportunities/${id}/files?kind=Proposal`, mkPdf(), est, 'Pavilion v1.pdf'); await call('POST', `/api/opportunities/${id}/files?kind=Submittal`, mkPdf(), est, 'Scope notes.pdf'); graphDown = false;
+  assert.equal(find('ByOther', YEAR, 'Pavilion GC'), null);
+  const r = await call('POST', `/api/opportunities/${id}/status`, { status: 'Started' }, est); assert.equal(r.status, 200); assert.match(r.body.folderUrl, /byother\.sharepoint\.com/);
+  const o = await opp(id), root = ['ByOther', YEAR, 'Pavilion GC', `${o.proposalId}_Allstate Pavilion_Orlando`]; assert.ok(find(...root)); assert.equal(find(...root, '02. Proposal', 'Pavilion v1.pdf'), null);
+  const v = await syncNow(id); assert.equal(v.sync.pushed, 2); assert.deepEqual(v.sync.failed, []);
+  assert.ok(find(...root, '02. Proposal', 'Pavilion v1.pdf')); assert.ok(find(...root, '02. Proposal', 'Scope notes.pdf'));
+  assert.ok((await q('SELECT sp_url FROM opportunity_files WHERE opportunity_id=$1', [id])).every((f) => /byother\.sharepoint\.com/.test(f.sp_url)));
+  assert.ok((await opp(id)).notes.some((n) => /Copied to the SharePoint folder as a backup: Pavilion v1\.pdf, Scope notes\.pdf/.test(n.body)));
+  const again = await syncNow(id); assert.equal(again.sync.pushed, 0); assert.equal(kids(find(...root, '02. Proposal').id).length, 2);   // nothing is copied twice
+});
+
+test('a folder deleted from the library is made again and the files kept in the app are copied back into it', async () => {
+  const id = await mk({ name: 'Lost folder job', gc: 'Lost GC', addr: await addrOk('4 Gone Rd', 'Tampa', '33625') }); await call('POST', `/api/opportunities/${id}/status`, { status: 'Accepted' }, est);
+  assert.equal((await call('POST', `/api/opportunities/${id}/files?kind=Proposal`, mkPdf(), est, 'Lost v1.pdf')).body.sharepoint, true);
+  const o = await opp(id), root = ['ByOther', YEAR, 'Lost GC', `${o.proposalId}_Lost folder job_Tampa`]; drop(find(...root).id); assert.equal(find(...root), null);
+  const seen = (await call('GET', `/api/opportunities/${id}/proposal-files`, null, est)).body; assert.equal(seen.linked, false); assert.match(seen.error, /no longer in the library/); assert.equal(seen.latestPdf.name, 'Lost v1.pdf');   // still opens from the app
+  const v = await syncNow(id); assert.equal(v.sync.pushed, 1); assert.equal(v.linked, true); assert.ok(find(...root, '02. Proposal', 'Lost v1.pdf')); assert.equal(kids(find(...root).id).length, 5);
+  assert.ok((await opp(id)).notes.some((n) => /was no longer in the library/.test(n.body))); assert.match((await opp(id)).folderUrl, /Lost%20folder%20job_Tampa$/);
+});
+
+test('a proposal saved straight into 02. Proposal shows as the latest on the lead, on the project, and keeps the C folder', async () => {
+  const id = await mk({ name: 'Hand saved job', gc: 'Hand GC', addr: await addrOk('6 Desk Ln', 'Orlando', '32801') }); await call('POST', `/api/opportunities/${id}/status`, { status: 'Accepted' }, est);
+  const fid = (await call('POST', `/api/opportunities/${id}/files?kind=Proposal`, mkPdf(), est, 'byOther Proposal v1.pdf')).body.fileId;
+  let o = await opp(id); const root = () => ['ByOther', YEAR, 'Hand GC', `${o.proposalId}_Hand saved job_Orlando`]; add(find(...root(), '02. Proposal').id, 'byOther Proposal v1.docx', false, { size: 500 });
+  let v = (await call('GET', `/api/opportunities/${id}/proposal-files`, null, est)).body; assert.deepEqual([v.latestPdf.name, v.latestWord.name, v.total], ['byOther Proposal v1.pdf', 'byOther Proposal v1.docx', 2]); assert.equal(v.latestPdf.where, 'App and SharePoint');
+  // edited in Word and saved in the library by hand, with a new PDF beside it; Word's lock file is ignored
+  const prop = find(...root(), '02. Proposal'); add(prop.id, 'byOther Proposal v2 edited.docx', false, { size: 900 }); add(prop.id, 'byOther Proposal v2 edited.pdf', false, { size: 700 }); add(prop.id, '~$Other Proposal v2 edited.docx', false, { size: 1 });
+  v = await syncNow(id); assert.deepEqual([v.latestPdf.name, v.latestWord.name, v.total], ['byOther Proposal v2 edited.pdf', 'byOther Proposal v2 edited.docx', 4]);
+  assert.deepEqual([v.latestPdf.where, v.latestPdf.fileId], ['SharePoint', null]); assert.match(v.latestPdf.href, /02\.%20Proposal\/byOther%20Proposal%20v2%20edited\.pdf$/); assert.deepEqual(v.earlier.map((x) => x.name).sort(), ['byOther Proposal v1.docx', 'byOther Proposal v1.pdf']);
+  assert.equal(v.sync.pushed, 0);
+  // awarded: the project shows the same, and syncing does not turn the C folder back into P
+  assert.equal((await call('POST', `/api/opportunities/${id}/submissions`, { fileId: fid, date: today, method: 'Email', prices: [{ tradeId: tDemo, amount: 4000 }] }, est)).status, 200);
+  const aw = await call('POST', `/api/opportunities/${id}/status`, { status: 'Awarded' }, est); assert.equal(aw.status, 200); const code = 'C' + o.proposalId.slice(1);
+  await syncNow(id); assert.ok(find('ByOther', YEAR, 'Hand GC', `${code}_Hand saved job_Orlando`)); assert.equal(find(...root()), null);
+  const cprop = find('ByOther', YEAR, 'Hand GC', `${code}_Hand saved job_Orlando`, '02. Proposal'); add(cprop.id, 'byOther Proposal v3 after award.pdf', false, { size: 800 });
+  const pv = (await call('GET', `/api/projects/${aw.body.projectId}/lead-proposals`, null, owner)).body; assert.deepEqual([pv.latestPdf.name, pv.latestWord.name], ['byOther Proposal v3 after award.pdf', 'byOther Proposal v2 edited.docx']); assert.match(pv.proposalFolderUrl, new RegExp(`${code}_Hand%20saved%20job_Orlando/02\\.%20Proposal$`));
 });

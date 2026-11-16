@@ -2,6 +2,8 @@
 //   ByOther / <year> / <GC name> / <P11011_Project_City> / 01. DL, 02. Proposal, 03. Change Orders, 04. Documents, 05. Material & Equipment Specs
 // When a proposal is awarded its P becomes a C (C11011_…), and the project's documents carry that code.
 // Every function here is safe to call when SharePoint is not set up (it does nothing) and never lets a SharePoint problem break the caller.
+import fs from 'node:fs';
+import path from 'node:path';
 import { q } from './db.js';
 import { HttpError } from './http.js';
 import * as SP from './sharepoint.js';
@@ -28,9 +30,12 @@ function matcher({ code, name }) {
 async function ensureMainFolder(id) {
   if (!enabled()) throw new HttpError(503, 'SharePoint is not connected yet. Add the Microsoft settings on the server first.');
   const [o] = await q('SELECT * FROM opportunities WHERE id=$1', [id]); if (!o) throw new HttpError(404, 'Opportunity not found.');
-  const want = projectFolderName({ code: o.proposal_id, name: o.name, city: o.city });
+  const want = projectFolderName({ code: o.project_id && o.proposal_id ? 'C' + o.proposal_id.slice(1) : o.proposal_id, name: o.name, city: o.city });   // once awarded the folder carries the C code
   if (o.sp_item_id) {
-    const cur = (o.sp_path || '').split('/').pop();
+    // the folder on record may have been deleted or moved out of the library by hand: then it is made again instead of failing quietly forever
+    const live = await SP.getItem(o.sp_item_id);
+    if (!live || !live.folder) { await q('UPDATE opportunities SET sp_item_id=NULL, sp_path=NULL, folder_url=NULL WHERE id=$1', [id]); await q('UPDATE opportunity_files SET sp_url=NULL WHERE opportunity_id=$1 AND storage_key IS NOT NULL', [id]); await note(id, 'The SharePoint folder for this lead was no longer in the library (deleted or moved). It is being made again and the files kept in the app are copied back into it.'); return ensureMainFolder(id); }
+    const cur = live.name;
     if (key(cur) !== key(want)) { try { const r = await SP.renameItem(o.sp_item_id, want); const path = [...o.sp_path.split('/').slice(0, -1), r.name].join('/'); await q('UPDATE opportunities SET sp_path=$2, folder_url=$3, sp_error=NULL WHERE id=$1', [id, path, r.webUrl ?? o.folder_url]); await note(id, `SharePoint folder renamed to ${r.name}.`); return { id: o.sp_item_id, path, webUrl: r.webUrl ?? o.folder_url, renamed: true }; }
       catch (e) { if (e.graph === 404) { await q('UPDATE opportunities SET sp_item_id=NULL WHERE id=$1', [id]); return ensureMainFolder(id); } throw e; } }
     return { id: o.sp_item_id, path: o.sp_path, webUrl: o.folder_url };
@@ -158,17 +163,71 @@ export async function syncGcs(year = todayEastern().slice(0, 4)) {
   } catch { return { added: 0, found: 0 }; }
 }
 
+// ---- keeping the lead and its library folder in step
+// Makes sure the folder is there, then copies every file the app holds for the lead that the library does not have yet (a backup, in the
+// right numbered folder). Safe to run as often as wanted: a file already copied is not copied again.
+const syncing = new Set();
+export async function syncOpportunity(id, { force = false } = {}) {
+  if (!enabled()) return { enabled: false, pushed: 0 };
+  // Opening a lead runs this. A new or declined lead that has no folder, no P number and nothing to back up is left alone (no folder is
+  // made just by looking); `force` is the Sync button, which always makes the folder.
+  const [o] = await q('SELECT sp_item_id, proposal_id, status FROM opportunities WHERE id=$1', [id]); if (!o) throw new HttpError(404, 'Opportunity not found.');
+  const [{ n }] = await q('SELECT count(*)::int AS n FROM opportunity_files WHERE opportunity_id=$1 AND storage_key IS NOT NULL AND sp_url IS NULL', [id]);
+  if (!force && !o.sp_item_id && !o.proposal_id && ['New', 'Declined'].includes(o.status) && !n) return { enabled: true, linked: false, pushed: 0, waiting: true };
+  if (syncing.has(id)) return { enabled: true, busy: true, pushed: 0 };
+  syncing.add(id);
+  try {
+    let dir; try { dir = await ensureOpportunityFolder(id); } catch (e) { await q('UPDATE opportunities SET sp_error=$2 WHERE id=$1', [id, oneLine(e)]).catch(() => {}); return { enabled: true, linked: false, pushed: 0, error: oneLine(e) }; }
+    const rows = await q(`SELECT id, kind, name, storage_key, mime, size FROM opportunity_files WHERE opportunity_id=$1 AND storage_key IS NOT NULL AND sp_url IS NULL ORDER BY created_at`, [id]);
+    const { UPLOAD_DIR } = await import('./documents.js'), subs = new Map(), done = [], failed = [];
+    for (const f of rows) {
+      const file = path.join(UPLOAD_DIR, path.basename(f.storage_key)); if (!fs.existsSync(file)) continue;
+      try {
+        const subName = SUBFOLDER[f.kind] || SUBFOLDER.Other; if (!subs.has(subName)) { const sf = await SP.ensureFolder(dir.id, subName); subs.set(subName, { id: sf.id, kids: await SP.listFolder(sf.id) }); }
+        const sub = subs.get(subName), there = sub.kids.find((k) => !k.folder && k.name.toLowerCase() === (cleanName(f.name) || f.name).toLowerCase());   // copied before, but the link was never recorded
+        const up = there ?? (await SP.uploadFromPath(sub.id, f.name, file, Number(f.size) || fs.statSync(file).size, f.mime || 'application/octet-stream'));
+        if (f.kind === 'Plans') { await q('UPDATE opportunity_files SET sp_url=$2, storage_key=NULL WHERE id=$1', [f.id, up.webUrl ?? null]); await fs.promises.rm(file, { force: true }); }   // big plan sets live in the library only, as when they are uploaded
+        else await q('UPDATE opportunity_files SET sp_url=$2 WHERE id=$1', [f.id, up.webUrl ?? null]);
+        if (!there) done.push(f.name);
+      } catch (e) { failed.push(`${f.name}: ${oneLine(e)}`); }
+    }
+    if (done.length) await note(id, `Copied to the SharePoint folder as a backup: ${done.slice(0, 12).join(', ')}${done.length > 12 ? ` and ${done.length - 12} more` : ''}.`);
+    if (failed.length) await note(id, `Not copied to SharePoint: ${failed.slice(0, 5).join('; ')}`);
+    return { enabled: true, linked: true, pushed: done.length, failed, folderUrl: dir.webUrl };
+  } finally { syncing.delete(id); }
+}
+
+// The proposals of a lead, wherever they are: written or uploaded in the app, or saved by hand into 02. Proposal in the library (a Word file
+// edited there, a PDF saved from it). The same file in both places is one entry and opens from the library. Newest first; `latestPdf`
+// and `latestWord` are what the lead and the project show.
+export async function proposalView(oppId) {
+  const app = await q(`SELECT id, name, created_at, sp_url, (storage_key IS NOT NULL) AS local FROM opportunity_files WHERE opportunity_id=$1 AND kind='Proposal'`, [oppId]);
+  let lib = { enabled: enabled(), linked: false, proposals: [] }; try { lib = await folderFiles(oppId); } catch (e) { lib = { enabled: enabled(), linked: false, proposals: [], error: oneLine(e) }; }
+  const iso = (d) => (d ? new Date(d).toISOString() : null), by = new Map();
+  for (const f of app) by.set(f.name.toLowerCase(), { name: f.name, at: iso(f.created_at), href: f.local ? `/api/opportunity-files/${f.id}` : f.sp_url, where: 'App', fileId: f.id });
+  for (const s of lib.proposals || []) { const k = s.name.toLowerCase(), cur = by.get(k); by.set(k, { name: s.name, at: iso(s.modified) ?? cur?.at ?? null, href: s.webUrl || cur?.href, where: cur ? 'App and SharePoint' : 'SharePoint', fileId: cur?.fileId ?? null }); }
+  const all = [...by.values()].filter((x) => x.href).sort((a, b) => String(b.at || '').localeCompare(String(a.at || '')));
+  const latestPdf = all.find((x) => /\.pdf$/i.test(x.name)) ?? null, latestWord = all.find((x) => /\.docx?$/i.test(x.name)) ?? null;
+  return { enabled: !!lib.enabled, linked: !!lib.linked, error: lib.error ?? null, folderUrl: lib.folderUrl ?? null, proposalFolderUrl: lib.proposalFolderUrl ?? null, plansFolderUrl: lib.plansFolderUrl ?? null,
+    latestPdf, latestWord, total: all.length, earlier: all.filter((x) => x !== latestPdf && x !== latestWord), plans: lib.allPlans ?? [] };
+}
+
 // What is in the job's folder right now: the BID SET plan PDFs in 01. DL (for the Open Plans link) and the PDFs in 02. Proposal.
 // A lead whose folder exists in SharePoint but was never linked is linked here (nothing is created for a lead that has no P number yet).
 export async function folderFiles(oppId) {
-  if (!enabled()) return { enabled: false, plans: [], proposals: [] };
+  if (!enabled()) return { enabled: false, plans: [], allPlans: [], proposals: [] };
   let [o] = await q('SELECT id, sp_item_id, proposal_id, status FROM opportunities WHERE id=$1', [oppId]); if (!o) throw new HttpError(404, 'Opportunity not found.');
   if (!o.sp_item_id && (o.proposal_id || ['Reviewing', 'Accepted', 'Started', 'Submitted'].includes(o.status))) { await tryEnsureOpportunityFolder(oppId); [o] = await q('SELECT id, sp_item_id FROM opportunities WHERE id=$1', [oppId]); }
-  if (!o?.sp_item_id) return { enabled: true, linked: false, plans: [], proposals: [] };
+  if (!o?.sp_item_id) return { enabled: true, linked: false, plans: [], allPlans: [], proposals: [] };
   try {
     const kids = await SP.listFolder(o.sp_item_id), sub = (n) => kids.find((k) => k.folder && k.name === n);
+    // an empty listing can mean the folder on record is gone (deleted or moved by hand): say so instead of showing nothing
+    if (!kids.length && !(await SP.getItem(o.sp_item_id))) return { enabled: true, linked: false, plans: [], allPlans: [], proposals: [], error: 'The SharePoint folder for this lead is no longer in the library (deleted or moved). Press Sync With SharePoint to make it again.' };
     const pdf = (n) => /\.pdf$/i.test(n);
-    const [plans, proposals] = await Promise.all([sub('01. DL') ? SP.findFiles(sub('01. DL').id, (n) => pdf(n) && /bid\s*set/i.test(n), 3) : [], sub('02. Proposal') ? SP.findFiles(sub('02. Proposal').id, pdf, 2) : []]);
-    return { enabled: true, linked: true, plans, proposals };
-  } catch (e) { return { enabled: true, linked: true, plans: [], proposals: [], error: oneLine(e) }; }
+    // proposals: every PDF and Word file in 02. Proposal, newest first (a file saved there by hand counts the same as one made in the app)
+    const [plans, allPlans, found] = await Promise.all([sub('01. DL') ? SP.findFiles(sub('01. DL').id, (n) => pdf(n) && /bid\s*set/i.test(n), 3) : [], sub('01. DL') ? SP.findFiles(sub('01. DL').id, (n) => /\.(pdf|zip)$/i.test(n), 3) : [], sub('02. Proposal') ? SP.findFiles(sub('02. Proposal').id, (n) => /\.(pdf|docx?)$/i.test(n) && !n.startsWith('~$'), 2) : []]);
+    const proposals = found.sort((a, b) => String(b.modified || '').localeCompare(String(a.modified || '')));
+    const [main] = await q('SELECT folder_url FROM opportunities WHERE id=$1', [oppId]);
+    return { enabled: true, linked: true, plans, allPlans, proposals, folderUrl: main?.folder_url ?? null, plansFolderUrl: sub('01. DL')?.webUrl ?? null, proposalFolderUrl: sub('02. Proposal')?.webUrl ?? null };
+  } catch (e) { return { enabled: true, linked: true, plans: [], allPlans: [], proposals: [], error: oneLine(e) }; }
 }

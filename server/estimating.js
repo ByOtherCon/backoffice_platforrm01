@@ -340,7 +340,7 @@ export async function transition(user, id, b = {}) {
     return { result, to, swap };
   });
   // The shared folder follows the status: made when work is taken on, renamed P -> C when it becomes a contract.
-  if (['Reviewing', 'Accepted'].includes(done.to)) { const f = await folders.tryEnsureOpportunityFolder(id); if (f?.webUrl) done.result.folderUrl = f.webUrl; }
+  if (['Reviewing', 'Accepted', 'Started'].includes(done.to)) { const f = await folders.tryEnsureOpportunityFolder(id); if (f?.webUrl) done.result.folderUrl = f.webUrl; }   // Started too: a lead whose folder was missed gets it when work begins
   if (done.to === 'Awarded' && done.result.projectId) await locateProject(done.result.projectId, { enable: true }).catch(() => null);   // fence the new jobsite for the time clock
   if (done.swap) await folders.promoteGc(id, done.swap.to, done.swap.from);   // the winning GC's folder is the one that becomes the contract folder
   if (done.to === 'Awarded' && done.result.projectId) { const f = await folders.onAwarded(id, done.result.projectId); if (f?.webUrl) done.result.folderUrl = f.webUrl; }

@@ -64,7 +64,7 @@ async function driveId() {
   drive = d.id; return drive;
 }
 async function children(parentId) {
-  const d = await driveId(); const out = []; let next = `/drives/${d}/${parentId === 'root' ? 'root' : 'items/' + parentId}/children?$top=200&$select=id,name,folder,webUrl`;
+  const d = await driveId(); const out = []; let next = `/drives/${d}/${parentId === 'root' ? 'root' : 'items/' + parentId}/children?$top=200&$select=id,name,folder,webUrl,size,lastModifiedDateTime`;
   for (let i = 0; i < 20 && next; i++) { const r = await graph('GET', next, { absolute: next.startsWith('http') }); if (!r) break; out.push(...(r.value || [])); next = r['@odata.nextLink'] || null; }
   return out;
 }
@@ -136,10 +136,15 @@ export async function listFolderNames(segments) {
 }
 // Files (not folders) whose name passes `match`, looking down at most `depth` levels of sub-folders.
 export async function findFiles(folderId, match, depth = 3) {
-  const out = []; const walk = async (id, d) => { for (const c of await children(id)) { if (c.folder) { if (d > 0) await walk(c.id, d - 1); } else if (match(c.name)) out.push({ id: c.id, name: c.name, webUrl: c.webUrl }); } };
+  const out = []; const walk = async (id, d) => { for (const c of await children(id)) { if (c.folder) { if (d > 0) await walk(c.id, d - 1); } else if (match(c.name)) out.push({ id: c.id, name: c.name, webUrl: c.webUrl, modified: c.lastModifiedDateTime ?? null, size: c.size ?? null }); } };
   await walk(folderId, depth); return out;
 }
-export async function listFolder(itemId) { return (await children(itemId)).map((c) => ({ id: c.id, name: c.name, folder: !!c.folder, webUrl: c.webUrl })); }
+export async function listFolder(itemId) { return (await children(itemId)).map((c) => ({ id: c.id, name: c.name, folder: !!c.folder, webUrl: c.webUrl, modified: c.lastModifiedDateTime ?? null, size: c.size ?? null })); }
+// One item as it is now, or null when it is no longer in the library (deleted, or moved somewhere this app cannot see).
+export async function getItem(itemId) {
+  const d = await driveId(), r = await graph('GET', `/drives/${d}/items/${encodeURIComponent(itemId)}?$select=id,name,webUrl,folder,file,size`);
+  return r && r.id ? { id: r.id, name: r.name, webUrl: r.webUrl, folder: !!r.folder } : null;
+}
 // One file's bytes from the library (for reading a proposal, contract or change order that already lives in SharePoint). Capped at 25 MB.
 export async function downloadFile(itemId) {
   const d = await driveId(); const item = await graph('GET', `/drives/${d}/items/${encodeURIComponent(itemId)}?$select=id,name,size,file,folder`);

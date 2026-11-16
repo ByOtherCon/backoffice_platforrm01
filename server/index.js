@@ -246,6 +246,11 @@ route('GET', '/api/projects/:id/lead-files/:fid', async ({ res, user, params }) 
 route('GET', '/api/projects/:id/lead-folder-files', async ({ user, params }) => { await auth.requireProject(user, uuid(params.id)); const [o] = await q('SELECT id FROM opportunities WHERE project_id=$1', [params.id]); return o ? folders.folderFiles(o.id) : { enabled: false, plans: [], proposals: [] }; });
 route('PUT', '/api/opportunities/:id', async ({ user, params, body }) => { await es.update(estWrite(user), uuid(params.id), body); return { ok: true }; });
 route('GET', '/api/opportunities/:id/folder-files', async ({ user, params }) => { estRead(user); return folders.folderFiles(uuid(params.id)); });
+// The lead and its library folder kept in step: the folder is made if it is missing, files held in the app are copied in as a backup, and
+// what is in the library (a proposal saved there by hand) is read back.
+route('GET', '/api/opportunities/:id/proposal-files', async ({ user, params }) => { estRead(user); return folders.proposalView(uuid(params.id)); });
+route('POST', '/api/opportunities/:id/sync', async ({ user, params, body }) => { estWrite(user); const id = uuid(params.id), sync = await folders.syncOpportunity(id, { force: !!body?.force }); return { sync, ...(await folders.proposalView(id)) }; });
+route('GET', '/api/projects/:id/lead-proposals', async ({ user, params }) => { await auth.requireProject(user, uuid(params.id)); const [o] = await q('SELECT id FROM opportunities WHERE project_id=$1', [params.id]); return o ? folders.proposalView(o.id) : { enabled: false, linked: false, total: 0, latestPdf: null, latestWord: null, earlier: [], plans: [] }; });
 route('POST', '/api/opportunities/:id/folder', async ({ user, params }) => { estWrite(user); return folders.ensureOpportunityFolder(uuid(params.id)); });
 route('POST', '/api/projects/:id/folder', async ({ user, params }) => { manage(user); return folders.ensureProjectFolder(uuid(params.id)); });
 route('GET', '/api/quickbooks/status', async ({ user }) => { auth.requireRole(user, auth.SUPER); return { ...(await qbo.status()), lastSync: await qbi.lastSync(), counts: await qbi.counts(), settings: await qbi.getSettings(), testData: await qbr.summary() }; });

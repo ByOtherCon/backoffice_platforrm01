@@ -82,7 +82,8 @@ export async function list({ tab, search, showAll, filter, scope, userId } = {})
     awaitingFollowUp: fu.filter((o) => o.followup.status === 'Active' && o.followup.due && o.followup.due <= today).length + fu.filter((o) => o.followup.status === 'Replied / Action Needed').length,
     interested: fu.filter((o) => ['Awaiting GC Award', 'Selected / Awaiting Contract'].includes(o.followup.status)).length };
   let rows = all;
-  if (tab === 'bids') rows = all.filter((o) => W.inBids(o.status) || ((term || showAll) && o.status === 'Declined' && R.withinSearchWindow(o.declinedAt ?? o.lastSeenAt)));
+  // the search box finds a declined lead however long ago it was declined; the Include Declined box lists the last 30 days
+  if (tab === 'bids') rows = all.filter((o) => W.inBids(o.status) || (o.status === 'Declined' && (term || (showAll && R.withinSearchWindow(o.declinedAt ?? o.lastSeenAt)))));
   else if (tab === 'proposals') {
     const f = W.PROPOSAL_FILTERS.includes(filter) ? filter : 'Active', counts = Object.fromEntries(W.PROPOSAL_FILTERS.map((k) => [k, k === 'All' ? all.filter((o) => o.acceptedDate || o.status === 'Reviewing').length : k === 'Active' ? all.filter((o) => W.inProposals(o.status)).length : all.filter((o) => o.status === k).length]));
     rows = f === 'Active' ? all.filter((o) => W.inProposals(o.status)) : f === 'All' ? all.filter((o) => o.acceptedDate || o.status === 'Reviewing') : all.filter((o) => o.status === f);

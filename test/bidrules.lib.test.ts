@@ -44,3 +44,15 @@ test('the same job from different GCs is recognised, but two addresses are two j
   assert.equal(R.sameJob(j('New Balance', 'Orlando', null), j('Aldi', 'Orlando', null)), false);
   assert.equal(R.sameJob(j('New Balance', 'Orlando', null), j('New Balance', 'Tampa', null)), false);
 });
+
+test('the same job is recognised when the address is written differently: a place name in front, no street at all, a lettered space number, a missing city', () => {
+  const j = (name: string, city: string | null, address: string | null) => ({ name, city, address });
+  assert.equal(R.sameJob(j('Old Navy 5904 Refresh - Tampa, FL - Plaza at Citrus Park', 'Tampa', '12851 Citrus Plaza Drive, Tampa, FL 33625'), j('Old Navy 5904 Refresh - Tampa, FL - Plaza at Citrus Park', 'Tampa', 'The Plaza at Citrus Park, 12851 Citrus Plaza Drive, Tampa, FL 33625')), true);
+  assert.equal(R.sameJob(j('Abercrombie - Mall at Millenia', 'Orlando', 'Mall at Millenia'), j('Abercrombie - Mall at Millenia - Orlando FL', 'Orlando', '4200 Conroy Road, Space #C-196, Orlando, FL 32839')), true);
+  assert.equal(R.sameJob(j('Abercrombie - Mall at Millenia - Orlando FL', 'Orlando', '4200 Conroy Road, Space #C-196, Orlando, FL 32839'), j('Abercrombie & Fitch - Millenia Mall, Orlando FL', null, '4200 Conroy Road, Space #196, Orlando, FL 32839')), true);
+  assert.equal(R.sameJob(j('A&F Kids - Mall at Millenia', 'Orlando', '4200 Conroy Road, Space #C-210'), j('Abercrombie - Mall at Millenia', 'Orlando', '4200 Conroy Road, Space #C-196')), false);   // two stores in the same mall
+  assert.equal(R.sameJob(j('Wingstop', null, '1 Main St, Tampa, FL'), j('Wingstop', 'Orlando', '1 Main St')), false);   // the one without a city does not mention Orlando
+  assert.equal(R.sameJob(j('Aldi', 'Orlando', 'Florida Mall'), j('Publix', 'Orlando', 'Florida Mall')), false);
+  assert.equal(R.sameJob(j('Starbucks', 'Orlando', 'Florida Mall'), j('Starbucks', 'Orlando', 'Mall at Millenia')), false);   // the same brand in two malls is two jobs
+  assert.equal(R.sameJob(j('Starbucks', 'Orlando', 'Mall at Millenia, Orlando'), j('Starbucks', 'Orlando', 'Millenia Mall')), true);   // a place name alone never makes two names one job
+});

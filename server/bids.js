@@ -224,6 +224,7 @@ export async function runRefresh({ trigger = 'Manual', userId = null } = {}) {
         for (const t of batch) await q(`INSERT INTO bid_threads(thread_id, history_id) VALUES ($1,$2) ON CONFLICT (thread_id) DO UPDATE SET history_id=$2, processed_at=now()`, [t.id, t.historyId]);
       }
       const declined = await sweepDeclines();
+      await (await import('./bundles.js')).combineDuplicates().catch(() => {});   // the same job from the same GC that came in twice becomes one lead
       await q(`UPDATE bid_refresh_runs SET status='Done', finished_at=now(), threads=$2, added=$3, updated=$4, skipped=$5, declined=$6 WHERE id=$1`, [run.id, threads, added, updated, skipped, declined]);
     } catch (e) {
       await q(`UPDATE bid_refresh_runs SET status='Error', finished_at=now(), threads=$2, added=$3, updated=$4, error=$5 WHERE id=$1`, [run.id, threads, added, updated, e instanceof HttpError ? e.message : 'The refresh could not finish. Leads already in the list were kept.']);
@@ -249,6 +250,7 @@ export async function scheduleTick(now = new Date()) {
 export function startScheduler() {
   setInterval(() => scheduleTick().catch((e) => console.error('schedule tick', e.message)), 60000);
   setInterval(() => sweepDeclines().catch(() => {}), 3600000);
+  setTimeout(() => import('./bundles.js').then((b) => b.combineDuplicates()).catch((e) => console.error('combine duplicates', e.message)), 8000);   // tidy what is already on the list
   // after a restart, catch up if nothing has run for half a day
   setTimeout(async () => { try { if (!(await stored())) return; const [g] = await q(`SELECT 1 FROM bid_refresh_runs WHERE started_at > now() - interval '12 hours' LIMIT 1`); if (!g) await runRefresh({ trigger: 'Startup' }); } catch { /* the next slot will try again */ } }, 30000);
 }

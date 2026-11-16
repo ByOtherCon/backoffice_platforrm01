@@ -109,3 +109,24 @@ test('a job with one GC is awarded as before, with no GC question', async () => 
   assert.equal((await call('POST', `/api/opportunities/${id}/status`, { status: 'Awarded' }, est)).status, 200); assert.equal((await get(id)).gc, 'Solo GC');
 });
 
+
+test('the same job from the same GC on the list twice is combined on its own; different GCs, or two with their own proposal, are left alone', async () => {
+  const bn = await import('../server/bundles.js');
+  const ins = async (name, gc, address, o = {}) => (await q(`INSERT INTO opportunities(name,gc_name,client_name,city,address,tier,status,source_key,due_date,project_type,source_type,contact_name,invitations,last_seen_at,proposal_id) VALUES ($1,$2,'Client',$3,$4,2,$5,$6,$7,'Retail','Building Connected',$8,$9,now(),$10) RETURNING id`,
+    [name, gc, 'city' in o ? o.city : 'Tampa', address, o.status || 'Declined', 'dup:' + Math.random(), o.due ?? null, o.contact ?? null, JSON.stringify(o.invitations || []), o.proposalId ?? null]))[0].id;
+  const on1 = await ins('Old Navy 5904 Refresh - Tampa, FL - Plaza at Citrus Park', 'Weekes Construction', '12851 Citrus Plaza Drive, Tampa, FL 33625', { contact: 'Carly Brazell' });
+  const on2 = await ins('Old Navy 5904 Refresh - Tampa, FL - Plaza at Citrus Park', 'Weekes Construction, Inc', 'The Plaza at Citrus Park, 12851 Citrus Plaza Drive, Tampa, FL 33625', { due: shift(today, -11), status: 'New' });
+  const af1 = await ins('Abercrombie - Mall at Millenia', 'Sachse Construction', 'Mall at Millenia', { city: 'Orlando', contact: 'Lilly Wilson' });
+  const af2 = await ins('Abercrombie - Mall at Millenia - Orlando FL', 'Sachse Construction', '4200 Conroy Road, Space #C-196, Orlando, FL 32839', { city: 'Orlando', due: shift(today, -6), invitations: [{ gc: 'Sachse Construction' }, { gc: 'PLANiT Construction' }] });
+  const af3 = await ins('Abercrombie & Fitch - Millenia Mall, Orlando FL', 'Corcon', '4200 Conroy Road, Space #196, Orlando, FL 32839', { city: 'Orlando' });   // another GC: a bundle, not a duplicate
+  const p1 = await ins('Twice Priced Store', 'Double GC', '9 Two St', { status: 'Accepted', proposalId: 'P90001' }), p2 = await ins('Twice Priced Store', 'Double GC', '9 Two St', { status: 'Accepted', proposalId: 'P90002' });
+  await q(`INSERT INTO opportunity_notes(opportunity_id,kind,body) VALUES ($1,'User','Carly said the bid moved')`, [on1]);
+  const r = await bn.combineDuplicates(); assert.ok(r.combined >= 2, JSON.stringify(r));
+  const row = async (id) => (await q('SELECT merged_into, address, contact_name, status, invitations, additional_gcs FROM opportunities WHERE id=$1', [id]))[0];
+  assert.equal((await row(on1)).merged_into, on2); const keptOn = await row(on2); assert.deepEqual([keptOn.merged_into, keptOn.status, keptOn.contact_name], [null, 'New', 'Carly Brazell']);   // the open one is kept and takes the contact it lacked
+  assert.equal((await row(af1)).merged_into, af2); const keptAf = await row(af2); assert.equal(keptAf.address, '4200 Conroy Road, Space #C-196, Orlando, FL 32839'); assert.equal(keptAf.invitations.length, 2);
+  assert.equal((await row(af3)).merged_into, null); assert.equal((await row(p1)).merged_into, null); assert.equal((await row(p2)).merged_into, null);
+  const o = await get(on2); assert.ok(o.notes.some((n) => /Carly said the bid moved/.test(n.body)) && o.notes.some((n) => /Combined with a duplicate of this job from Weekes Construction/.test(n.body)));
+  const ids = (await call('GET', '/api/opportunities?tab=bids&all=1&q=Old%20Navy%205904', null, est)).body.groups.flatMap((g) => g.rows.map((x) => x.id)); assert.deepEqual(ids, [on2]);
+  assert.deepEqual(await bn.combineDuplicates(), { combined: 0, groups: 0 });   // nothing left to combine
+});

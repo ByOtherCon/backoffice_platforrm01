@@ -142,11 +142,12 @@ test('decline rules: New two days past due, Reviewing two days, undated leads ne
   assert.equal((await call('PUT', '/api/settings/estimating', { declineNewDays: 2 }, sub)).status, 200); assert.equal((await call('PUT', '/api/settings/estimating', { declineNewDays: 'x' }, sub)).status, 400);
 });
 
-test('search reaches declined leads for 30 days from the day they were declined, and no further back', async () => {
+test('the Include Declined box lists leads declined in the last 30 days; the search box finds a declined lead of any age', async () => {
   const seen = async (name, days) => q(`UPDATE opportunities SET declined_at = now() - ($2 || ' days')::interval, last_seen_at = now() - interval '90 days' WHERE name=$1`, [name, String(days)]);   // the 30 days run from the decline, not from when the lead was last seen
   await seen('R-new-2days', 10); await seen('R-rev-2days', 45);
   const find = async (qs) => (await call('GET', `/api/opportunities?tab=bids&q=${qs}`, null, est)).body.groups.flatMap((g) => g.rows.map((o) => o.name));
-  assert.deepEqual(await find('R-new-2days'), ['R-new-2days']); assert.deepEqual(await find('R-rev-2days'), []);
+  assert.deepEqual(await find('R-new-2days'), ['R-new-2days']); assert.deepEqual(await find('R-rev-2days'), ['R-rev-2days']);   // declined 45 days ago: still found by name
+  const boxed = (await call('GET', '/api/opportunities?tab=bids&all=1', null, est)).body.groups.flatMap((g) => g.rows.map((o) => o.name)); assert.ok(boxed.includes('R-new-2days') && !boxed.includes('R-rev-2days'));
   const inbox = (await call('GET', '/api/opportunities?tab=bids', null, est)).body.groups.flatMap((g) => g.rows.map((o) => o.name)); assert.ok(!inbox.includes('R-new-2days'));
 });
 

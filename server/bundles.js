@@ -115,3 +115,60 @@ export async function unmerge(user, leadId) {
     return { id: leadId, mainId: main.id };
   });
 }
+
+// ------------------------------------------------------------------ the same job from the same GC, on the list twice
+// It happens when the same invitation arrives again worded a little differently (a place name in front of the address, the city added to
+// the project name, a second contact at the GC). Those are one lead. They are combined without asking: the one that is furthest along
+// keeps everything, the other's notes and files move to it, and the other is hidden (nothing is deleted). Two that each have their own
+// proposal or submission are left alone for a person to decide. The same job under different GCs is not touched here; that is a bundle.
+const KEEP_RANK = { Submitted: 7, 'Not Awarded': 6, 'No Communication': 6, Started: 5, Accepted: 4, Reviewing: 3, New: 2, 'Decided Not To Submit': 1, Declined: 0 };
+const hasStreet = (a) => /(^|,)\s*\d+[a-z]?\s+\S/i.test(String(a || ''));
+export async function combineDuplicates() {
+  const rows = await q(`SELECT * FROM opportunities WHERE merged_into IS NULL AND project_id IS NULL AND status <> 'Awarded' ORDER BY created_at`);
+  if (rows.length < 2) return { combined: 0, groups: 0 };
+  const subs = await submissionCounts(rows.map((r) => r.id)), parent = rows.map((_, i) => i), find = (i) => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+  const byGc = new Map(); rows.forEach((r, i) => { for (const k of new Set(gcList(r).map((g) => R.gcKey(g)))) (byGc.get(k) ?? byGc.set(k, []).get(k)).push(i); });
+  for (const list of byGc.values()) for (let x = 0; x < list.length; x++) for (let y = x + 1; y < list.length; y++) { const i = list[x], j = list[y]; if (find(i) !== find(j) && R.sameJob(jobOf(rows[i]), jobOf(rows[j]))) parent[find(j)] = find(i); }
+  const groups = new Map(); rows.forEach((r, i) => (groups.get(find(i)) ?? groups.set(find(i), []).get(find(i))).push(r));
+  let combined = 0, done = 0;
+  for (const g of groups.values()) {
+    if (g.length < 2) continue;
+    const own = g.filter((o) => subs.get(o.id) || o.proposal_id); if (own.length > 1) continue;
+    const seen = (o) => new Date(o.last_seen_at || o.created_at).getTime();
+    const ranked = [...g].sort((a, b) => (own.includes(b) ? 1 : 0) - (own.includes(a) ? 1 : 0) || (KEEP_RANK[b.status] ?? 0) - (KEEP_RANK[a.status] ?? 0) || (b.due_date ? 1 : 0) - (a.due_date ? 1 : 0) || gcList(b).length - gcList(a).length || seen(b) - seen(a));
+    try { combined += await absorbDuplicates(ranked[0].id, ranked.slice(1).map((o) => o.id)); done++; } catch (e) { console.error('combining duplicate leads failed', e.message); }
+  }
+  return { combined, groups: done };
+}
+async function absorbDuplicates(primaryId, otherIds) {
+  return tx(async (t) => {
+    const rows = await t('SELECT * FROM opportunities WHERE id = ANY($1::uuid[]) ORDER BY id FOR UPDATE', [[primaryId, ...otherIds].sort()]);
+    const by = new Map(rows.map((r) => [r.id, r])), main = by.get(primaryId); if (!main || main.merged_into || main.project_id) return 0;
+    const invs = Array.isArray(main.invitations) ? [...main.invitations] : []; if (!invs.some((x) => R.gcKey(x.gc) === R.gcKey(main.gc_name))) invs.unshift(ownInvite(main));
+    const set = {}; let n = 0;
+    for (const id of otherIds) {
+      const o = by.get(id); if (!o || o.merged_into || o.project_id || o.proposal_id) continue;
+      if ((await t('SELECT 1 FROM submissions WHERE opportunity_id=$1 LIMIT 1', [id])).length) continue;
+      const list = Array.isArray(o.invitations) && o.invitations.length ? [...o.invitations] : [ownInvite(o)]; if (!list.some((x) => R.gcKey(x.gc) === R.gcKey(o.gc_name))) list.unshift(ownInvite(o));
+      for (const inv of list) { const i = invs.findIndex((x) => R.gcKey(x.gc) === R.gcKey(inv.gc)); if (i < 0) invs.push(inv); else for (const k of ['contactName', 'email', 'phone', 'link', 'threadId']) if (inv[k] && !invs[i][k]) invs[i][k] = inv[k]; }
+      // what the kept lead is missing is taken from the duplicate; a street address wins over a place name
+      for (const c of ['due_date', 'due_time', 'city', 'zip', 'contact_name', 'contact_email', 'contact_phone', 'invitation_link', 'email_link', 'gmail_thread_id', 'planned_start', 'client_name']) if (!(set[c] ?? main[c]) && o[c]) set[c] = o[c];
+      const cur = set.address ?? main.address; if (o.address && (!cur || (!hasStreet(cur) && hasStreet(o.address)))) set.address = o.address;
+      await t('UPDATE opportunity_notes SET opportunity_id=$1 WHERE opportunity_id=$2', [primaryId, id]);
+      await t('UPDATE opportunity_files SET opportunity_id=$1 WHERE opportunity_id=$2', [primaryId, id]);
+      await t('UPDATE communications SET opportunity_id=$1 WHERE opportunity_id=$2', [primaryId, id]);
+      await t('UPDATE takeoff_runs SET opportunity_id=$1 WHERE opportunity_id=$2', [primaryId, id]);
+      await t('UPDATE estimate_chats SET opportunity_id=$1 WHERE opportunity_id=$2', [primaryId, id]);
+      await t('INSERT INTO opportunity_considered_trades(opportunity_id,trade_id) SELECT $1, trade_id FROM opportunity_considered_trades WHERE opportunity_id=$2 ON CONFLICT DO NOTHING', [primaryId, id]);
+      await t(`UPDATE record_links SET record_id=$1 WHERE kind='opportunity' AND record_id=$2 AND NOT EXISTS (SELECT 1 FROM record_links x WHERE x.owner_kind=record_links.owner_kind AND x.owner_id=record_links.owner_id AND x.kind='opportunity' AND x.record_id=$1)`, [primaryId, id]);
+      await t('UPDATE opportunities SET merged_into=$2 WHERE id=$1', [id, primaryId]);
+      await note(t, id, null, `This was the same job from the same GC as "${main.name}" (${main.gc_name}), on the list twice. The two were combined into that lead; this one's notes and files moved there.`);
+      await note(t, primaryId, null, `Combined with a duplicate of this job from ${o.gc_name}: "${o.name}"${o.address ? ', ' + o.address : ''}. Same job and same GC, so it is one lead; the duplicate's notes and files are here now.`);
+      n++;
+    }
+    if (!n) return 0;
+    set.invitations = JSON.stringify(invs); set.additional_gcs = additional(main.gc_name, invs);
+    const keys = Object.keys(set); await t(`UPDATE opportunities SET ${keys.map((k, i) => `${k}=$${i + 2}`).join(',')} WHERE id=$1`, [primaryId, ...keys.map((k) => set[k])]);
+    return n;
+  });
+}

@@ -35,17 +35,29 @@ export function gcNames(gcName: string | null, invitations: Array<{ gc?: string 
 }
 const STOP = ['fl', 'florida', 'orlando', 'at', 'the', 'and', 'expansion', 'remodel', 'renovation', 'marketplace', 'outlet', 'new', 'construction', 'project'];
 const words = (s: string) => String(s || '').toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 1 && !STOP.includes(w));
+const GENERIC_PLACE = ['mall', 'plaza', 'center', 'centre', 'shops', 'shoppes', 'shopping', 'outlets', 'outlet', 'premium', 'town', 'square', 'village', 'the', 'at', 'of', 'and'];
+// The street is the part that starts with a house number. A place name in front of it ("The Plaza at Citrus Park, 12851 Citrus Plaza Drive")
+// or instead of it ("Mall at Millenia, Orlando") is not a street, so it never makes one job look like two addresses.
 function addressParts(value: string | null) {
-  const parts = String(value || '').toLowerCase().split(',').map((s) => s.trim()), tag = String(value || '').toLowerCase().match(/(?:#\s*|\b(?:suite|ste|unit|apt)\.?\s*)([a-z0-9-]+)/i);
-  const unit = tag?.[1] || (/^[a-z]?\d+[a-z]?$/.test(parts[1] || '') ? parts[1] : ''); let street = (parts[0] || '').replace(/(?:#|\b(?:suite|ste|unit|apt)\.?\s+)[a-z0-9-]+/gi, '');
+  const low = String(value || '').toLowerCase(), parts = low.split(',').map((s) => s.trim()), si = parts.findIndex((p) => /^\d+[a-z]?\s+\S/.test(p));
+  const tag = low.match(/(?:#\s*|\b(?:suite|ste|unit|apt)\.?\s*)([a-z0-9-]+)/i), space = low.match(/\b(?:space|spc)\.?\s*#?\s*([a-z]?-?\d[a-z0-9-]*)/i), next = si >= 0 ? parts[si + 1] || '' : '';
+  const unit = space?.[1] || tag?.[1] || (/^[a-z]?\d+[a-z]?$/.test(next) ? next : '');
+  let street = (si >= 0 ? parts[si] : '').replace(/\b(?:space|spc)\.?\s*#?\s*[a-z]?-?\d[a-z0-9-]*/gi, '').replace(/(?:#|\b(?:suite|ste|unit|apt)\.?\s+)[a-z0-9-]+/gi, '');
   for (const [s, l] of [['dr', 'drive'], ['rd', 'road'], ['st', 'street'], ['ave', 'avenue'], ['blvd', 'boulevard'], ['ln', 'lane'], ['pkwy', 'parkway'], ['hwy', 'highway'], ['trl', 'trail'], ['ct', 'court'], ['n', 'north'], ['s', 'south'], ['e', 'east'], ['w', 'west']]) street = street.replace(new RegExp('\\b' + s + '\\b', 'g'), l);
-  return { street: norm(street), unit: norm(unit) };
+  return { street: norm(street), unit: norm(unit), place: si === 0 ? [] : (parts[0] || '').split(/[^a-z0-9]+/).filter((w) => w.length > 1 && !GENERIC_PLACE.includes(w)) };   // place: "mall at millenia", when the address starts with a name
 }
+// "#C-196" and "#196" are the same space; "983" and "120" are not.
+const unitNo = (u: string) => u.replace(/[^0-9]/g, '');
+const sameUnit = (a: string, b: string) => a === b || (!!unitNo(a) && unitNo(a) === unitNo(b) && (a === unitNo(a) || b === unitNo(b)));
 export function sameJob(a: { name: string; city: string | null; address: string | null; threadId?: string | null }, b: typeof a): boolean {
   if (a.threadId && a.threadId === b.threadId) return true;
-  if (cityKey(a.city) !== cityKey(b.city)) return false;   // "Orlando" and "Orlando, FL" are the same city
-  const aa = addressParts(a.address), ba = addressParts(b.address); if (aa.unit && ba.unit && aa.unit !== ba.unit) return false;
-  if (aa.street && ba.street && aa.street !== ba.street) return false;   // two different addresses are two jobs, whatever they are called
+  const ca = cityKey(a.city), cb = cityKey(b.city);
+  if (ca && cb && ca !== cb) return false;   // "Orlando" and "Orlando, FL" are the same city
+  // one of them has no city on file: its address or name has to mention the other one's city
+  if (!ca !== !cb) { const known = ca || cb, blank = ca ? b : a; if (!norm(`${blank.address || ''} ${blank.name || ''}`).includes(known)) return false; }
+  const aa = addressParts(a.address), ba = addressParts(b.address); if (aa.unit && ba.unit && !sameUnit(aa.unit, ba.unit)) return false;
+  if (aa.street && ba.street && aa.street !== ba.street) return false;
+  if (!aa.street && !ba.street && aa.place.length && ba.place.length && !aa.place.some((w) => ba.place.includes(w))) return false;   // two different malls, no street on either   // two different addresses are two jobs, whatever they are called
   if (norm(a.name) === norm(b.name)) return true;
   const wa = words(a.name), wb = words(b.name), common = wa.filter((t) => wb.includes(t)).length;
   if (aa.street && aa.street === ba.street) return common >= 1;

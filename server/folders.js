@@ -34,7 +34,7 @@ async function ensureMainFolder(id) {
   if (o.sp_item_id) {
     // the folder on record may have been deleted or moved out of the library by hand: then it is made again instead of failing quietly forever
     const live = await SP.getItem(o.sp_item_id);
-    if (!live || !live.folder) { await q('UPDATE opportunities SET sp_item_id=NULL, sp_path=NULL, folder_url=NULL WHERE id=$1', [id]); await q('UPDATE opportunity_files SET sp_url=NULL WHERE opportunity_id=$1 AND storage_key IS NOT NULL', [id]); await note(id, 'The SharePoint folder for this lead was no longer in the library (deleted or moved). It is being made again and the files kept in the app are copied back into it.'); return ensureMainFolder(id); }
+    if (!live || !live.folder) { await q('UPDATE opportunities SET sp_item_id=NULL, sp_path=NULL, folder_url=NULL WHERE id=$1', [id]); await q('UPDATE opportunity_files SET sp_url=NULL, sp_item_id=NULL WHERE opportunity_id=$1 AND storage_key IS NOT NULL', [id]); await note(id, 'The SharePoint folder for this lead was no longer in the library (deleted or moved). It is being made again and the files kept in the app are copied back into it.'); return ensureMainFolder(id); }
     const cur = live.name;
     if (key(cur) !== key(want)) { try { const r = await SP.renameItem(o.sp_item_id, want); const path = [...o.sp_path.split('/').slice(0, -1), r.name].join('/'); await q('UPDATE opportunities SET sp_path=$2, folder_url=$3, sp_error=NULL WHERE id=$1', [id, path, r.webUrl ?? o.folder_url]); await note(id, `SharePoint folder renamed to ${r.name}.`); return { id: o.sp_item_id, path, webUrl: r.webUrl ?? o.folder_url, renamed: true }; }
       catch (e) { if (e.graph === 404) { await q('UPDATE opportunities SET sp_item_id=NULL WHERE id=$1', [id]); return ensureMainFolder(id); } throw e; } }
@@ -84,6 +84,7 @@ export async function promoteGc(id, winner, oldMain) {
   // The proposal that was submitted (and its Word file) is the job's own and goes with the award.
   await q(`UPDATE opportunity_files f SET meta = COALESCE(f.meta, '{}'::jsonb) || jsonb_build_object('gc', $2::text) WHERE f.opportunity_id=$1 AND f.kind IN ('Proposal','Submittal') AND (f.meta->>'gc') IS NULL AND f.submission_id IS NULL
     AND NOT EXISTS (SELECT 1 FROM opportunity_files s WHERE s.opportunity_id=$1 AND s.submission_id IS NOT NULL AND s.version IS NOT NULL AND s.version = f.version)`, [id, oldMain]).catch(() => {});
+  await q(`UPDATE opportunity_files SET sp_url=NULL, sp_item_id=NULL WHERE opportunity_id=$1 AND kind IN ('Proposal','Submittal') AND (meta->>'gc') IS NULL AND storage_key IS NOT NULL AND sp_removed_at IS NULL`, [id]).catch(() => {});
   if (!enabled()) return null;
   try {
     let [o] = await q('SELECT * FROM opportunities WHERE id=$1', [id]); if (!o) return null;
@@ -214,28 +215,40 @@ export async function syncOpportunity(id, { force = false } = {}) {
   // Opening a lead runs this. A new or declined lead that has no folder, no P number and nothing to back up is left alone (no folder is
   // made just by looking); `force` is the Sync button, which always makes the folder.
   const [o] = await q('SELECT sp_item_id, proposal_id, status FROM opportunities WHERE id=$1', [id]); if (!o) throw new HttpError(404, 'Opportunity not found.');
-  const [{ n }] = await q('SELECT count(*)::int AS n FROM opportunity_files WHERE opportunity_id=$1 AND storage_key IS NOT NULL AND sp_url IS NULL', [id]);
+  const [{ n }] = await q('SELECT count(*)::int AS n FROM opportunity_files WHERE opportunity_id=$1 AND storage_key IS NOT NULL AND sp_url IS NULL AND sp_removed_at IS NULL', [id]);
   if (!force && !o.sp_item_id && !o.proposal_id && ['New', 'Declined'].includes(o.status) && !n) return { enabled: true, linked: false, pushed: 0, waiting: true };
   if (syncing.has(id)) return { enabled: true, busy: true, pushed: 0 };
   syncing.add(id);
   try {
     let dir; try { dir = await ensureOpportunityFolder(id); } catch (e) { await q('UPDATE opportunities SET sp_error=$2 WHERE id=$1', [id, oneLine(e)]).catch(() => {}); return { enabled: true, linked: false, pushed: 0, error: oneLine(e) }; }
-    // every file the app holds is checked against the library by name, so one that is missing there (never copied, or removed) is copied
-    const rows = await q(`SELECT id, kind, name, storage_key, mime, size, sp_url, version, meta FROM opportunity_files WHERE opportunity_id=$1 AND storage_key IS NOT NULL ORDER BY created_at`, [id]);
+    // Every file the app holds is copied into the library ONCE. After that the library decides: a copy renamed there keeps its new name
+    // here, one moved elsewhere is left alone, and one deleted there is not put back and is no longer listed on the lead.
+    const rows = await q(`SELECT id, kind, name, storage_key, mime, size, sp_url, sp_item_id, version, meta FROM opportunity_files WHERE opportunity_id=$1 AND storage_key IS NOT NULL AND sp_removed_at IS NULL ORDER BY created_at`, [id]);
     const extras = await extraFolders(id);
     const [lead] = await q('SELECT name, gc_name, city, proposal_id, sp_path, invitations FROM opportunities WHERE id=$1', [id]), others = await otherGcs(id, lead);
     const taken = new Set((await q('SELECT lower(name) AS n FROM opportunity_files WHERE opportunity_id=$1', [id])).map((r) => r.n));
-    const { UPLOAD_DIR } = await import('./documents.js'), subs = new Map(), done = [], fixed = [], shortened = [], failed = [];
+    const { UPLOAD_DIR } = await import('./documents.js'), subs = new Map(), done = [], fixed = [], shortened = [], removed = [], failed = [];
+    const gone = async (f) => { await q('UPDATE opportunity_files SET sp_removed_at=now() WHERE id=$1', [f.id]); removed.push(f.name); };
+    const rename = async (f, name) => { await q('UPDATE opportunity_files SET name=$2 WHERE id=$1', [f.id, name]); taken.delete(f.name.toLowerCase()); taken.add(name.toLowerCase()); };
     for (const f of rows) {
       const file = path.join(UPLOAD_DIR, path.basename(f.storage_key)); if (!fs.existsSync(file)) continue;
       try {
         const subName = SUBFOLDER[f.kind] || SUBFOLDER.Other, owner = mirrored(f.kind) ? null : ownerOf(others, f.meta?.gc); if (owner && !owner.folder) continue;   // another GC's proposal waits for that GC's folder
         const home = owner?.folder ?? null, base = home?.sp_item_id ?? dir.id, key = base + '|' + subName;
         if (!subs.has(key)) { const sf = await SP.ensureFolder(base, subName); subs.set(key, { id: sf.id, kids: await SP.listFolder(sf.id) }); }
-        const sub = subs.get(key), named = (n) => sub.kids.find((k) => !k.folder && !k.claimed && k.name.toLowerCase() === (cleanFileName(n) || n).toLowerCase());
+        const sub = subs.get(key), same = (x, y) => (cleanFileName(x) || x).toLowerCase() === (cleanFileName(y) || y).toLowerCase(), named = (n) => sub.kids.find((k) => !k.folder && !k.claimed && same(k.name, n));
         // a proposal the app wrote under a name too long for Word gets the shorter one (in the library and here), unless that name is in use
         let target = fittedName(home ? { ...lead, gc_name: home.gc_name, sp_path: home.sp_path } : lead, f); if (target !== f.name && taken.has(target.toLowerCase())) target = f.name;
-        const there = named(target), prev = !there && target !== f.name ? named(f.name) : null;
+        if (f.sp_item_id) {   // copied before: found again by the library's own id
+          const mine = sub.kids.find((k) => !k.folder && k.id === f.sp_item_id);
+          if (!mine) { const live = await SP.getItem(f.sp_item_id); if (!live) await gone(f); else if (live.webUrl && live.webUrl !== f.sp_url) await q('UPDATE opportunity_files SET sp_url=$2 WHERE id=$1', [f.id, live.webUrl]); continue; }
+          mine.claimed = true; let url = mine.webUrl ?? f.sp_url;
+          if (same(mine.name, f.name)) { if (target !== f.name) { try { const r = await SP.renameFile(mine.id, target); mine.name = r.name; url = r.webUrl ?? url; await rename(f, target); shortened.push(target); } catch { /* open in Word: next time */ } } }
+          else if (!taken.has(mine.name.toLowerCase())) await rename(f, mine.name);   // renamed by hand in the library: the lead shows the same name
+          if (url !== f.sp_url) await q('UPDATE opportunity_files SET sp_url=$2 WHERE id=$1', [f.id, url]);
+          continue;
+        }
+        const there = named(target) ?? (f.sp_url ? sub.kids.find((k) => !k.folder && !k.claimed && k.webUrl === f.sp_url) ?? null : null), prev = !there && target !== f.name ? named(f.name) : null;
         // A copy saved before file names kept their ending: the name was cut at 90 characters, which dropped ".pdf" or ".docx" from a long
         // one. The same file (same size, the cut name, no ending) is given its real name instead of being copied a second time.
         const cut = cleanName(f.name).toLowerCase(), broken = there || prev || cut === (cleanFileName(f.name) || f.name).toLowerCase() ? null : sub.kids.find((k) => !k.folder && !k.claimed && !/\.[a-z0-9]{1,8}$/i.test(k.name) && k.name.toLowerCase().startsWith(cut) && Number(k.size) === Number(f.size));
@@ -243,29 +256,42 @@ export async function syncOpportunity(id, { force = false } = {}) {
         const old = prev || broken;
         if (old) { try { up = await SP.renameFile(old.id, target); old.name = up.name; how = broken ? 'fixed' : 'there'; } catch { target = f.name; up = prev; how = 'there'; } }   // a rename that is refused (the file is open) leaves everything as it was
         if (up) (there || old).claimed = true;
+        if (!up && f.sp_url) { await gone(f); continue; }   // it was copied before and is not there any more: taken out by hand, so it is not put back
         if (!up) { up = await SP.uploadFromPath(sub.id, target, file, Number(f.size) || fs.statSync(file).size, f.mime || 'application/octet-stream'); sub.kids.push({ id: up.id, name: up.name ?? target, folder: false, webUrl: up.webUrl, size: f.size, claimed: true }); how = 'copied'; }
-        if (target !== f.name) { await q('UPDATE opportunity_files SET name=$2 WHERE id=$1', [f.id, target]); taken.delete(f.name.toLowerCase()); taken.add(target.toLowerCase()); shortened.push(target); }
-        if (f.kind === 'Plans') { await q('UPDATE opportunity_files SET sp_url=$2, storage_key=NULL WHERE id=$1', [f.id, up.webUrl ?? null]); await fs.promises.rm(file, { force: true }); }   // big plan sets live in the library only, as when they are uploaded
-        else if ((up.webUrl ?? null) !== f.sp_url) await q('UPDATE opportunity_files SET sp_url=$2 WHERE id=$1', [f.id, up.webUrl ?? null]);
+        if (target !== f.name) { await rename(f, target); shortened.push(target); }
+        if (f.kind === 'Plans') { await q('UPDATE opportunity_files SET sp_url=$2, sp_item_id=$3, storage_key=NULL WHERE id=$1', [f.id, up.webUrl ?? null, up.id ?? null]); await fs.promises.rm(file, { force: true }); }   // big plan sets live in the library only, as when they are uploaded
+        else await q('UPDATE opportunity_files SET sp_url=$2, sp_item_id=$3 WHERE id=$1', [f.id, up.webUrl ?? null, up.id ?? null]);
         if (how === 'copied') done.push(target); else if (how === 'fixed') fixed.push(target);
       } catch (e) { failed.push(`${f.name}: ${oneLine(e)}`); }
     }
-    // a bundled job: whatever is in the main folder's 01. DL (files and folders) and missing under another GC is copied there
+    // plans the app keeps only in the library: one deleted from 01. DL by hand is no longer listed on the lead
+    const planRows = await q(`SELECT id, name, sp_url, sp_item_id FROM opportunity_files WHERE opportunity_id=$1 AND kind='Plans' AND storage_key IS NULL AND sp_url IS NOT NULL AND sp_removed_at IS NULL`, [id]);
+    let src = null; if (planRows.length || extras.length) { try { src = await SP.listPath(dir.id, SUBFOLDER.Plans); } catch { /* tried again next time */ } }
+    if (src) for (const f of planRows) {
+      try {
+        const cutName = cleanName(f.name).toLowerCase(), hit = (f.sp_item_id && src.find((k) => k.id === f.sp_item_id)) || src.find((k) => !k.folder && (k.webUrl === f.sp_url || k.name.toLowerCase() === (cleanFileName(f.name) || f.name).toLowerCase() || k.name.toLowerCase() === cutName));
+        if (hit) { if (hit.id !== f.sp_item_id) await q('UPDATE opportunity_files SET sp_item_id=$2 WHERE id=$1', [f.id, hit.id]); continue; }
+        if (f.sp_item_id && (await SP.getItem(f.sp_item_id))) continue;   // moved into another folder by hand
+        await gone(f);
+      } catch { /* tried again next time */ }
+    }
+    // a bundled job: whatever is in the main folder's 01. DL (files and folders) is copied under each other GC once; taken out there by hand, it is not copied again
     let plansCopied = 0;
-    if (extras.length) {
-      let src = []; try { src = await SP.listPath(dir.id, SUBFOLDER.Plans); } catch { /* tried again next time */ }
+    if (extras.length && src) {
       for (const x of extras) {
-        try { const dst = await SP.ensureFolder(x.sp_item_id, SUBFOLDER.Plans), have = new Set((await SP.listFolder(dst.id)).map((k) => k.name.toLowerCase())), names = [];
-          for (const k of src) if (!have.has(k.name.toLowerCase())) { await SP.copyItem(k.id, dst.id); names.push(k.name); }
+        try { const dst = await SP.ensureFolder(x.sp_item_id, SUBFOLDER.Plans), have = new Set((await SP.listFolder(dst.id)).map((k) => k.name.toLowerCase())), seen = new Set(Array.isArray(x.plans_copied) ? x.plans_copied : []), names = []; let changed = false;
+          for (const k of src) { if (seen.has(k.id)) continue; if (!have.has(k.name.toLowerCase())) { await SP.copyItem(k.id, dst.id); names.push(k.name); } seen.add(k.id); changed = true; }
+          if (changed) await q('UPDATE opportunity_folders SET plans_copied=$3 WHERE opportunity_id=$1 AND gc_name=$2', [id, x.gc_name, JSON.stringify([...seen])]);
           if (names.length) { plansCopied += names.length; await note(id, `Plans copied to the ${x.gc_name} folder: ${names.slice(0, 12).join(', ')}${names.length > 12 ? ` and ${names.length - 12} more` : ''}.`); }
         } catch (e) { failed.push(`Plans for ${x.gc_name}: ${oneLine(e)}`); }
       }
     }
+    if (removed.length) await note(id, `Deleted from the SharePoint folder by hand, so no longer listed on the lead and not copied back: ${removed.slice(0, 12).join(', ')}${removed.length > 12 ? ` and ${removed.length - 12} more` : ''}.`);
     if (done.length) await note(id, `Copied to the SharePoint folder as a backup: ${done.slice(0, 12).join(', ')}${done.length > 12 ? ` and ${done.length - 12} more` : ''}.`);
     if (fixed.length) await note(id, `Files in the SharePoint folder that had lost their ending (.pdf, .docx) were given their full name: ${fixed.slice(0, 12).join(', ')}.`);
     if (shortened.length) await note(id, `Proposal files were given a shorter name so Word can open and save them from File Explorer (the GC and the project are already in the folder path): ${shortened.slice(0, 12).join(', ')}.`);
     if (failed.length) await note(id, `Not copied to SharePoint: ${failed.slice(0, 5).join('; ')}`);
-    return { enabled: true, linked: true, pushed: done.length, fixed: fixed.length, shortened: shortened.length, plansCopied, failed, folderUrl: dir.webUrl };
+    return { enabled: true, linked: true, pushed: done.length, fixed: fixed.length, shortened: shortened.length, plansCopied, removed: removed.length, failed, folderUrl: dir.webUrl };
   } finally { syncing.delete(id); }
 }
 
@@ -274,7 +300,7 @@ export async function syncOpportunity(id, { force = false } = {}) {
 // and `latestWord` are what the lead and the project show.
 export async function proposalView(oppId) {
   const [o] = await q('SELECT gc_name, invitations FROM opportunities WHERE id=$1', [oppId]); if (!o) throw new HttpError(404, 'Opportunity not found.');
-  const app = await q(`SELECT id, name, created_at, sp_url, meta, (storage_key IS NOT NULL) AS local FROM opportunity_files WHERE opportunity_id=$1 AND kind='Proposal'`, [oppId]);
+  const app = await q(`SELECT id, name, created_at, sp_url, meta, (storage_key IS NOT NULL) AS local FROM opportunity_files WHERE opportunity_id=$1 AND kind='Proposal' AND sp_removed_at IS NULL`, [oppId]);
   let lib = { enabled: enabled(), linked: false, proposals: [] }; try { lib = await folderFiles(oppId); } catch (e) { lib = { enabled: enabled(), linked: false, proposals: [], error: oneLine(e) }; }
   const others = await otherGcs(oppId, o), iso = (d) => (d ? new Date(d).toISOString() : null), wordOrPdf = (n) => /\.(pdf|docx?)$/i.test(n) && !n.startsWith('~$');
   // one GC's proposals: what the app holds for it and what is in its folder, the same file counted once (it opens from the library)
@@ -304,7 +330,7 @@ export const forgetLatestPdfs = (oppId) => (oppId ? pdfSeen.delete(oppId) : pdfS
 export async function latestProposalPdfs(oppId) {
   const hit = pdfSeen.get(oppId); if (hit && Date.now() - hit.at < 60000) return hit.value;
   const [o] = await q('SELECT id, gc_name, sp_item_id, invitations FROM opportunities WHERE id=$1', [oppId]); if (!o) throw new HttpError(404, 'Opportunity not found.');
-  const rows = await q(`SELECT id, name, created_at, sp_url, meta, (storage_key IS NOT NULL) AS local FROM opportunity_files WHERE opportunity_id=$1 AND kind='Proposal' AND name ~* '\\.pdf$' ORDER BY created_at DESC`, [oppId]);
+  const rows = await q(`SELECT id, name, created_at, sp_url, meta, (storage_key IS NOT NULL) AS local FROM opportunity_files WHERE opportunity_id=$1 AND kind='Proposal' AND sp_removed_at IS NULL AND name ~* '\\.pdf$' ORDER BY created_at DESC`, [oppId]);
   const others = await otherGcs(oppId, o), iso = (d) => (d ? new Date(d).toISOString() : null);
   const appFor = (x) => { const a = rows.find((f) => ownerOf(others, f.meta?.gc) === x && (f.local || f.sp_url)); return a ? { name: a.name, at: iso(a.created_at), href: a.local ? `/api/opportunity-files/${a.id}` : a.sp_url, where: 'App' } : null; };
   let error = null;

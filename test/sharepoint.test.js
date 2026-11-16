@@ -214,7 +214,8 @@ test('a job bundled under several GCs has a folder under each GC once it is Acce
   assert.ok(find(...B, '02. Proposal', 'Beta price.pdf')); assert.equal(find(...A, '02. Proposal', 'Beta price.pdf'), null);
   assert.equal((await call('POST', `/api/opportunities/${a}/files?kind=Proposal&gc=Nobody`, mkPdf(), est, 'x.pdf')).status, 400);
   add(find(...B, '02. Proposal').id, 'Beta price edited.docx', false, { size: 3 });   // and its Word file, saved there by hand
-  v = await syncNow(a); assert.deepEqual([v.sync.pushed, v.sync.plansCopied, v.sync.failed], [0, 0, []]); assert.equal(find(...A, '02. Proposal', 'Beta price.pdf'), null);
+  drop(find(...B, '01. DL', 'Addendum 1.pdf').id);   // taken out of the second GC's folder by hand: it is not copied there again
+  v = await syncNow(a); assert.deepEqual([v.sync.pushed, v.sync.plansCopied, v.sync.failed], [0, 0, []]); assert.equal(find(...A, '02. Proposal', 'Beta price.pdf'), null); assert.equal(find(...B, '01. DL', 'Addendum 1.pdf'), null);
   assert.deepEqual([v.gc, v.latestPdf.name, v.total], ['GC Alpha', 'Bundle proposal.pdf', 1]);
   assert.deepEqual(v.gcs.map((g) => [g.gc, g.latestPdf?.name, g.latestWord?.name, g.total]), [['GC Beta', 'Beta price.pdf', 'Beta price edited.docx', 2]]); assert.match(v.gcs[0].proposalFolderUrl, /GC%20Beta\/.*\/02\.%20Proposal$/);
   folders.forgetLatestPdfs(); const lp = (await call('GET', `/api/opportunities/${a}/latest-pdfs`, null, est)).body; assert.equal(lp.perGc, true); assert.deepEqual(lp.pdfs.map((x) => [x.gc, x.name]), [['GC Alpha', 'Bundle proposal.pdf'], ['GC Beta', 'Beta price.pdf']]);
@@ -346,4 +347,26 @@ test('a proposal name too long for Word on a PC leaves out the GC, then the proj
   assert.ok((await q(`SELECT sp_url FROM opportunity_files WHERE opportunity_id=$1 AND version=1`, [id])).every((r) => decodeURIComponent(r.sp_url).includes(short)));
   assert.ok((await opp(id)).notes.some((n) => /given a shorter name so Word can open and save them/.test(n.body)));
   const again = await syncNow(id); assert.deepEqual([again.sync.shortened, again.sync.pushed], [0, 0]); assert.equal(kids(prop.id).length, 3); assert.equal(again.total, 3);
+});
+
+test('a file deleted in SharePoint stays deleted: it is not copied back and drops off the lead; a renamed one keeps its new name; my own newer file is the latest', async () => {
+  const id = await mk({ name: 'Cleanup job', gc: 'Cleanup GC', addr: await addrOk('9 Tidy Ct', 'Orlando', '32801') }); await call('POST', `/api/opportunities/${id}/status`, { status: 'Accepted' }, est);
+  for (const n of ['Old v1.pdf', 'Old v2.pdf', 'Old v3.pdf']) assert.equal((await call('POST', `/api/opportunities/${id}/files?kind=Proposal`, mkPdf(), est, n)).body.sharepoint, true);
+  assert.equal((await call('POST', `/api/opportunities/${id}/plans`, mkPdf(), est, 'BID SET.pdf')).status, 200);
+  for (let i = 0; i < 200 && (await q(`SELECT storage_key FROM opportunity_files WHERE opportunity_id=$1 AND kind='Plans'`, [id]))[0].storage_key !== null; i++) await new Promise((ok) => setTimeout(ok, 50));
+  const o = await opp(id), root = ['ByOther', YEAR, 'Cleanup GC', `${o.proposalId}_Cleanup job_Orlando`], prop = find(...root, '02. Proposal'); assert.equal(o.files.length, 4);
+  assert.equal((await syncNow(id)).sync.removed, 0);
+  // in Explorer: two old proposals and the plan set deleted, one proposal renamed, and my own final PDF saved in
+  drop(find(...root, '02. Proposal', 'Old v1.pdf').id); drop(find(...root, '02. Proposal', 'Old v2.pdf').id); drop(find(...root, '01. DL', 'BID SET.pdf').id);
+  find(...root, '02. Proposal', 'Old v3.pdf').name = 'Renamed by me.pdf'; add(prop.id, 'My own final.pdf', false, { size: 8 });
+  const v = await syncNow(id); assert.deepEqual([v.sync.removed, v.sync.pushed, v.sync.failed], [3, 0, []]);
+  assert.deepEqual(kids(prop.id).map((n) => n.name).sort(), ['My own final.pdf', 'Renamed by me.pdf']); assert.equal(kids(find(...root, '01. DL').id).length, 0);   // nothing was put back
+  assert.deepEqual([v.latestPdf.name, v.latestPdf.where, v.total], ['My own final.pdf', 'SharePoint', 2]); assert.deepEqual(v.earlier.map((x) => [x.name, x.where]), [['Renamed by me.pdf', 'App and SharePoint']]);
+  const after = await opp(id); assert.deepEqual(after.files.map((f) => f.name), ['Renamed by me.pdf']); assert.ok(after.notes.some((n) => /Deleted from the SharePoint folder by hand, so no longer listed on the lead and not copied back: Old v1\.pdf, Old v2\.pdf, BID SET\.pdf/.test(n.body)));
+  assert.match((await q(`SELECT sp_url FROM opportunity_files WHERE opportunity_id=$1 AND name='Renamed by me.pdf'`, [id]))[0].sp_url, /Renamed%20by%20me\.pdf$/);
+  folders.forgetLatestPdfs(); assert.deepEqual((await call('GET', `/api/opportunities/${id}/latest-pdfs`, null, est)).body.pdfs.map((x) => x.name), ['My own final.pdf']);
+  const again = await syncNow(id); assert.deepEqual([again.sync.removed, again.sync.pushed], [0, 0]); assert.equal(kids(prop.id).length, 2);
+  // moved into a folder of my own inside the job folder: left alone, still listed
+  const mineDir = add(prop.id, 'Old versions'); find(...root, '02. Proposal', 'Renamed by me.pdf').parent = mineDir.id;
+  const moved = await syncNow(id); assert.deepEqual([moved.sync.removed, moved.sync.pushed], [0, 0]); assert.equal(kids(prop.id).filter((n) => !n.folder).length, 1); assert.deepEqual((await opp(id)).files.map((f) => f.name), ['Renamed by me.pdf']);
 });

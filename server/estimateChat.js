@@ -100,7 +100,7 @@ export async function getChat(user, opportunityId, chatId = null) {
   const cur = chatId ? chats.find((c) => c.id === chatId) : chats[0];
   const msgs = cur ? await q(`SELECT m.id, m.role, m.body, m.status, m.error, m.files, m.created_at, u.name AS who FROM estimate_messages m LEFT JOIN app_users u ON u.id=m.user_id WHERE m.chat_id=$1 ORDER BY m.seq`, [cur.id]) : [];
   let plans = []; try { plans = (await planSources(opportunityId)).map((p) => ({ name: p.name, size: p.size, where: p.where, zip: p.zip, missing: !!p.missing })); } catch { /* shown without the list */ }
-  const proposals = await q(`SELECT id, name, version, created_at FROM opportunity_files WHERE opportunity_id=$1 AND version IS NOT NULL ORDER BY version DESC, name`, [opportunityId]);
+  const proposals = await q(`SELECT id, name, version, created_at FROM opportunity_files WHERE opportunity_id=$1 AND version IS NOT NULL AND sp_removed_at IS NULL ORDER BY version DESC, name`, [opportunityId]);
   const ins = await getInstructions();
   return { opportunity: { id: o.id, name: o.name, gc: o.gc_name, proposalId: o.proposal_id }, aiConnected: aiConnected(), model: chatModel(), chatId: cur?.id ?? null, instructions: { label: ins.label, updatedAt: ins.updatedAt, updatedBy: ins.updatedBy, custom: ins.custom }, template: await templateInfo(),
     chats: chats.map((c) => ({ id: c.id, startedAt: c.created_at, messages: c.n })), plans, proposals: proposals.map((p) => ({ id: p.id, name: p.name, version: p.version, at: p.created_at })),
@@ -220,7 +220,7 @@ export async function saveProposal(user, o, chatId, input) {
     await t(`INSERT INTO opportunity_notes(opportunity_id,user_id,kind,body) VALUES ($1,$2,'System',$3)`, [o.id, user.id, `Proposal version ${v}${forGc ? ` for ${forGc}` : ''} written with the AI estimator by ${who(user)}: ${spec.trades.map((x) => `${x.title} ${priceText(x.total)}`).join(', ')}. Earlier versions are kept.${spec.permitSet ? ` Permit set: ${spec.permitSet}.` : ''}${spec.flagged.length ? ` Flagged for review before sending (not printed on the proposal): ${spec.flagged.map((f) => `${f.item}${f.note ? ' (' + f.note + ')' : ''}`).join('; ').slice(0, 3000)}` : ''}`]);
     return { version: v, files };
   });
-  for (const f of out.files) folders.pushOpportunityFile(o.id, { kind: 'Proposal', filename: f.name, bytes: f.bytes, mime: f.mime, gc: forGc }).then((up) => (up?.webUrl ? q('UPDATE opportunity_files SET sp_url=$2 WHERE id=$1', [f.id, up.webUrl]) : null)).catch(() => {});
+  for (const f of out.files) folders.pushOpportunityFile(o.id, { kind: 'Proposal', filename: f.name, bytes: f.bytes, mime: f.mime, gc: forGc }).then((up) => (up?.webUrl ? q('UPDATE opportunity_files SET sp_url=$2, sp_item_id=$3 WHERE id=$1', [f.id, up.webUrl, up.id ?? null]) : null)).catch(() => {});
   return { version: out.version, files: out.files.map((f) => ({ id: f.id, name: f.name, kind: f.kind })), blank: spec.trades.filter((t) => t.total === null).map((t) => t.title), flagged: spec.flagged.length };
 }
 // What a proposal written here says, as trades and prices, for the Submit window (so nothing is typed twice).

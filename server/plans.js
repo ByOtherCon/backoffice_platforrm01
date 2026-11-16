@@ -72,7 +72,7 @@ export async function zipExtract(zipPath, entry, dest) {
 // The plans files on the lead, without opening them: [{ key, name, size, where, zip }]. `key` is stable for the same file.
 export async function planSources(opportunityId) {
   const [o] = await q('SELECT id, sp_item_id FROM opportunities WHERE id=$1', [opportunityId]); if (!o) throw new HttpError(404, 'Opportunity not found.');
-  const rows = await q(`SELECT id, name, size, storage_key, sp_url FROM opportunity_files WHERE opportunity_id=$1 AND kind='Plans' ORDER BY created_at`, [opportunityId]);
+  const rows = await q(`SELECT id, name, size, storage_key, sp_url FROM opportunity_files WHERE opportunity_id=$1 AND kind='Plans' AND sp_removed_at IS NULL ORDER BY created_at`, [opportunityId]);
   const out = [], seen = new Set();
   let spFiles = null; const sp = async () => { if (spFiles) return spFiles; spFiles = [];
     if (folders.enabled() && o.sp_item_id) { try { const dl = (await SP.listFolder(o.sp_item_id)).find((k) => k.folder && k.name === '01. DL'); if (dl) spFiles = await SP.findFiles(dl.id, (n) => /\.(pdf|zip)$/i.test(n), 3); } catch { spFiles = []; } }

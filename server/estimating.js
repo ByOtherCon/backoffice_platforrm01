@@ -44,7 +44,7 @@ export async function loadAll(where = '', params = []) {
     q('SELECT * FROM submissions WHERE opportunity_id = ANY($1::uuid[]) AND voided_at IS NULL ORDER BY version', [ids]),
     q('SELECT * FROM communications WHERE opportunity_id = ANY($1::uuid[]) ORDER BY comm_date, created_at', [ids]),
     q('SELECT c.opportunity_id, c.trade_id, t.name FROM opportunity_considered_trades c JOIN trades t ON t.id=c.trade_id WHERE c.opportunity_id = ANY($1::uuid[]) ORDER BY t.sort, t.name', [ids]),
-    q('SELECT id, opportunity_id, kind, name, mime, size, submission_id, sp_url, (storage_key IS NOT NULL) AS local, created_at, version FROM opportunity_files WHERE opportunity_id = ANY($1::uuid[]) ORDER BY created_at', [ids]),
+    q('SELECT id, opportunity_id, kind, name, mime, size, submission_id, sp_url, (storage_key IS NOT NULL) AS local, created_at, version, (sp_removed_at IS NOT NULL) AS removed FROM opportunity_files WHERE opportunity_id = ANY($1::uuid[]) AND (sp_removed_at IS NULL OR submission_id IS NOT NULL) ORDER BY created_at', [ids]),   // one deleted in the library is not listed, unless a submission points at it
     q('SELECT * FROM followup_cases WHERE opportunity_id = ANY($1::uuid[]) ORDER BY created_at', [ids])]);
   const today = E.todayEastern();
   return rows.map((r) => {
@@ -63,7 +63,7 @@ export async function loadAll(where = '', params = []) {
       status: r.status, statusLabel: W.statusName(r.status), next: W.nextStatuses(r.status), lastSeenAt: r.last_seen_at, emailLink: r.email_link, invitations: r.invitations ?? [], autoDeclined: r.auto_declined, progress: r.progress, result: r.result,
       spPath: r.sp_path, spError: r.sp_error, estimatorId: r.estimator_id, estimator: r.estimator, proposalId: r.proposal_id, acceptedDate: r.accepted_date, startDate: r.start_date, declinedReason: r.declined_reason, declinedAt: r.declined_at, lostReason: r.lost_reason, folderUrl: r.folder_url, proposalUrl: r.proposal_url, projectId: r.project_id,
       consideredTrades: considered.filter((c) => c.opportunity_id === r.id).map((c) => ({ tradeId: c.trade_id, name: c.name })),
-      files: files.filter((f) => f.opportunity_id === r.id).map((f) => ({ id: f.id, kind: f.kind, name: f.name, mime: f.mime, size: f.size, local: f.local, spUrl: f.sp_url, at: f.created_at, version: f.version, used: !!f.submission_id })),
+      files: files.filter((f) => f.opportunity_id === r.id).map((f) => ({ id: f.id, kind: f.kind, name: f.name, mime: f.mime, size: f.size, local: f.local, spUrl: f.sp_url, at: f.created_at, version: f.version, used: !!f.submission_id, removed: !!f.removed })),
       tradePrices: tp, total: r2(tp.reduce((n, p) => n + Math.round(p.amount * 100), 0) / 100), submissions: ss, communications: cs, lastSubmission: last,
       countdown: E.countdown(r.due_date, !!last, today), week: E.groupFor(r.due_date, today), expiry: W.workExpiry(r.status, r.due_date, !!last, today), tone: W.rowTone(r.status, r.due_date, !!last, today), followup, calendarDate: last ? last.date : r.due_date };
   });
@@ -381,7 +381,7 @@ export async function uploadFile(user, id, bytes, filename, kind = 'Proposal', g
       await q('UPDATE opportunity_files SET parsed=$2 WHERE id=$1', [row.id, JSON.stringify(parsed)]);
     } catch (e) { if (!(e instanceof HttpError)) throw e; aiError = e.message; }
   }
-  const up = await copy; if (up?.webUrl) await q('UPDATE opportunity_files SET sp_url=$2 WHERE id=$1', [row.id, up.webUrl]);
+  const up = await copy; if (up?.webUrl) await q('UPDATE opportunity_files SET sp_url=$2, sp_item_id=$3 WHERE id=$1', [row.id, up.webUrl, up.id ?? null]);
   return { fileId: row.id, name: filename, parsed, aiError, sharepoint: !!up };
 }
 // ---- plans: a ZIP or PDF from the invitation, streamed to disk (never held in memory), filed with the opportunity and copied to 01. DL
@@ -399,7 +399,7 @@ export async function uploadPlans(user, id, req, filename) {
   const mb = (f.size / 1048576).toFixed(1); await q('INSERT INTO opportunity_notes(opportunity_id,user_id,kind,body) VALUES ($1,$2,$3,$4)', [id, user.id, 'System', `Plans "${name}" (${mb} MB) uploaded by ${who(user)}${folders.enabled() ? '. Copying to the 01. DL folder in SharePoint…' : '.'}`]);
   // The copy to SharePoint can take a while for a big file, so it runs after this answer. When it lands the app's own copy is removed to save disk.
   const copying = folders.enabled() ? folders.pushOpportunityFilePath(id, { kind: 'Plans', filename: name, filePath: path.join(UPLOAD_DIR, f.key), size: f.size, mime: f.mime }).then(async (up) => {
-    if (!up) return; await q('UPDATE opportunity_files SET sp_url=$2, storage_key=NULL WHERE id=$1', [row.id, up.webUrl ?? null]); await fsm.promises.rm(path.join(UPLOAD_DIR, f.key), { force: true });
+    if (!up) return; await q('UPDATE opportunity_files SET sp_url=$2, sp_item_id=$3, storage_key=NULL WHERE id=$1', [row.id, up.webUrl ?? null, up.id ?? null]); await fsm.promises.rm(path.join(UPLOAD_DIR, f.key), { force: true });
     await q('INSERT INTO opportunity_notes(opportunity_id,kind,body) VALUES ($1,$2,$3)', [id, 'System', `Plans "${name}" copied to the 01. DL folder in SharePoint.`]);
   }).catch(() => {}) : Promise.resolve();
   const out = { fileId: row.id, name, size: f.size, sharepoint: folders.enabled() }; Object.defineProperty(out, 'copying', { value: copying, enumerable: false }); return out;
@@ -491,7 +491,7 @@ export async function projectOrigin(projectId) {
 // and the project's documents (contract, change orders, COIs) show on the lead.
 export async function leadFilesForProject(projectId) {
   const [o] = await q('SELECT id, name, proposal_id, folder_url, status FROM opportunities WHERE project_id=$1', [projectId]); if (!o) return null;
-  const files = await q('SELECT id, kind, name, size, sp_url, (storage_key IS NOT NULL) AS local, created_at AS at FROM opportunity_files WHERE opportunity_id=$1 ORDER BY created_at', [o.id]);
+  const files = await q('SELECT id, kind, name, size, sp_url, (storage_key IS NOT NULL) AS local, created_at AS at FROM opportunity_files WHERE opportunity_id=$1 AND (sp_removed_at IS NULL OR submission_id IS NOT NULL) ORDER BY created_at', [o.id]);
   return { opportunityId: o.id, name: o.name, proposalId: o.proposal_id, folderUrl: o.folder_url, files: files.map((f) => ({ id: f.id, kind: f.kind, name: f.name, size: f.size, local: f.local, spUrl: f.sp_url, at: f.at })) };
 }
 export async function leadFileForProject(projectId, fid) {

@@ -1162,6 +1162,24 @@ async function qboCostReview(c) {
     }, 'Import');
   draw().catch((e) => notice(err, e.message));
 }
+// Text messages: what is needed to turn them on, which alerts run and when, a test, and the last texts sent.
+async function smsCard() {
+  const s = await api('GET', '/sms/status'), err = h('div'), st = s.settings;
+  const f = { fu: h('input', { type: 'checkbox' }), fuAt: h('input', { type: 'time', value: st.followupsAt }), ck: h('input', { type: 'checkbox' }), ckAt: h('input', { type: 'time', value: st.clockAt }), to: h('input', { type: 'tel', placeholder: '(407) 555-0150' }) }; f.fu.checked = st.followups; f.ck.checked = st.clock;
+  const line = (box, label, at) => h('div', { class: 'row', style: 'gap:.6rem;flex-wrap:wrap;align-items:center;margin:.3rem 0' }, h('label', { style: 'text-transform:none;letter-spacing:0;font-size:15px;font-weight:400;margin:0' }, box, ' ', label), at, h('span', { class: 'muted', style: 'font-size:13px' }, 'Eastern time'));
+  return h('div', { class: 'card' }, h('h2', {}, 'Text messages'), err,
+    s.configured ? h('p', { class: 'ok' }, `Texts are on, sent from ${s.from}. ${s.usersWithPhone} office ${s.usersWithPhone === 1 ? 'person has' : 'people have'} a phone number on file and ${s.crewWithPhone} of the crew.`)
+      : h('div', {}, h('p', { class: 'err' }, 'Not set up yet. Nothing is sent until it is.'), h('ol', { class: 'muted', style: 'margin:.2rem 0 .6rem 1.2rem' },
+        h('li', {}, 'Open an account at twilio.com and buy one local phone number (about $1.15 a month, plus under a cent for each text).'),
+        h('li', {}, 'In Twilio, register the business and the number for texting (they call it A2P 10DLC). Carriers require it; approval takes a few days.'),
+        h('li', {}, `On Render, Environment, add: ${s.needs.join(', ')}. The first two are on the Twilio console home page; TWILIO_FROM is the number you bought, written like +14075550150.`))),
+    line(f.fu, 'Text each estimator the follow-ups that are due or overdue, on weekday mornings at', f.fuAt),
+    line(f.ck, 'Text anyone whose time clock is still running, every evening at', f.ckAt),
+    h('p', { class: 'muted', style: 'font-size:13px' }, 'Each person gets one text per alert per day, to the phone number on their user or employee record. A person with no number gets none. Anyone can reply STOP to a text to stop getting them.'),
+    h('div', { class: 'row', style: 'gap:.5rem;flex-wrap:wrap;margin-top:.4rem' }, h('button', { class: 'primary', onclick: guard(err, async () => { await api('PUT', '/sms/settings', { followups: f.fu.checked, followupsAt: f.fuAt.value, clock: f.ck.checked, clockAt: f.ckAt.value }); notice(err, 'Saved.', 'ok'); }) }, 'Save'),
+      s.configured ? [f.to, h('button', { onclick: guard(err, async () => { await api('POST', '/sms/test', { to: f.to.value }); notice(err, 'Test text sent.', 'ok'); }) }, 'Send A Test Text')] : ''),
+    s.recent.length ? h('details', { style: 'margin-top:.8rem' }, h('summary', { style: 'cursor:pointer' }, `Last texts (${s.recent.length})`), h('table', {}, h('thead', {}, h('tr', {}, ['When', 'To', 'Alert', 'Result'].map((t) => h('th', {}, t)))), h('tbody', {}, s.recent.map((r) => h('tr', {}, h('td', {}, new Date(r.at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })), h('td', {}, `${r.who ? r.who + ' · ' : ''}${r.to}`), h('td', {}, r.kind), h('td', { class: r.status === 'Sent' ? 'pos' : 'neg', style: 'white-space:normal' }, r.status === 'Sent' ? 'Sent' : `${r.status}: ${r.error || ''}`)))))) : '');
+}
 async function sharepointCard() {
   const s = await api('GET', '/sharepoint/status?test=1'), err = h('div');
   return h('div', { class: 'card' }, h('div', { class: 'row spread' }, h('h2', {}, 'SharePoint (shared project folders)'), s.configured ? h('button', { class: 'small', onclick: () => render() }, 'Test connection') : ''), err,
@@ -1454,14 +1472,14 @@ function collapsible(card, open) {
 const ADMIN_GROUPS = [
   ['lists', 'Lists', 'Create vendors, subcontractors, employees, trades and GCs here. Projects pick from these lists. Archive instead of delete once a record has history.'],
   ['company', 'Company', 'People and access, time clock rules, and company overhead.'],
-  ['connections', 'Connections', 'Gmail bid invitations, SharePoint folders and QuickBooks.'],
+  ['connections', 'Connections', 'Gmail bid invitations, SharePoint folders, QuickBooks and text messages.'],
   ['ai', 'AI', 'The AI reading limits, and who has used how much.'],
 ];
 async function adminCards(group) {
   const top = ['Super Admin', 'Sub Admin'].includes(state.user.role), parts = [];
   if (group === 'lists') for (const s of SECTIONS) parts.push(await adminSection(s));
   else if (group === 'company') { if (isSuper()) parts.push(await usersSection()); parts.push(await clockSettingsCard()); if (top) parts.push(await overheadCard()); }
-  else if (group === 'connections') { if (isSuper()) parts.push(await googleSigninCard()); if (top) parts.push(await bidFeedCard()); if (isSuper()) { parts.push(await sharepointCard()); parts.push(await quickbooksCard()); } }
+  else if (group === 'connections') { if (isSuper()) parts.push(await googleSigninCard()); if (top) parts.push(await bidFeedCard()); if (isSuper()) { parts.push(await sharepointCard()); parts.push(await quickbooksCard()); parts.push(await smsCard()); } }
   else if (group === 'ai') { parts.push(await aiCard()); if (isSuper()) parts.push(await aiReportCard()); }
   return parts;
 }

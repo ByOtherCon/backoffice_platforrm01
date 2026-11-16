@@ -22,6 +22,7 @@ One system for By Other Construction: **Estimating** (bid invitations to awarded
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | The Google app that lets the platform read the BuildingConnected emails (read-only). See "Bid inbox from Gmail". |
 | `PUBLIC_URL` | The site's own address. Render supplies it automatically; set it only on another host. |
 | `SMTP_URL`, `EMAIL_FROM` | Sends vendor insurance-request emails. Without it they wait in the outbox on the Compliance page. |
+| `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM` | Text-message alerts (`server/sms.js`). `TWILIO_FROM` is the Twilio number, like +14075550150 (or use `TWILIO_MESSAGING_SERVICE_SID`). Without them nothing is sent. On weekday mornings each estimator gets one text with the follow-ups that are due or overdue; each evening anyone whose time clock is still running gets one text with the clock link. Times and on/off are in Admin, Connections, Text messages, with a test and the log (`sms_log`). |
 | `MS_TENANT_ID`, `MS_CLIENT_ID`, `MS_CLIENT_SECRET`, `MS_SITE_URL` | Shared project folders in SharePoint (Microsoft Graph, app-only; the app needs the Sites.ReadWrite.All application permission with admin consent). Optional `MS_LIBRARY` (default Documents) and `MS_ROOT_FOLDER` (default ByOther; set empty to start at the library root). |
 
 ## Putting it online (Render)

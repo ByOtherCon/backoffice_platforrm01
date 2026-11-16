@@ -154,7 +154,7 @@ async function opportunityForm(o) {   // a new opportunity, in a pop-up (an exis
   }, 'Add opportunity');
 }
 // What happens to the folders of one job under more than one GC (there is no choice to make).
-const FOLDERS_SAY = 'Each GC gets its own project folder once the lead is Accepted or Started. Plans are copied into all of them. Proposals are not: each GC keeps its own, because the price can differ.';
+const FOLDERS_SAY = 'Each GC gets its own project folder once the lead is Accepted or Started. Plans are copied into all of them. Proposals are not: each GC keeps its own, because the price can differ. When the lead is Started it becomes one proposal for each GC (P11031, P11031-B, P11031-C), so each one is submitted on its own.';
 function askBundle(same, b) {
   return new Promise((done) => {
     const name = 'bw' + Math.random().toString(36).slice(2, 7); let settled = false;
@@ -456,6 +456,7 @@ async function opportunityDetail(id, err, w, editing) {
     o.tradePrices.length ? h('p', { style: 'margin-top:.8rem' }, h('strong', {}, 'Proposed: '), o.tradePrices.map((p) => `${p.name} ${usd(p.amount)}`).join(' · '), ` = ${usd(o.total)}`) : '',
     o.submissions.length ? h('div', { style: 'margin-top:.8rem' }, h('label', {}, 'Bid versions'), h('table', {}, h('tbody', {}, o.submissions.map((s) => h('tr', {}, h('td', {}, 'v' + s.version), h('td', {}, fmtDay(s.date)), h('td', {}, s.method), h('td', { class: 'n' }, usd(s.price)), h('td', {}, (s.trades || []).map((t) => t.name).join(', ')), h('td', {}, w && o.status === 'Submitted' ? h('button', { class: 'small danger', onclick: guard(err, async () => { const why = prompt('Why remove this submission? (the PDF stays in the folder)'); if (why) { await api('POST', `/opportunities/${o.id}/submissions/${s.id}/void`, { reason: why }); render(); } }) }, 'Remove') : '')))))) : '',
     (o.gcs || []).length > 1 ? bundleSection(o, w, msg) : '',
+    (o.siblings || []).length ? h('div', { class: 'card', style: 'margin-top:.8rem;padding:.7rem 1rem' }, h('label', {}, 'Same job, other GCs'), h('p', { class: 'muted', style: 'margin:.2rem 0;font-size:14px' }, 'Each GC has its own proposal and is submitted on its own.'), o.siblings.map((x) => h('div', {}, h('a', { href: '#/estimating/' + x.id }, `${x.proposalId || ''} · ${x.gc}`), h('span', { class: 'muted' }, ` · ${x.statusLabel}`)))) : '',
     h('div', { style: 'margin-top:.8rem' }, h('label', {}, 'Shared folder'), folderButtons(o, w, 'opportunity', OPTS?.sharepoint !== false)),
     h('div', { style: 'margin-top:.8rem' }, filesPanel(o, w, err)),
     h('div', { style: 'margin-top:.8rem' }, notesPanel(o, w)),

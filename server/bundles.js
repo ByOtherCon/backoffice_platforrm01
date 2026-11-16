@@ -25,7 +25,8 @@ const score = (o, subs) => (o.project_id ? 1000 : 0) + (subs.get(o.id) ? 500 : 0
 
 // Jobs that appear under more than one GC. Two leads are linked when they are the same job under different GCs.
 export async function findDuplicates() {
-  const rows = await q(`SELECT o.*, u.name AS estimator FROM opportunities o LEFT JOIN app_users u ON u.id=o.estimator_id WHERE o.merged_into IS NULL AND o.status = ANY($1::text[]) ORDER BY o.created_at`, [OPEN]);
+  // a job already split into one proposal per GC is not offered for bundling again
+  const rows = await q(`SELECT o.*, u.name AS estimator FROM opportunities o LEFT JOIN app_users u ON u.id=o.estimator_id WHERE o.merged_into IS NULL AND o.split_group IS NULL AND o.status = ANY($1::text[]) ORDER BY o.created_at`, [OPEN]);
   const subs = await submissionCounts(rows.map((r) => r.id)), parent = rows.map((_, i) => i), find = (i) => (parent[i] === i ? i : (parent[i] = find(parent[i])));
   for (let i = 0; i < rows.length; i++) for (let j = i + 1; j < rows.length; j++) if (R.gcKey(rows[i].gc_name) !== R.gcKey(rows[j].gc_name) && R.sameJob(jobOf(rows[i]), jobOf(rows[j]))) parent[find(j)] = find(i);
   const groups = new Map(); rows.forEach((r, i) => (groups.get(find(i)) ?? groups.set(find(i), []).get(find(i))).push(r));
@@ -43,7 +44,7 @@ export async function findDuplicates() {
 // Leads that look like the one about to be entered, under another GC (asked before a new lead is saved).
 export async function similarFor(spec) {
   const gc = String(spec.gc || '').trim(); if (!String(spec.name || '').trim()) return [];
-  const rows = await q(`SELECT id, name, gc_name, city, address, due_date, status, invitations, gmail_thread_id FROM opportunities WHERE merged_into IS NULL AND status = ANY($1::text[])`, [OPEN]);
+  const rows = await q(`SELECT id, name, gc_name, city, address, due_date, status, invitations, gmail_thread_id FROM opportunities WHERE merged_into IS NULL AND split_group IS NULL AND status = ANY($1::text[])`, [OPEN]);
   const mine = { name: spec.name, city: spec.city || '', address: spec.address || '' };
   return rows.filter((o) => R.gcKey(o.gc_name) !== R.gcKey(gc) && !gcList(o).some((g) => R.gcKey(g) === R.gcKey(gc)) && R.sameJob(jobOf(o), mine))
     .map((o) => ({ id: o.id, name: o.name, gc: o.gc_name, gcs: gcList(o), city: o.city, due: o.due_date, status: o.status }));
@@ -171,4 +172,56 @@ async function absorbDuplicates(primaryId, otherIds) {
     const keys = Object.keys(set); await t(`UPDATE opportunities SET ${keys.map((k, i) => `${k}=$${i + 2}`).join(',')} WHERE id=$1`, [primaryId, ...keys.map((k) => set[k])]);
     return n;
   });
+}
+
+// ------------------------------------------------------------------ Started: one proposal for each GC
+// While a job is only being looked at (New, Reviewing, Accepted) it is one lead that lists every GC. Once it is Started, each GC needs its
+// own proposal, its own price and its own submission, so the lead becomes one Started proposal per GC:
+//  - the lead itself stays with its main GC and keeps its P number;
+//  - every other GC gets a proposal of its own, numbered after the same job (P11031-B, P11031-C), with that GC's contact, the same
+//    job details, estimator and trades, and the project folder already made under that GC (with the plans copied into its 01. DL);
+//  - a proposal file that was made for that GC moves to it.
+// The row that was hidden when the leads were bundled is used again when there is one; nothing is deleted.
+const LETTERS = 'BCDEFGHJKLMNPQRSTUVWXYZ';
+export async function splitByGc(user, id) {
+  const made = await tx(async (t) => {
+    const [main] = await t('SELECT * FROM opportunities WHERE id=$1 FOR UPDATE', [id]);
+    if (!main || main.merged_into || main.project_id || main.status !== 'Started' || !main.proposal_id) return [];
+    const invs = Array.isArray(main.invitations) ? main.invitations : [], gcs = gcList(main); if (gcs.length < 2) return [];
+    const group = main.split_group || main.id, base = main.proposal_id.replace(/-[A-Z]$/, ''), out = [];
+    const taken = new Set((await t('SELECT proposal_id FROM opportunities WHERE proposal_id LIKE $1', [base + '-%'])).map((x) => x.proposal_id));
+    const extra = await t('SELECT * FROM opportunity_folders WHERE opportunity_id=$1', [id]), hidden = await t('SELECT * FROM opportunities WHERE merged_into=$1', [id]);
+    const tagged = await t(`SELECT id, meta FROM opportunity_files WHERE opportunity_id=$1 AND meta->>'gc' IS NOT NULL`, [id]);
+    for (const gc of gcs.slice(1)) {
+      const key = R.gcKey(gc), inv = invs.find((x) => R.gcKey(x.gc) === key) || { gc }, f = extra.find((x) => R.gcKey(x.gc_name) === key), old = hidden.find((o) => R.gcKey(o.gc_name) === key);
+      const letter = [...LETTERS].find((l) => !taken.has(`${base}-${l}`)); if (!letter) break; const pid = `${base}-${letter}`; taken.add(pid);
+      const [g] = await t('SELECT id FROM gcs WHERE lower(name)=lower($1)', [gc]);
+      // the same job as the lead, under this GC
+      const row = { ...main, gc_name: gc, gc_id: g?.id ?? null, contact_name: inv.contactName || null, contact_email: inv.email || null, contact_phone: inv.phone || null, invitation_link: /^https:\/\//.test(inv.link || '') ? inv.link : null,
+        gmail_thread_id: inv.threadId || null, invitations: JSON.stringify([inv]), additional_gcs: null, proposal_id: pid, status: 'Started', progress: 'In Progress', result: 'Pending', merged_into: null, split_group: group,
+        sp_item_id: f?.sp_item_id ?? null, sp_path: f?.sp_path ?? null, folder_url: f?.folder_url ?? null, sp_error: null, folder_per_gc: false, gc_street: old?.gc_street ?? null, gc_city: old?.gc_city ?? null, gc_state: old?.gc_state ?? null, gc_zip: old?.gc_zip ?? null, gc_address_verified: old?.gc_address_verified ?? false,
+        source_key: old?.source_key ?? `split:${id}:${key}` };
+      for (const k of ['id', 'created_at']) delete row[k];
+      const keys = Object.keys(row); let nid;
+      if (old) { await t(`UPDATE opportunities SET ${keys.map((k, i) => `${k}=$${i + 2}`).join(',')} WHERE id=$1`, [old.id, ...keys.map((k) => row[k])]); nid = old.id; }
+      else nid = (await t(`INSERT INTO opportunities(${keys.join(',')}) VALUES (${keys.map((_, i) => '$' + (i + 1)).join(',')}) RETURNING id`, keys.map((k) => row[k])))[0].id;
+      await t('INSERT INTO opportunity_considered_trades(opportunity_id,trade_id) SELECT $1, trade_id FROM opportunity_considered_trades WHERE opportunity_id=$2 ON CONFLICT DO NOTHING', [nid, id]);
+      for (const x of tagged) if (R.gcKey(x.meta.gc) === key) await t(`UPDATE opportunity_files SET opportunity_id=$2, meta = meta - 'gc' WHERE id=$1`, [x.id, nid]);   // a proposal made for this GC goes with it
+      await note(t, nid, user, `Started as its own proposal for ${gc}, number ${pid}. The job is pitched to ${gcs.join(', ')}; once it was Started each GC got its own proposal so each can be priced and submitted on its own. The lead for ${main.gc_name} is ${main.proposal_id}.`);
+      out.push({ id: nid, gc, proposalId: pid });
+    }
+    if (!out.length) return [];
+    await t('UPDATE opportunities SET invitations=$2, additional_gcs=NULL, split_group=$3, folder_per_gc=false WHERE id=$1', [id, JSON.stringify(invs.filter((x) => R.gcKey(x.gc) === R.gcKey(main.gc_name))), group]);
+    await t('DELETE FROM opportunity_folders WHERE opportunity_id=$1', [id]);
+    await note(t, id, user, `Started, so each GC now has its own proposal: ${out.map((x) => `${x.gc} is ${x.proposalId}`).join(', ')}. This one stays with ${main.gc_name}. Each is submitted on its own.`);
+    return out;
+  });
+  for (const m of made) await folders.tryEnsureOpportunityFolder(m.id).catch(() => null);   // each folder takes its own proposal number
+  return made;
+}
+// Jobs that were already Started with several GCs before this rule existed.
+export async function splitStartedBundles() {
+  const rows = await q(`SELECT id FROM opportunities WHERE merged_into IS NULL AND project_id IS NULL AND status='Started' AND proposal_id IS NOT NULL AND jsonb_array_length(invitations) > 1`); let n = 0;
+  for (const r of rows) { try { n += (await splitByGc(null, r.id)).length; } catch (e) { console.error('splitting a started bundle failed', e.message); } }
+  return n;
 }

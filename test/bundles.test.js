@@ -130,3 +130,30 @@ test('the same job from the same GC on the list twice is combined on its own; di
   const ids = (await call('GET', '/api/opportunities?tab=bids&all=1&q=Old%20Navy%205904', null, est)).body.groups.flatMap((g) => g.rows.map((x) => x.id)); assert.deepEqual(ids, [on2]);
   assert.deepEqual(await bn.combineDuplicates(), { combined: 0, groups: 0 });   // nothing left to combine
 });
+
+test('Started: a job with several GCs becomes one Started proposal for each GC, numbered after the same job, each submitted on its own', async () => {
+  const bn = await import('../server/bundles.js');
+  const x = await lead('Split Store - Tampa', 'Split GC One', { city: 'Tampa', address: '500 Split Ave', contact: 'Ann One' }), y = await lead('Split Store Tampa', 'Split GC Two', { city: 'Tampa', address: '500 Split Ave', contact: 'Bo Two', email: 'bo@two.example' });
+  assert.equal((await call('POST', '/api/opportunities/bundle', { primaryId: x, otherIds: [y] }, est)).status, 200);
+  await q(`UPDATE opportunities SET invitations = invitations || $2::jsonb WHERE id=$1`, [x, JSON.stringify([{ gc: 'Split GC Three', contactName: 'Cy Three', email: 'cy@three.example', phone: '', link: 'https://app.buildingconnected.com/x', threadId: 't3' }])]);   // a third GC that came in by email (no lead of its own)
+  await q('INSERT INTO opportunity_considered_trades(opportunity_id,trade_id) VALUES ($1,$2) ON CONFLICT DO NOTHING', [x, tDemo]);
+  assert.equal((await call('POST', `/api/opportunities/${x}/status`, { status: 'Accepted' }, est)).status, 200); const pid = (await get(x)).proposalId;
+  const forTwo = await q(`INSERT INTO opportunity_files(opportunity_id,kind,name,mime,size,meta) VALUES ($1,'Proposal','Two price.pdf','application/pdf',10,$2) RETURNING id`, [x, JSON.stringify({ gc: 'split gc two' })]);
+  assert.equal((await get(x)).gcs.length, 3); assert.deepEqual((await get(x)).siblings, []);   // still one lead while it is only accepted
+  const st = await call('POST', `/api/opportunities/${x}/status`, { status: 'Started' }, est); assert.equal(st.status, 200, JSON.stringify(st.body));
+  assert.deepEqual(st.body.split.map((m) => [m.gc, m.proposalId]), [['Split GC Two', pid + '-B'], ['Split GC Three', pid + '-C']]);
+  const main = await get(x); assert.deepEqual([main.status, main.proposalId, main.gcs, main.additionalGcs], ['Started', pid, ['Split GC One'], null]); assert.deepEqual(main.siblings.map((s) => [s.gc, s.proposalId, s.status]), [['Split GC Two', pid + '-B', 'Started'], ['Split GC Three', pid + '-C', 'Started']]);
+  assert.ok(main.notes.some((n) => /each GC now has its own proposal: Split GC Two is P\d+-B, Split GC Three is P\d+-C/.test(n.body)));
+  const two = await get(st.body.split[0].id); assert.equal(two.id, y, 'the lead hidden by the bundle is used again');
+  assert.deepEqual([two.status, two.gc, two.contact, two.email, two.name, two.address, two.estimatorId, two.acceptedDate], ['Started', 'Split GC Two', 'Bo Two', 'bo@two.example', main.name, main.address, main.estimatorId, main.acceptedDate]);
+  assert.deepEqual(two.consideredTrades.map((t) => t.tradeId), [tDemo]); assert.ok(two.files.some((f) => f.id === forTwo[0].id)); assert.ok(!main.files.some((f) => f.id === forTwo[0].id));
+  assert.equal((await q('SELECT meta FROM opportunity_files WHERE id=$1', [forTwo[0].id]))[0].meta.gc, undefined); assert.ok(two.notes.some((n) => /Started as its own proposal for Split GC Two, number P\d+-B/.test(n.body)));
+  const three = await get(st.body.split[1].id); assert.deepEqual([three.gc, three.contact, three.email, three.link, three.gcs], ['Split GC Three', 'Cy Three', 'cy@three.example', 'https://app.buildingconnected.com/x', ['Split GC Three']]);
+  const listed = (await call('GET', '/api/opportunities?tab=proposals&filter=Started', null, est)).body.rows.filter((o) => String(o.proposalId).startsWith(pid)).map((o) => o.proposalId).sort(); assert.deepEqual(listed, [pid, pid + '-B', pid + '-C']);
+  // each one is submitted on its own
+  const pdf = Buffer.from('%PDF-1.4\n% split two\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF'), upRes = await fetch(base + `/api/opportunities/${two.id}/files?kind=Proposal`, { method: 'POST', headers: { cookie: est, 'x-file-name': 'Two final.pdf' }, body: pdf }), up = await upRes.json(); assert.equal(upRes.status, 200, JSON.stringify(up));
+  assert.equal((await call('POST', `/api/opportunities/${two.id}/submissions`, { fileId: up.fileId, date: today, method: 'Email', prices: [{ tradeId: tDemo, amount: 7700 }] }, est)).status, 200);
+  assert.deepEqual([(await get(two.id)).status, (await get(x)).status, (await get(three.id)).status], ['Submitted', 'Started', 'Started']);
+  // it is not offered for bundling again, and running the split again changes nothing
+  assert.ok(!(await call('GET', '/api/opportunities/bundles', null, est)).body.groups.some((g) => g.leads.some((l) => [x, y, three.id].includes(l.id)))); assert.equal(await bn.splitStartedBundles(), 0); assert.deepEqual(await bn.splitByGc(null, x), []);
+});

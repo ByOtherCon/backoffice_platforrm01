@@ -397,3 +397,21 @@ test('proposals are uploaded and removed on the lead like plans: PDF or Word; Re
   const after = await opp(id); assert.ok(after.files.some((f) => f.name === 'Sent.pdf' && f.removed)); assert.equal(after.submissions[0].fileId, p2.body.fileId); assert.equal((await view()).latestPdf, null);
   assert.equal((await fetch(`${base}/api/opportunity-files/${p2.body.fileId}`, { headers: { cookie: est } })).status, 200);   // still opens from the submission
 });
+
+test('Started with several GCs: each GC gets its own proposal with the folder under that GC (renamed to its own number) and the plans in its 01. DL', async () => {
+  const a = await mk({ name: 'Fan Out Store', gc: 'Fan GC One', addr: await addrOk('40 Fan Rd', 'Orlando', '32801'), due: shift(today, 9) }), b = await mk({ name: 'Fan Out Store - Orlando', gc: 'Fan GC Two', addr: await addrOk('40 Fan Rd', 'Orlando', '32801'), due: shift(today, 9) });
+  assert.equal((await call('POST', '/api/opportunities/bundle', { primaryId: a, otherIds: [b] }, est)).status, 200); assert.equal((await call('POST', `/api/opportunities/${a}/status`, { status: 'Accepted' }, est)).status, 200);
+  const pid = (await opp(a)).proposalId, dir = `${pid}_Fan Out Store_Orlando`, A = ['ByOther', YEAR, 'Fan GC One', dir];
+  assert.equal((await call('POST', `/api/opportunities/${a}/plans`, mkPdf(), est, 'BID SET.pdf')).status, 200);
+  for (let i = 0; i < 200 && !find('ByOther', YEAR, 'Fan GC Two', dir, '01. DL', 'BID SET.pdf'); i++) await new Promise((ok) => setTimeout(ok, 50));
+  add(find(...A, '01. DL').id, 'Addendum 3.pdf', false, { size: 5 });   // dropped into the main folder by hand, not yet under the second GC
+  const st = await call('POST', `/api/opportunities/${a}/status`, { status: 'Started' }, est); assert.equal(st.status, 200, JSON.stringify(st.body)); assert.deepEqual(st.body.split.map((m) => [m.gc, m.proposalId]), [['Fan GC Two', pid + '-B']]);
+  const B = ['ByOther', YEAR, 'Fan GC Two', `${pid}-B_Fan Out Store_Orlando`]; assert.ok(find(...B), 'the folder under the second GC carries that proposal\'s own number'); assert.equal(find('ByOther', YEAR, 'Fan GC Two', dir), null);
+  assert.ok(find(...B, '01. DL', 'BID SET.pdf')); assert.ok(find(...B, '01. DL', 'Addendum 3.pdf')); assert.ok(find(...A, '01. DL', 'BID SET.pdf'));   // the plans are in both
+  const two = await opp(st.body.split[0].id); assert.deepEqual([two.status, two.gc, two.spPath], ['Started', 'Fan GC Two', B.join('/')]); assert.equal((await opp(a)).spPath, A.join('/'));
+  assert.equal((await q('SELECT count(*)::int AS n FROM opportunity_folders WHERE opportunity_id=$1', [a]))[0].n, 0);
+  // a proposal uploaded on the second GC's proposal goes into that GC's folder, and only there
+  assert.equal((await call('POST', `/api/opportunities/${two.id}/files?kind=Proposal`, mkPdf(), est, 'Two price.pdf')).body.sharepoint, true);
+  assert.ok(find(...B, '02. Proposal', 'Two price.pdf')); assert.equal(find(...A, '02. Proposal', 'Two price.pdf'), null);
+  const v = await syncNow(two.id); assert.deepEqual([v.sync.pushed, v.sync.failed, v.latestPdf.name, v.gcs], [0, [], 'Two price.pdf', []]);
+});

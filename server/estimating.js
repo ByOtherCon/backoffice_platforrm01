@@ -61,7 +61,7 @@ export async function loadAll(where = '', params = []) {
     return { id: r.id, name: r.name, client: r.client_name, gc: r.gc_name, gcId: r.gc_id, additionalGcs: r.additional_gcs, gcs: R.gcNames(r.gc_name, r.invitations), folderPerGc: r.folder_per_gc, gcAddr, tierNote: r.tier_note, city: r.city, address: r.address, zip: r.zip, addrVerified: r.address_verified, state: r.state, tier: r.tier, mall: r.mall, type: r.project_type, due: r.due_date, dueTime: r.due_time,
       contact: r.contact_name, email: r.contact_email, phone: r.contact_phone, link: r.invitation_link, sourceType: r.source_type, origin: r.source, addedBy: r.added_by, plannedStart: r.planned_start,
       status: r.status, statusLabel: W.statusName(r.status), next: W.nextStatuses(r.status), lastSeenAt: r.last_seen_at, emailLink: r.email_link, invitations: r.invitations ?? [], autoDeclined: r.auto_declined, progress: r.progress, result: r.result,
-      spPath: r.sp_path, spError: r.sp_error, estimatorId: r.estimator_id, estimator: r.estimator, proposalId: r.proposal_id, acceptedDate: r.accepted_date, awardedDate: r.awarded_date, startDate: r.start_date, declinedReason: r.declined_reason, declinedAt: r.declined_at, lostReason: r.lost_reason, folderUrl: r.folder_url, proposalUrl: r.proposal_url, projectId: r.project_id,
+      spPath: r.sp_path, spError: r.sp_error, estimatorId: r.estimator_id, estimator: r.estimator, proposalId: r.proposal_id, acceptedDate: r.accepted_date, awardedDate: r.awarded_date, splitGroup: r.split_group, startDate: r.start_date, declinedReason: r.declined_reason, declinedAt: r.declined_at, lostReason: r.lost_reason, folderUrl: r.folder_url, proposalUrl: r.proposal_url, projectId: r.project_id,
       consideredTrades: considered.filter((c) => c.opportunity_id === r.id).map((c) => ({ tradeId: c.trade_id, name: c.name })),
       files: files.filter((f) => f.opportunity_id === r.id).map((f) => ({ id: f.id, kind: f.kind, name: f.name, mime: f.mime, size: f.size, local: f.local, spUrl: f.sp_url, at: f.created_at, version: f.version, used: !!f.submission_id, removed: !!f.removed })),
       tradePrices: tp, total: r2(tp.reduce((n, p) => n + Math.round(p.amount * 100), 0) / 100), submissions: ss, communications: cs, lastSubmission: last,
@@ -101,7 +101,8 @@ export async function get(id) {
   const [o] = await loadAll('WHERE o.id=$1', [id]); if (!o) throw new HttpError(404, 'Opportunity not found.');
   const notes = await q(`SELECT n.id, n.kind, n.body, n.created_at AS at, u.name AS who FROM opportunity_notes n LEFT JOIN app_users u ON u.id=n.user_id WHERE n.opportunity_id=$1 ORDER BY n.created_at DESC, n.id`, [id]);
   const bundled = (await q('SELECT id, gc_name AS gc, due_date AS due FROM opportunities WHERE merged_into=$1 ORDER BY gc_name', [id])).map((x) => ({ id: x.id, gc: x.gc, due: x.due }));
-  return { ...o, bundled, notes, folderPlan: E.folderPlan({ proposalId: o.proposalId, name: o.name, city: o.city, gc: o.gc, year: Number((o.acceptedDate || E.todayEastern()).slice(0, 4)) }) };
+  const siblings = o.splitGroup ? (await q(`SELECT id, gc_name AS gc, proposal_id AS "proposalId", status FROM opportunities WHERE split_group=$1 AND id<>$2 AND merged_into IS NULL ORDER BY proposal_id`, [o.splitGroup, id])).map((x) => ({ ...x, statusLabel: W.statusName(x.status) })) : [];
+  return { ...o, bundled, siblings, notes, folderPlan: E.folderPlan({ proposalId: o.proposalId, name: o.name, city: o.city, gc: o.gc, year: Number((o.acceptedDate || E.todayEastern()).slice(0, 4)) }) };
 }
 // GCs we already work with, with the details last used for each, so the form can fill itself in.
 export async function knownGcs() {
@@ -366,6 +367,9 @@ export async function transition(user, id, b = {}) {
   // The shared folder follows the status: made when work is taken on, renamed P -> C when it becomes a contract.
   if (['Reviewing', 'Accepted', 'Started'].includes(done.to)) { const f = await folders.tryEnsureOpportunityFolder(id); if (f?.webUrl) done.result.folderUrl = f.webUrl; }   // Started too: a lead whose folder was missed gets it when work begins
   if (done.to === 'Awarded' && done.result.projectId) await locateProject(done.result.projectId, { enable: true }).catch(() => null);   // fence the new jobsite for the time clock
+  // Started with several GCs: the plans are brought into every GC's folder, then each GC gets its own Started proposal
+  if (done.to === 'Started') { const [b] = await q('SELECT gc_name, invitations FROM opportunities WHERE id=$1', [id]);
+    if (b && R.gcNames(b.gc_name, b.invitations).length > 1) { try { await folders.syncOpportunity(id, { force: true }); } catch { /* the split does not wait for SharePoint */ } const made = await bundles.splitByGc(user, id); if (made.length) done.result.split = made; } }
   if (done.swap) await folders.promoteGc(id, done.swap.to, done.swap.from);   // the winning GC's folder is the one that becomes the contract folder
   if (done.to === 'Awarded' && done.result.projectId) { const f = await folders.onAwarded(id, done.result.projectId); if (f?.webUrl) done.result.folderUrl = f.webUrl; }
   return done.result;

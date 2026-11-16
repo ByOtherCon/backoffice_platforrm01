@@ -141,7 +141,9 @@ export async function mergeRecords(records, gmailEmail) {
   async function mergeOne(rec) { await tx(async (t) => {
     const rows = await t(`SELECT * FROM opportunities WHERE merged_into IS NULL`); const mine = { name: rec.name, city: rec.city, address: rec.address, threadId: rec.threadId };
     // the same job (or an email thread already joined to a bundle) is the one lead, never a second
-    const old = rows.find((o) => R.sameJob({ name: o.name, city: o.city, address: o.address, threadId: o.gmail_thread_id }, mine) || (Array.isArray(o.invitations) && o.invitations.some((x) => x.threadId && x.threadId === rec.threadId)));
+    const same = rows.filter((o) => R.sameJob({ name: o.name, city: o.city, address: o.address, threadId: o.gmail_thread_id }, mine) || (Array.isArray(o.invitations) && o.invitations.some((x) => x.threadId && x.threadId === rec.threadId)));
+    // the lead that already has this GC comes first; a job that was split into one proposal per GC takes no more GCs (a new GC is a new lead)
+    const old = same.find((o) => R.gcNames(o.gc_name, o.invitations).some((g) => R.gcKey(g) === R.gcKey(rec.gc))) ?? (same.some((o) => o.split_group) ? null : same[0]) ?? null;
     const emailLink = `https://mail.google.com/mail/u/?authuser=${encodeURIComponent(gmailEmail)}#all/${rec.threadId}`;
     const invite = { gc: rec.gc, contactName: rec.contact, email: rec.email, phone: rec.phone, link: rec.link, threadId: rec.threadId, nda: !!rec.nda };
     if (!old) {
@@ -251,7 +253,7 @@ export async function scheduleTick(now = new Date()) {
 export function startScheduler() {
   setInterval(() => scheduleTick().catch((e) => console.error('schedule tick', e.message)), 60000);
   setInterval(() => sweepDeclines().catch(() => {}), 3600000);
-  setTimeout(() => import('./bundles.js').then((b) => b.combineDuplicates()).catch((e) => console.error('combine duplicates', e.message)), 8000);   // tidy what is already on the list
+  setTimeout(() => import('./bundles.js').then(async (b) => { await b.combineDuplicates(); await b.splitStartedBundles(); }).catch((e) => console.error('combine duplicates', e.message)), 8000);   // tidy what is already on the list
   // after a restart, catch up if nothing has run for half a day
   setTimeout(async () => { try { if (!(await stored())) return; const [g] = await q(`SELECT 1 FROM bid_refresh_runs WHERE started_at > now() - interval '12 hours' LIMIT 1`); if (!g) await runRefresh({ trigger: 'Startup' }); } catch { /* the next slot will try again */ } }, 30000);
 }

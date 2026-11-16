@@ -90,7 +90,21 @@ test('the estimating instructions are byOther\'s own; only the owner can replace
   assert.equal((await call('PUT', '/api/estimating/instructions', { text: 'x' }, est)).status, 403);
   const s = (await call('PUT', '/api/estimating/instructions', { text: 'Version 2.42: always quote ACT by the square foot.' }, owner)).body; assert.equal(s.custom, true);
   assert.match(await ec.systemPrompt(), /Version 2\.42: always quote ACT by the square foot\./); assert.match(await ec.systemPrompt(), /call the save_proposal tool/);
-  assert.equal((await call('PUT', '/api/estimating/instructions', { reset: true }, owner)).body.custom, false);
+  // the version is named, and the chat page says which one is being followed
+  const named = (await call('PUT', '/api/estimating/instructions', { text: 'Estimating rules 2.42: demo dumpster is now $1,050.', label: 'Estimating 2.42' }, owner)).body; assert.deepEqual([named.label, named.updatedBy], ['Estimating 2.42', 'Benny']);
+  assert.deepEqual((({ label, updatedBy, custom }) => [label, updatedBy, custom])((await chat()).instructions), ['Estimating 2.42', 'Benny', true]);
+  const back = (await call('PUT', '/api/estimating/instructions', { reset: true }, owner)).body; assert.deepEqual([back.custom, back.label], [false, 'Original (as set up)']);
+});
+
+test('the latest estimating file can be loaded from the file itself: text, Markdown, or a Word document; only by the owner', async () => {
+  const up = (bytes, name, who = owner) => call('POST', '/api/estimating/instructions/file', bytes, who, name);
+  assert.equal((await up(Buffer.from('x'), 'rules.md', est)).status, 403);
+  const md = await up(Buffer.from('# Estimating 2.43\n\nDumpster, 30-yard: $1,100'), 'Estimating 2.43.md'); assert.equal(md.status, 200); assert.match(md.body.text, /Dumpster, 30-yard: \$1,100/);
+  const xml = '<?xml version="1.0"?><w:document><w:body><w:p><w:r><w:t>Estimating 2.44</w:t></w:r></w:p><w:p><w:r><w:t>Framing &amp; drywall: $9.50</w:t></w:r><w:r><w:tab/><w:t>per SF</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p><w:r><w:t>ACT</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>$4.25</w:t></w:r></w:p></w:tc></w:tr></w:tbl></w:body></w:document>';
+  const docx = await up(zipOf([['[Content_Types].xml', Buffer.from('<Types/>'), false], ['word/document.xml', Buffer.from(xml), true]]), 'Estimating 2.44.docx'); assert.equal(docx.status, 200, JSON.stringify(docx.body));
+  assert.match(docx.body.text, /^Estimating 2\.44\nFraming & drywall: \$9\.50\tper SF\nACT/); assert.match(docx.body.text, /\$4\.25/);
+  assert.equal((await up(Buffer.from('%PDF-1.4'), 'rules.pdf')).status, 400); assert.equal((await up(Buffer.alloc(0), 'rules.md')).status, 400);
+  assert.equal((await call('GET', '/api/estimating/instructions', null, est)).body.custom, false);   // reading a file changes nothing until it is saved
 });
 
 test('the plans already on the lead are used: nothing is asked for again, each file goes to the AI once, and the answer arrives as it is written', async () => {

@@ -94,16 +94,27 @@ export async function estimateChatView(oppId, canWrite) {
     h('div', { class: 'row spread', style: 'flex-wrap:wrap;gap:.5rem' }, h('div', {}, h('a', { href: '#/estimating/' + oppId }, '← Back to the lead'), h('h1', { style: 'margin:.2rem 0 0' }, 'Estimate With AI'), h('p', { class: 'sub', style: 'margin:0' }, [data.opportunity.proposalId, data.opportunity.name, data.opportunity.gc].filter(Boolean).join(' · '))),
       h('div', { class: 'row', style: 'gap:.4rem;flex-wrap:wrap' }, pick, canWrite ? h('button', { class: 'small', type: 'button', onclick: newChat }, 'New Conversation') : '', instr)),
     data.aiConnected ? '' : h('p', { class: 'err' }, 'AI is not connected yet. The owner adds the Anthropic API key on the server; then this works.'),
+    h('p', { class: 'muted', style: 'font-size:13px;margin:.4rem 0 0' }, `Following: ${data.instructions.label}${data.instructions.updatedAt ? ' · updated ' + when(data.instructions.updatedAt) + (data.instructions.updatedBy ? ' by ' + data.instructions.updatedBy : '') : ''}.`),
     side, list, err,
     h('div', { class: 'chat-compose' }, box, send), h('p', { class: 'muted', style: 'font-size:12px;margin:.3rem 0 0' }, 'Enter sends, Shift+Enter starts a new line. The first answer on a full plan set can take a few minutes. Check quantities and prices yourself before sending a proposal.'))]);
 }
 
-// The instructions the AI follows. Everyone can read them; the owner can paste a newer version or go back to the original.
+// The instructions the AI follows. Everyone can read them. The app cannot see the estimating file kept in Claude chats, so when that file
+// changes the owner loads the new one here (from the file, or pasted) and names the version; every conversation uses it from then on.
 async function instructionsModal() {
   const d = await api('GET', '/estimating/instructions'), sup = C.state.user?.role === 'Super Admin', msg = h('div');
-  const ta = h('textarea', { rows: 22, style: 'font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px', disabled: sup ? null : true }); ta.value = d.text;
-  const bg = modal('Estimating Instructions', h('div', {}, h('p', { class: 'muted' }, d.custom ? `Edited in the app${d.updatedBy ? ' by ' + d.updatedBy : ''}${d.updatedAt ? ' on ' + when(d.updatedAt) : ''}.` : 'These are the byOther estimating instructions and guides (trade writing and pricing) as they were when this was set up.', sup ? ' When your instructions change, paste the new text here and save. Every conversation uses it from the next message on.' : ' Only the owner can change them.'),
+  const ta = h('textarea', { rows: 20, style: 'font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px', disabled: sup ? null : true }); ta.value = d.text;
+  const label = h('input', { placeholder: 'For example: Estimating 2.42', value: d.custom && d.label !== 'Edited in the app' ? d.label : '', disabled: sup ? null : true });
+  const pick = (append) => { const f = h('input', { type: 'file', accept: '.md,.markdown,.txt,.docx', style: 'display:none', onchange: guard(msg, async () => { const file = f.files[0]; if (!file) return; notice(msg, `Reading ${file.name}…`, 'ok');
+    const r = await C.uploadFile('/estimating/instructions/file', file); ta.value = append ? `${ta.value.trim()}\n\n---\n\n${r.text}` : r.text; if (!label.value) label.value = file.name.replace(/\.[^.]+$/, '');
+    notice(msg, `${file.name} was read (${r.text.length.toLocaleString()} characters) and ${append ? 'added to the end' : 'put in place of the text'}. Look it over, then press Save Instructions. Nothing changes until you save.`, 'ok'); }) }); document.body.append(f); f.click(); setTimeout(() => f.remove(), 60000); };
+  const bg = modal('Estimating Instructions', h('div', {},
+    h('p', { class: 'muted' }, h('strong', {}, `In use: ${d.label}`), d.updatedAt ? ` · updated ${when(d.updatedAt)}${d.updatedBy ? ' by ' + d.updatedBy : ''}` : '', '. ',
+      sup ? 'The app cannot see your estimating file in Claude chats. When that file changes (new prices or rules), load the new file here or paste it, name the version, and save. Every conversation follows it from the next message on.' : 'Only the owner can change them.'),
+    sup ? h('div', { class: 'row', style: 'gap:.5rem;flex-wrap:wrap;margin:.4rem 0;align-items:flex-end' }, h('div', { style: 'flex:1;min-width:14rem' }, h('label', {}, 'Version name'), label),
+      h('button', { type: 'button', class: 'small', title: 'Replaces everything in the box with the text of a file (.md, .txt or .docx).', onclick: () => pick(false) }, 'Replace With A File'),
+      h('button', { type: 'button', class: 'small', title: 'Keeps what is in the box and adds the text of a file after it, for example a new pricing guide.', onclick: () => pick(true) }, 'Add A File To The End')) : '',
     ta, msg, h('div', { class: 'row', style: 'margin-top:.8rem;justify-content:flex-end;gap:.5rem' }, h('button', { type: 'button', onclick: () => bg.remove() }, 'Close'),
-      sup && d.custom ? h('button', { type: 'button', onclick: guard(msg, async () => { if (!confirm('Go back to the original instructions? Your edited text is discarded.')) return; await api('PUT', '/estimating/instructions', { reset: true }); bg.remove(); }) }, 'Back To The Original') : '',
-      sup ? h('button', { type: 'button', class: 'primary', onclick: guard(msg, async () => { await api('PUT', '/estimating/instructions', { text: ta.value }); bg.remove(); }) }, 'Save Instructions') : '')), { mode: 'edit' });
+      sup && d.custom ? h('button', { type: 'button', onclick: guard(msg, async () => { if (!confirm('Go back to the original instructions? Your edited text is discarded.')) return; await api('PUT', '/estimating/instructions', { reset: true }); bg.remove(); C.render(); }) }, 'Back To The Original') : '',
+      sup ? h('button', { type: 'button', class: 'primary', onclick: guard(msg, async () => { await api('PUT', '/estimating/instructions', { text: ta.value, label: label.value }); bg.remove(); C.render(); }) }, 'Save Instructions') : '')), { mode: 'edit' });
 }

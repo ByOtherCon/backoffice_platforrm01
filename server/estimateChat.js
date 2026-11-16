@@ -22,11 +22,33 @@ const read = (f) => fs.readFileSync(path.join(HERE, 'estimator', f), 'utf8');
 // The estimating instructions as they came from byOther's own estimator (the skill and its two guides). A Super Admin can replace the
 // text in the app when the instructions change; until then this copy is used.
 export const defaultInstructions = () => [read('skill.md'), '# Reference: trade writing guide\n\n' + read('trade-writing-guide.md'), '# Reference: pricing guide\n\n' + read('pricing-guide.md')].join('\n\n---\n\n');
-export async function getInstructions() { const [s] = await q(`SELECT value FROM app_settings WHERE key='estimator'`); const t = s?.value?.instructions; return { text: typeof t === 'string' && t.trim() ? t : defaultInstructions(), custom: typeof t === 'string' && !!t.trim(), updatedAt: s?.value?.updatedAt ?? null, updatedBy: s?.value?.updatedBy ?? null }; }
+// The app cannot see the estimating file kept in Claude chats, so when that file changes (new prices, new rules) the owner gives the new
+// one to the app here: pasted, or read from the file itself. `label` is what it is called (for example "Estimating 2.42") and is shown
+// on the chat page with the date, so everyone can see which version the AI is following.
+export async function getInstructions() { const [s] = await q(`SELECT value FROM app_settings WHERE key='estimator'`); const t = s?.value?.instructions, custom = typeof t === 'string' && !!t.trim();
+  return { text: custom ? t : defaultInstructions(), custom, label: custom ? s.value.label || 'Edited in the app' : 'Original (as set up)', updatedAt: custom ? s.value.updatedAt ?? null : null, updatedBy: custom ? s.value.updatedBy ?? null : null }; }
 export async function saveInstructions(user, body) {
-  const t = body?.reset ? '' : text(body?.text, 'Instructions', { max: 200000 });
-  await q(`INSERT INTO app_settings(key,value) VALUES ('estimator',$1) ON CONFLICT (key) DO UPDATE SET value=$1, updated_at=now()`, [{ instructions: t, updatedAt: new Date().toISOString(), updatedBy: user.name || user.email }]);
+  const t = body?.reset ? '' : text(body?.text, 'Instructions', { max: 400000 }), label = body?.reset ? '' : text(body?.label, 'Version name', { max: 80, required: false });
+  await q(`INSERT INTO app_settings(key,value) VALUES ('estimator',$1) ON CONFLICT (key) DO UPDATE SET value=$1, updated_at=now()`, [{ instructions: t, label, updatedAt: new Date().toISOString(), updatedBy: user.name || user.email }]);
   return getInstructions();
+}
+// The text of an instructions file: plain text and Markdown as they are, and the words of a Word document (.docx). Nothing is saved here;
+// the text goes back to the screen for the owner to look over and save.
+export async function readInstructionFile(bytes, filename) {
+  const ext = path.extname(String(filename || '')).toLowerCase();
+  if (!bytes?.length) throw bad('The file is empty.'); if (bytes.length > 5 * 1024 * 1024) throw bad('That file is over 5 MB. Paste the text instead.');
+  if (['.md', '.txt', '.markdown'].includes(ext)) return { name: filename, text: bytes.toString('utf8').replace(/^\uFEFF/, '') };
+  if (ext !== '.docx') throw bad('Use a text, Markdown (.md) or Word (.docx) file, or paste the text.');
+  const { zipEntries, zipExtract } = await import('./plans.js'), os = await import('node:os'), crypto = await import('node:crypto');
+  const tmp = path.join(os.tmpdir(), 'instr-' + crypto.randomBytes(8).toString('hex')), out = tmp + '.xml';
+  try {
+    await fs.promises.writeFile(tmp, bytes, { mode: 0o600 }); const e = (await zipEntries(tmp, (n) => n === 'word/document.xml'))[0]; if (!e) throw bad('That Word file could not be read. Paste the text instead.');
+    await zipExtract(tmp, e, out); const xml = await fs.promises.readFile(out, 'utf8');
+    const un = (x) => x.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
+    // paragraphs become lines, table cells are separated, tabs and line breaks are kept; every other tag is dropped
+    const body = xml.replace(/<w:tab\b[^>]*\/>/g, '\t').replace(/<w:br\b[^>]*\/>/g, '\n').replace(/<\/w:tc>/g, ' | ').replace(/<\/w:p>/g, '\n').replace(/<[^>]+>/g, '');
+    return { name: filename, text: un(body).replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim() };
+  } finally { await fs.promises.rm(tmp, { force: true }).catch(() => {}); await fs.promises.rm(out, { force: true }).catch(() => {}); }
 }
 const APP_RULES = `You are the estimating assistant inside the by Other Desk Platform, working with an estimator at byOther Construction on one bid. The plan PDFs on this lead are attached to the conversation (when there are any). Work the way the byOther estimating instructions below describe.
 
@@ -66,7 +88,8 @@ export async function getChat(user, opportunityId, chatId = null) {
   const msgs = cur ? await q(`SELECT m.id, m.role, m.body, m.status, m.error, m.files, m.created_at, u.name AS who FROM estimate_messages m LEFT JOIN app_users u ON u.id=m.user_id WHERE m.chat_id=$1 ORDER BY m.seq`, [cur.id]) : [];
   let plans = []; try { plans = (await planSources(opportunityId)).map((p) => ({ name: p.name, size: p.size, where: p.where, zip: p.zip, missing: !!p.missing })); } catch { /* shown without the list */ }
   const proposals = await q(`SELECT id, name, version, created_at FROM opportunity_files WHERE opportunity_id=$1 AND version IS NOT NULL ORDER BY version DESC, name`, [opportunityId]);
-  return { opportunity: { id: o.id, name: o.name, gc: o.gc_name, proposalId: o.proposal_id }, aiConnected: aiConnected(), model: chatModel(), chatId: cur?.id ?? null,
+  const ins = await getInstructions();
+  return { opportunity: { id: o.id, name: o.name, gc: o.gc_name, proposalId: o.proposal_id }, aiConnected: aiConnected(), model: chatModel(), chatId: cur?.id ?? null, instructions: { label: ins.label, updatedAt: ins.updatedAt, updatedBy: ins.updatedBy, custom: ins.custom },
     chats: chats.map((c) => ({ id: c.id, startedAt: c.created_at, messages: c.n })), plans, proposals: proposals.map((p) => ({ id: p.id, name: p.name, version: p.version, at: p.created_at })),
     messages: msgs.map((m) => ({ id: m.id, role: m.role, text: m.body, status: m.status, error: m.error, files: m.files || [], at: m.created_at, who: m.who })), working: msgs.some((m) => m.status === 'working') };
 }

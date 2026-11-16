@@ -23,7 +23,9 @@ async function startsWithPdf(p) { const fd = await fs.promises.open(p, 'r'); try
 
 // ---------------------------------------------------------------- reading a zip from disk without loading it into memory
 // Returns the PDF entries of a zip: [{ name, size, method, compSize, offset }]. Handles the large-file (zip64) form.
-export async function zipPdfEntries(zipPath) {
+export const zipPdfEntries = (zipPath) => zipEntries(zipPath, isPdfName);
+// The entries of a zip whose name passes `want`.
+export async function zipEntries(zipPath, want) {
   const fd = await fs.promises.open(zipPath, 'r');
   try {
     const { size } = await fd.stat(), tailLen = Math.min(size, 66000), tail = Buffer.alloc(tailLen); await fd.read(tail, 0, tailLen, size - tailLen);
@@ -48,7 +50,7 @@ export async function zipPdfEntries(zipPath) {
         if (id === 1) { if (usize === 0xffffffff) { usize = Number(cd.readBigUInt64LE(y)); y += 8; } if (compSize === 0xffffffff) { compSize = Number(cd.readBigUInt64LE(y)); y += 8; } if (offset === 0xffffffff) offset = Number(cd.readBigUInt64LE(y)); }
         x += 4 + len;
       }
-      if (!name.endsWith('/') && isPdfName(name) && (method === 0 || method === 8)) out.push({ name, size: usize, method, compSize, offset });
+      if (!name.endsWith('/') && want(name) && (method === 0 || method === 8)) out.push({ name, size: usize, method, compSize, offset });
       p += 46 + nameLen + extraLen + commentLen;
     }
     return out.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));

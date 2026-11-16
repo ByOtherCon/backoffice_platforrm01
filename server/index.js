@@ -333,6 +333,7 @@ route('POST', '/api/opportunities/:id/estimate-chat', async ({ user, params, bod
 route('GET', '/api/opportunity-files/:fid/prices', async ({ user, params }) => { estRead(user); return ec.proposalPrices(uuid(params.fid)); });
 route('GET', '/api/estimating/instructions', async ({ user }) => { estRead(user); return ec.getInstructions(); });
 route('PUT', '/api/estimating/instructions', async ({ user, body }) => { auth.requireRole(user, auth.SUPER); return ec.saveInstructions(user, body); });
+route('POST', '/api/estimating/instructions/file', async ({ req, user }) => { auth.requireRole(user, auth.SUPER); return ec.readInstructionFile(await readRaw(req), fname(req)); }, { raw: true });
 route('POST', '/api/takeoff/:id/items', async ({ user, params, body }) => tk.addItem(uuid(params.id), (estWrite(user), body)));
 route('PUT', '/api/takeoff/items/:id', async ({ user, params, body }) => { estWrite(user); await tk.updateItem(uuid(params.id), body); return { ok: true }; });
 route('DELETE', '/api/takeoff/items/:id', async ({ user, params }) => { estWrite(user); await tk.deleteItem(uuid(params.id)); return { ok: true }; });

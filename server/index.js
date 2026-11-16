@@ -38,6 +38,7 @@ import * as qbo from './quickbooks.js';
 import * as qbr from './qbReset.js';
 import * as vr from './vendorRead.js';
 import * as bn from './bundles.js';
+import * as cal from './calendar.js';
 import * as ec from './estimateChat.js';
 import * as qbi from './qbImport.js';
 import * as acc from './access.js';
@@ -232,6 +233,13 @@ route('POST', '/api/opportunities', async ({ user, body }) => es.create(estWrite
 route('POST', '/api/opportunities/import', async ({ user, body }) => es.importLeads(estWrite(user), body));
 route('GET', '/api/opportunities/bundles', async ({ user }) => { estRead(user); return { groups: await bn.findDuplicates() }; });
 route('GET', '/api/opportunities/similar', async ({ req, user }) => { estRead(user); return { leads: await bn.similarFor({ name: q1(req, 'name'), city: q1(req, 'city'), address: q1(req, 'address'), gc: q1(req, 'gc') }) }; });
+// Bid due dates on a person's own calendar: a private link their calendar app subscribes to (the key in the link stands in for a sign-in).
+route('GET', '/api/calendar/link', async ({ user }) => cal.linkFor(estRead(user)));
+route('POST', '/api/calendar/link/reset', async ({ user }) => cal.resetLink(estRead(user)));
+route('GET', '/api/calendar/bids.ics', async ({ req, res }) => {
+  const p = new URL(req.url, 'http://x').searchParams, text = await cal.feed(p.get('key'), { mine: p.get('mine') === '1' });
+  res.writeHead(200, { 'content-type': 'text/calendar; charset=utf-8', 'content-disposition': 'inline; filename="byother-bids.ics"', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' }); res.end(text); return 'sent';
+});
 route('POST', '/api/opportunities/find-several', async ({ user, body }) => { estWrite(user); return es.findSeveral(body || {}); });
 route('POST', '/api/opportunities/bundle', async ({ user, body }) => { const u = estWrite(user); if (!Array.isArray(body.otherIds)) throw bad('Choose the leads to join.'); return bn.mergeInto(u, uuid(body.primaryId), body.otherIds.map(uuid), { folderPerGc: body.folderPerGc === undefined ? undefined : !!body.folderPerGc }); });
 route('POST', '/api/opportunities/:id/unbundle', async ({ user, params }) => bn.unmerge(estWrite(user), uuid(params.id)));

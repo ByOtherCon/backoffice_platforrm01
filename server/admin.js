@@ -1,6 +1,8 @@
 import { q } from './db.js';
 import { bad, money, text, HttpError } from './http.js';
+import crypto from 'node:crypto';
 import { hashPassword, MIN_PASSWORD } from './auth.js';
+import { options as signInOptions } from './googleLogin.js';
 import { parseAccess } from './access.js';
 import { WIDGETS } from './dashboard.js';
 import { addressColumns, legacyAddressColumns } from './address.js';
@@ -79,6 +81,8 @@ export async function createUser(b) {
   const email = text(b.email, 'Email', { max: 200 }).toLowerCase();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw bad('Enter a valid email.');
   if (!ASSIGNABLE.includes(b.role)) throw bad('Choose a valid role. There is only one Super Admin.');
+  // With Google sign-in set up, a new person needs no password: an unusable random one is stored so the account can only be reached through Google.
+  if (!b.password && signInOptions().google) b = { ...b, password: crypto.randomBytes(24).toString('base64url') };
   if (String(b.password || '').length < MIN_PASSWORD) throw bad(`Password must be at least ${MIN_PASSWORD} characters.`);
   try {
     const [u] = await q('INSERT INTO app_users(email,name,title,phone,role,password_hash) VALUES ($1,$2,$3,$6,$4,$5) RETURNING id,email,name,title,phone,role,active,access', [email, text(b.name, 'Name', { required: false }), text(b.title, 'Title', { max: 80, required: false }) || null, b.role, await hashPassword(b.password), text(b.phone, 'Phone', { max: 40, required: false }) || null]);

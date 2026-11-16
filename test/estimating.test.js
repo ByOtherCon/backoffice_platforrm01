@@ -338,3 +338,23 @@ test('the owner can record a submission that went out before the lead was accept
   assert.ok(o.notes.some((n) => /Recorded by the owner with a date before the lead was accepted here/.test(n.body)));
   const other = await mk({ name: 'Other lead same PDF', gc: 'Back GC', addr: await verified('78 Past Ave', 'Orlando', '32801') }); assert.equal((await upload(other, pdf, 'Copy.pdf')).status, 409);   // the same file on another lead is still refused
 });
+
+test('bid due dates as a private calendar feed: open bids only, timed or all-day, mine or everyone\'s; the link can be reset', async () => {
+  process.env.PUBLIC_URL = 'https://desk.example.com';
+  const timed = await mk({ name: 'Calendar Timed; Bid, Inc', gc: 'Cal GC', addr: await verified('1 Clock St', 'Orlando', '32801'), due: shift(today, 4), dueTime: '14:00' });
+  const allDay = await mk({ name: 'Calendar All Day', gc: 'Cal GC', addr: await verified('2 Clock St', 'Orlando', '32801'), due: shift(today, 6), estimatorId: ownerId });
+  const l = (await call('GET', '/api/calendar/link', null, est)).body; assert.match(l.all, /^https:\/\/desk\.example\.com\/api\/calendar\/bids\.ics\?key=[\w-]{20,}$/); assert.equal(l.mine, l.all + '&mine=1');
+  assert.equal((await call('GET', '/api/calendar/link', null, est)).body.all, l.all);   // the same link every time
+  const get = async (url) => { const r = await fetch(base + url.replace('https://desk.example.com', '')); return { status: r.status, type: r.headers.get('content-type'), text: await r.text() }; };   // no sign-in: the key is the pass
+  const all = await get(l.all); assert.equal(all.status, 200); assert.match(all.type, /^text\/calendar/); assert.match(all.text, /^BEGIN:VCALENDAR\r\n/); assert.match(all.text, /END:VCALENDAR\r\n$/);
+  const unfolded = all.text.replace(/\r\n /g, ''), ev = (id) => unfolded.split('BEGIN:VEVENT').find((x) => x.includes(`UID:bid-${id}@`));
+  const d = (x) => x.replace(/-/g, '');
+  assert.match(ev(timed), new RegExp(`DTSTART;TZID=America/New_York:${d(shift(today, 4))}T140000`)); assert.match(ev(timed), new RegExp(`DTEND;TZID=America/New_York:${d(shift(today, 4))}T143000`));
+  assert.match(ev(timed), /SUMMARY:Bid due: Calendar Timed\\; Bid\\, Inc \(Cal GC\)/); assert.match(ev(timed), /DESCRIPTION:Status: New\\nGC: Cal GC/); assert.match(ev(timed), new RegExp(`URL:https://desk\\.example\\.com/#/estimating/${timed}`));
+  assert.match(ev(allDay), new RegExp(`DTSTART;VALUE=DATE:${d(shift(today, 6))}\r\nDTEND;VALUE=DATE:${d(shift(today, 7))}`));
+  assert.equal(ev(wing), undefined);   // awarded: no longer a date to watch
+  assert.ok(all.text.split('\r\n').every((line) => Buffer.byteLength(line) <= 75));
+  const mine = await get(l.mine); assert.ok(mine.text.includes(`UID:bid-${timed}@`)); assert.ok(!mine.text.includes(`UID:bid-${allDay}@`));   // est is the estimator on the first only
+  assert.equal((await get('/api/calendar/bids.ics?key=nope')).status, 404); assert.equal((await get('/api/calendar/bids.ics')).status, 404); assert.equal((await call('GET', '/api/calendar/link', null, pm)).status, 403);
+  const fresh = (await call('POST', '/api/calendar/link/reset', {}, est)).body; assert.notEqual(fresh.all, l.all); assert.equal((await get(l.all)).status, 404); assert.equal((await get(fresh.all)).status, 200);
+});

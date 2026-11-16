@@ -262,7 +262,7 @@ export async function estimatingView(arg, arg2) {
   else if (tab === 'followups') body = await followUpsPanel(err, w, arg === 'followups' ? arg2 : null);
   else body = await insightsTab(err);
   const detail = detailId ? await opportunityDetail(detailId, err, w, arg2 === 'edit') : '';
-  return C.shell('estimating', [h('div', { class: 'row spread' }, h('h1', {}, 'Estimating'), h('div', { class: 'row' }, sbox, w && h('button', { onclick: () => acceptSeveralModal().catch((e) => alert(e.message)), title: 'Paste a list of job names, find them (declined ones too), and accept them all for one estimator.' }, 'Accept Several'), w && h('button', { onclick: importForm }, 'Import leads'), w && h('button', { class: 'primary', onclick: () => opportunityForm(null).catch((e) => alert(e.message)) }, '+ Opportunity'))),
+  return C.shell('estimating', [h('div', { class: 'row spread' }, h('h1', {}, 'Estimating'), h('div', { class: 'row' }, sbox, h('button', { onclick: () => calendarModal().catch((e) => alert(e.message)), title: 'Put the bid due dates on your Outlook or Google calendar' }, 'Calendar'), w && h('button', { onclick: () => acceptSeveralModal().catch((e) => alert(e.message)), title: 'Paste a list of job names, find them (declined ones too), and accept them all for one estimator.' }, 'Accept Several'), w && h('button', { onclick: importForm }, 'Import leads'), w && h('button', { class: 'primary', onclick: () => opportunityForm(null).catch((e) => alert(e.message)) }, '+ Opportunity'))),
     h('p', { class: 'sub' }, 'Florida bid invitations to proposals to awarded projects. Reviewing and Accepted work moves to the Proposal Tracker; an award builds the project in Job Costing.'), scopeBar, head, tabs, err, detail, body]);
 }
 async function importForm() {
@@ -288,6 +288,24 @@ function bundleModal(groups) {
   const box = h('div'); draw();
   const bg = modal('Bundle Jobs Under More Than One GC', h('div', {}, h('p', {}, 'These jobs came in more than once, from different GCs. Bundled, a job is one lead with one submission. Any of the GCs can award it, and we work with whichever does. Pick the main lead (it keeps the proposal number and the notes) and tick the ones to join it.'),
     h('p', { class: 'muted' }, FOLDERS_SAY), err, box), { mode: 'edit' });
+}
+
+// ---------------------------------------------------------------- bid due dates on your own calendar
+// A private link your calendar app subscribes to once. It then shows every bid that is not submitted yet on its due date, and follows changes.
+async function calendarModal() {
+  let l = await api('GET', '/calendar/link'); const msg = h('div'), box = h('div');
+  const row = (label, url) => h('div', { style: 'margin:.5rem 0' }, h('label', {}, label), h('div', { class: 'row', style: 'gap:.5rem;flex-wrap:nowrap' }, h('input', { value: url, readonly: true, onclick: (e) => e.target.select(), style: 'flex:1;min-width:0' }),
+    h('button', { type: 'button', class: 'small', onclick: async (e) => { try { await navigator.clipboard.writeText(url); e.target.textContent = 'Copied'; setTimeout(() => (e.target.textContent = 'Copy'), 1500); } catch { notice(msg, 'Select the link and copy it.'); } } }, 'Copy')));
+  const draw = () => box.replaceChildren(row('Every open bid', l.all), row('Only the bids I am the estimator on', l.mine));
+  draw();
+  const bg = modal('Bid Due Dates On Your Calendar', h('div', {},
+    h('p', { class: 'muted' }, 'Copy one of these links and add it to your calendar once. Your calendar then shows each bid that is not submitted yet on its due date (at its due time when there is one), and updates by itself when a date changes here.'),
+    box, msg,
+    h('p', { style: 'margin:.8rem 0 .2rem' }, h('strong', {}, 'Outlook: '), 'Calendar, Add calendar, Subscribe from web, paste the link, Import.'),
+    h('p', { style: 'margin:.2rem 0' }, h('strong', {}, 'Google Calendar: '), 'on a computer, the + next to Other calendars, From URL, paste the link, Add calendar.'),
+    h('p', { class: 'muted', style: 'font-size:13px' }, 'Calendars re-read the link on their own schedule: Outlook every few hours, Google Calendar about once a day. The link is private to you: anyone who has it can see the bid list, so do not forward it. Reset makes a new link and switches the old one off.'),
+    h('div', { class: 'row', style: 'justify-content:flex-end;gap:.5rem;margin-top:.8rem' }, h('button', { type: 'button', onclick: guard(msg, async () => { if (!confirm('Make a new link? Calendars using the old link stop updating until you add the new one.')) return; l = await api('POST', '/calendar/link/reset', {}); draw(); notice(msg, 'New links made. The old ones no longer work.', 'ok'); }) }, 'Reset The Link'),
+      h('button', { type: 'button', class: 'primary', onclick: () => bg.remove() }, 'Close'))), { mode: 'edit' });
 }
 
 // ---------------------------------------------------------------- accept several leads at once, for one estimator

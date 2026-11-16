@@ -44,10 +44,10 @@ function shell(active, content) {
       h('nav', {}, nav.map(([id, label]) => h('a', { href: '#/' + id, class: active === id ? 'on' : '' }, label, id === 'messages' ? h('span', { class: 'bubble', id: 'msg-bubble', style: 'display:none' }) : ''))),
       h('button', { class: 'small', id: 'bell', onclick: openNotifications, title: 'Notifications' }, 'Alerts'),
       h('span', { class: 'who' }, `${state.user.name || state.user.email} · ${state.user.role}`),
-      h('button', { class: 'small', onclick: changePasswordForm, title: 'Change your password' }, 'Password'),
+      state.googleOnly ? '' : h('button', { class: 'small', onclick: changePasswordForm, title: 'Change your password' }, 'Password'),
       h('button', { class: 'small', onclick: async () => { await api('POST', '/logout', {}); state.user = null; render(); } }, 'Sign out')),
     h('main', {}, content),
-    phoneTabs(nav, active, { alerts: openNotifications, password: changePasswordForm, signOut: async () => { await api('POST', '/logout', {}); state.user = null; render(); } }));   // phones: a bar along the bottom
+    phoneTabs(nav, active, { alerts: openNotifications, password: state.googleOnly ? null : changePasswordForm, signOut: async () => { await api('POST', '/logout', {}); state.user = null; render(); } }));   // phones: a bar along the bottom
 }
 
 function changePasswordForm() {
@@ -77,7 +77,7 @@ function chooserView() {
   const tile = (title, text, props) => h(props.href ? 'a' : 'button', { ...props, class: 'tile' }, h('strong', {}, title), h('span', { class: 'muted' }, text));
   return h('div', { class: 'login' }, h('img', { src: '/logo.png', alt: 'ByOther Construction' }), h('p', { style: 'text-align:center;font-size:1.25rem;font-weight:300;color:var(--navy);margin:.4rem 0 1rem' }, 'by Other Desk Platform'),
     h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin-top:0;text-align:center' }, 'Where to?'),
-      tile('Office Platform', 'Estimating, projects, billing and reports. Sign in with Google or a password.', { onclick: () => { chose = true; render(); } }),
+      tile('Office Platform', `Estimating, projects, billing and reports. Sign in with ${state.googleOnly ? 'Google' : 'Google or a password'}.`, { onclick: () => { chose = true; render(); } }),
       tile('Time Clock', 'Clock in and out of a job with your name and PIN.', { href: '/clock' })));
 }
 function loginView() {
@@ -90,9 +90,14 @@ function loginView() {
       h('div', {}, h('label', {}, 'Company email'), email), h('div', { style: 'margin-top:.8rem' }, h('label', {}, 'Password'), pw), err,
       h('button', { class: 'primary', style: 'width:100%;margin-top:.8rem', type: 'submit' }, 'Sign in'),
       h('button', { type: 'button', class: 'small', style: 'margin-top:.6rem', onclick: () => forgotForm(email.value) }, 'Forgot password?')));
+  const emergency = new URLSearchParams(location.search).has('password');   // /?password : the email and password form, kept for the owner in case Google sign-in is ever down
   const why = new URLSearchParams(location.search).get('login_error'); if (why) { loginMsg = why; history.replaceState(null, '', '/'); }   // the page is drawn twice at start, so the message is kept
   if (loginMsg) notice(err, loginMsg);
-  api('GET', '/auth/options').then((o) => { if (o.google) form.querySelector('.card').append(h('div', { style: 'margin-top:1rem;border-top:1px solid var(--line);padding-top:.9rem' }, h('a', { class: 'gbtn', href: '/api/auth/google/start' }, 'Sign in with Google'), h('p', { class: 'muted', style: 'font-size:12px;text-align:center;margin:.5rem 0 0' }, `Use your @${o.domain} account.`))); }).catch(() => {});
+  // With Google sign-in set up, that is the only way in: no email, no password.
+  if (state.googleOnly && !emergency) return h('div', { class: 'login' }, h('img', { src: '/logo.png', alt: 'ByOther Construction' }), h('p', { style: 'text-align:center;font-size:1.25rem;font-weight:300;color:var(--navy);margin:.4rem 0 1rem' }, 'by Other Desk Platform'),
+    h('div', { class: 'card' }, h('a', { class: 'gbtn', href: '/api/auth/google/start' }, 'Sign in with Google'), h('p', { class: 'muted', style: 'font-size:12px;text-align:center;margin:.5rem 0 0' }, `Use your @${state.auth?.domain || 'company'} account.`), err,
+      h('p', { style: 'text-align:center;margin:.9rem 0 0;font-size:14px' }, h('a', { href: '/clock' }, 'Go to the Time Clock'))));
+  if (state.auth?.google) form.querySelector('.card').append(h('div', { style: 'margin-top:1rem;border-top:1px solid var(--line);padding-top:.9rem' }, h('a', { class: 'gbtn', href: '/api/auth/google/start' }, 'Sign in with Google'), h('p', { class: 'muted', style: 'font-size:12px;text-align:center;margin:.5rem 0 0' }, `Use your @${state.auth.domain} account.`)));
   return h('div', { class: 'login' }, form);
 }
 
@@ -683,6 +688,9 @@ async function clockSettingsCard() {
   const s = await api('GET', '/settings/timeclock'); const err = h('div'); const canSave = isSuper() || state.user.role === 'Sub Admin';
   const f = { ot: h('input', { type: 'checkbox' }), after: num(s.otAfter), mult: num(s.otMult), full: num(s.dailyFullDayHours), lunch: num(s.lunchMinutes), lunchAfter: num(s.lunchAfterHours), start: h('input', { type: 'time', value: s.dayStart }), grace: num(s.lateGraceMinutes), round: num(s.roundMinutes) }; f.ot.checked = s.otEnabled;
   return h('div', { class: 'card' }, h('div', { class: 'row spread' }, h('h2', {}, 'Time clock rules'), h('a', { href: '/clock', target: '_blank', rel: 'noopener' }, 'Open the time clock page ↗')), err,
+    h('div', { class: 'row', style: 'gap:.6rem;flex-wrap:wrap;align-items:center;margin:.2rem 0 .8rem' }, h('label', { style: 'margin:0' }, 'Time clock link'), h('code', {}, location.origin + '/clock'),
+      h('button', { class: 'small', onclick: async (e) => { try { await navigator.clipboard.writeText(location.origin + '/clock'); e.target.textContent = 'Copied'; setTimeout(() => (e.target.textContent = 'Copy Link'), 1500); } catch { prompt('Copy this link:', location.origin + '/clock'); } } }, 'Copy Link'),
+      h('span', { class: 'muted', style: 'font-size:13px' }, 'Send this to the crew. It opens the time clock by itself (name and PIN), without the office sign-in.')),
     h('div', { class: 'form' }, field('', h('label', { style: 'text-transform:none;letter-spacing:0;font-size:15px;font-weight:400' }, f.ot, ' Pay overtime')), field('Overtime after (hours/week)', f.after), field('Overtime multiplier', f.mult), field('Daily-rate: full day at (hours)', f.full), field('Auto lunch (minutes, 0 = off)', f.lunch), field('Lunch applies after (hours)', f.lunchAfter), field('Workday starts', f.start), field('Late grace (minutes)', f.grace), field('Round hours to (minutes, 0 = exact)', f.round)),
     canSave ? h('div', { class: 'row', style: 'margin-top:.8rem' }, h('button', { class: 'primary', onclick: guard(err, async () => { await api('PUT', '/settings/timeclock', { otEnabled: f.ot.checked, otAfter: f.after.value, otMult: f.mult.value, dailyFullDayHours: f.full.value, lunchMinutes: f.lunch.value, lunchAfterHours: f.lunchAfter.value, dayStart: f.start.value, lateGraceMinutes: f.grace.value, roundMinutes: f.round.value }); notice(err, 'Saved. New punches use these rules.', 'ok'); }) }, 'Save rules'),
       h('button', { onclick: guard(err, async () => { if (confirm('Recalculate all labor cost from the clock using the current rules and rates?')) { const r = await api('POST', '/time/recalculate', {}); notice(err, `Recalculated ${r.weeks} employee-weeks.`, 'ok'); } }) }, 'Recalculate past labor')) : h('p', { class: 'muted' }, 'Only the Super Admin and Sub Admin can change pay rules.'));
@@ -1419,7 +1427,7 @@ async function usersSection() {
     f.emp = h('select', {}, h('option', { value: '' }, 'Not linked (no time clock)'), emps.filter((e) => !rows.some((x) => x.employee_id === e.id && x.id !== u?.id)).map((e) => h('option', { value: e.id }, e.name))); f.emp.value = u?.employee_id || '';
     if (u) f.role.value = u.role;
     const owner = u?.role === 'Super Admin'; const acc = owner ? null : accessEditor(u, f.role, opt);
-    formModal(u ? `Edit ${u.email}` : 'Add user', [field('Company email', f.email), field('Name', f.name), field('Title', f.title), field('Phone', f.phone), field('Time Clock (Link To An Employee)', f.emp), ...(owner ? [h('p', { class: 'muted' }, 'This is the owner account. Its access level stays Super Admin. Change your password with the Password button at the top.')] : [field('Access level', f.role), field(u ? 'New password' : 'Password', f.pw)]), ...(acc ? [acc.el] : [])], async () => {
+    formModal(u ? `Edit ${u.email}` : 'Add user', [field('Company email', f.email), field('Name', f.name), field('Title', f.title), field('Phone', f.phone), field('Time Clock (Link To An Employee)', f.emp), ...(owner ? [h('p', { class: 'muted' }, state.googleOnly ? 'This is the owner account. Its access level stays Super Admin.' : 'This is the owner account. Its access level stays Super Admin. Change your password with the Password button at the top.')] : [field('Access level', f.role), ...(state.googleOnly ? [h('p', { class: 'muted wide' }, 'They sign in with Google using this company email. No password is needed.')] : [field(u ? 'New password' : 'Password', f.pw)])]), ...(acc ? [acc.el] : [])], async () => {
       if (u) { const body = { name: f.name.value, title: f.title.value, phone: f.phone.value, employeeId: f.emp.value || null }; if (!owner) { body.role = f.role.value; body.access = acc.get(); if (f.pw.value) body.password = f.pw.value; } await api('PUT', '/admin/users/' + u.id, body); }
       else await api('POST', '/admin/users', { email: f.email.value, name: f.name.value, title: f.title.value, phone: f.phone.value, role: f.role.value, password: f.pw.value, access: acc.get(), employeeId: f.emp.value || null });
       render();
@@ -1507,6 +1515,7 @@ async function reportsView() {
 // ------------------------------------------------------------------ router
 async function boot() {
   try { state.user = (await api('GET', '/me')).user; } catch { state.user = null; }
+  try { const o = await api('GET', '/auth/options'); state.auth = o; state.googleOnly = !!o.google; } catch { state.googleOnly = false; }   // with Google sign-in set up, nobody uses a password
   if (state.user) { try { [state.trades, state.gcs] = await Promise.all([api('GET', '/admin/trades'), api('GET', '/admin/gcs')]); } catch { /* PM lacks nothing here; ignore */ } }
   render();
 }

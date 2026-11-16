@@ -9,7 +9,8 @@ const { server, _routes } = await import('../server/index.js');
 const { hashPassword, COOKIE } = await import('../server/auth.js');
 
 // Routes that are public on purpose: signing in, the Google sign-in steps, password reset, the field clock's name list and PIN sign-in, the health check.
-const PUBLIC = new Set(['POST /api/login', 'GET /api/auth/options', 'GET /api/auth/google/start', 'GET /api/auth/google/callback', 'POST /api/logout', 'POST /api/password/forgot', 'GET /api/password/reset/:token', 'POST /api/password/reset', 'GET /api/clock/roster', 'POST /api/clock/login', 'GET /api/health']);
+const PUBLIC = new Set(['POST /api/login', 'GET /api/auth/options', 'GET /api/auth/google/start', 'GET /api/auth/google/callback', 'POST /api/logout', 'POST /api/password/forgot', 'GET /api/password/reset/:token', 'POST /api/password/reset', 'GET /api/clock/roster', 'POST /api/clock/login', 'GET /api/health',
+  'GET /api/calendar/bids.ics']);   // a calendar app cannot sign in: the long private key in the link is the pass (a wrong or missing key gets 404)
 // What a time-clock-only session may use.
 const FIELD = /^(GET \/api\/me|GET \/api\/clock\/home|POST \/api\/clock\/(in|out|manual)|PUT \/api\/clock\/entries\/:id|POST \/api\/clock\/entries\/:id\/request)$/;
 const ID = '00000000-0000-0000-0000-000000000000';

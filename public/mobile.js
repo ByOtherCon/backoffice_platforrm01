@@ -30,7 +30,7 @@ export function phoneTabs(nav, active, extras) {
   const rest = nav.filter((n) => !main.includes(n));
   const sheet = () => { const bg = modal('More', h('div', { class: 'more-list' },
     rest.map(([id, label]) => h('a', { href: '#/' + id, class: active === id ? 'on' : '', onclick: () => bg.remove() }, icon(id, 22), h('span', {}, label))),
-    h('div', { class: 'more-acct' }, h('button', { onclick: () => { bg.remove(); extras.alerts(); } }, 'Alerts'), h('button', { onclick: () => { bg.remove(); extras.password(); } }, 'Change Password'), h('button', { class: 'danger', onclick: extras.signOut }, 'Sign Out')))); };
+    h('div', { class: 'more-acct' }, h('button', { onclick: () => { bg.remove(); extras.alerts(); } }, 'Alerts'), extras.password ? h('button', { onclick: () => { bg.remove(); extras.password(); } }, 'Change Password') : '', h('button', { class: 'danger', onclick: extras.signOut }, 'Sign Out')))); };
   return h('nav', { class: 'tabbar', 'aria-label': 'Main' },
     main.map(([id, label]) => h('a', { href: '#/' + id, class: active === id ? 'on' : '' }, icon(id), h('span', {}, label), id === 'messages' ? h('i', { class: 'bubble msg-b', style: 'display:none' }) : '')),
     h('button', { type: 'button', class: 'tab-more' + (rest.some((n) => n[0] === active) ? ' on' : ''), onclick: sheet }, icon('more'), h('span', {}, 'More')));

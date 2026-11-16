@@ -199,3 +199,16 @@ test('the official proposal template: everyone estimating can see and download i
   assert.match(await made.file('word/document.xml').async('string'), /<w:t>200<\/w:t>/);
   assert.equal((await call('DELETE', '/api/estimating/proposal-template', null, est)).status, 403); assert.equal((await call('DELETE', '/api/estimating/proposal-template', null, owner)).body.custom, false);
 });
+
+test('a job pitched to several GCs: the AI is told each GC gets its own proposal, and one made for another GC is kept for that GC', async () => {
+  await q(`UPDATE opportunities SET invitations=$2 WHERE id=$1`, [oid, JSON.stringify([{ gc: 'CW Hayes Construction' }, { gc: 'Moss & Associates' }])]);
+  script = [toolAnswer({ ...PROPOSAL, createdFor: 'Moss & Associates' }, ''), textAnswer('Saved for Moss.')]; const ids = await say('Make the proposal for Moss & Associates at the same scope.', { newChat: true });
+  const first = requests.at(-2).body.messages[0].content, facts = (Array.isArray(first) ? first.map((b) => b.text || '').join('\n') : String(first));
+  assert.match(facts, /GCs: CW Hayes Construction; Moss & Associates\. This job is pitched to all of them\. Each GC gets its own proposal file/);
+  const files = (await call('GET', `/api/opportunities/${oid}/estimate-chat?chat=${ids.chatId}`, null, est)).body.messages.at(-1).files; assert.equal(files.length, 2);
+  const rows = await q('SELECT name, meta FROM opportunity_files WHERE id = ANY($1::uuid[])', [files.map((f) => f.id)]); assert.ok(rows.every((r) => r.meta.gc === 'Moss & Associates')); assert.ok(rows.every((r) => /_Moss & Associates_/.test(r.name)), rows[0].name);
+  const JSZip = (await import('jszip')).default, made = await JSZip.loadAsync(Buffer.from(await (await fetch(`${base}/api/opportunity-files/${files.find((x) => x.kind === 'Word').id}`, { headers: { cookie: est } })).arrayBuffer()));
+  assert.match(await made.file('word/document.xml').async('string'), /Moss &amp; Associates/);
+  const o = (await call('GET', `/api/opportunities/${oid}`, null, est)).body; assert.ok(o.notes.some((n) => /Proposal version \d+ for Moss & Associates written with the AI estimator/.test(n.body)));
+  const v = (await call('GET', `/api/opportunities/${oid}/proposal-files`, null, est)).body; assert.ok(!/Moss/.test(v.latestPdf.name));   // the lead's own (main GC) list does not change
+});

@@ -16,6 +16,7 @@ import { saveFile } from './documents.js';
 import { matchTrades } from './estimating.js';
 import * as folders from './folders.js';
 import { cleanName, todayEastern } from '../src/lib/estimating.ts';
+import * as R from '../src/lib/bidrules.ts';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const read = (f) => fs.readFileSync(path.join(HERE, 'estimator', f), 'utf8');
@@ -130,7 +131,7 @@ export async function postMessage(user, opportunityId, b = {}) {
 const leadFacts = async (o) => {
   const trades = (await q('SELECT t.name FROM opportunity_considered_trades c JOIN trades t ON t.id=c.trade_id WHERE c.opportunity_id=$1 ORDER BY t.sort, t.name', [o.id])).map((x) => x.name);
   const gcs = [o.gc_name, ...(Array.isArray(o.invitations) ? o.invitations.map((i) => i.gc) : [])].filter((g, i, a) => g && a.findIndex((x) => String(x).toLowerCase() === String(g).toLowerCase()) === i);
-  return ['[The lead on file in the app]', `Project: ${o.name}`, `GC${gcs.length > 1 ? 's (same price to each)' : ''}: ${gcs.join('; ')}`, `Project address: ${[o.address, o.city, 'FL', o.zip].filter(Boolean).join(', ')}`,
+  return ['[The lead on file in the app]', `Project: ${o.name}`, gcs.length > 1 ? `GCs: ${gcs.join('; ')}. This job is pitched to all of them. Each GC gets its own proposal file and the price can differ. Write each proposal for one GC: the one the estimator names, or the first when they name none. Put that GC's name in createdFor exactly as it is written here; the files are then saved in that GC's folder.` : `GC: ${gcs.join('; ')}`, `Project address: ${[o.address, o.city, 'FL', o.zip].filter(Boolean).join(', ')}`,
     o.due_date ? `Bid due: ${o.due_date}` : null, o.project_type ? `Project type: ${o.project_type === 'Office / Medical / Other' ? 'Medical / Office' : o.project_type}` : null, o.proposal_id ? `Proposal number: ${o.proposal_id}` : null,
     trades.length ? `Trades the estimator is considering: ${trades.join(', ')}` : null, `Today: ${todayEastern()}`].filter(Boolean).join('\n');
 };
@@ -198,13 +199,16 @@ export async function runTurn(user, o, { chatId, userMessageId, assistantMessage
 export async function saveProposal(user, o, chatId, input) {
   const spec = proposalSpec(input, { createdFor: o.gc_name || '', projectName: o.name, projectAddress: [o.address, o.city, [o.address || o.city ? 'FL' : '', o.zip].filter(Boolean).join(' ')].filter(Boolean).join(', '), proposalId: o.proposal_id || '' });
   const tpl = await getTemplate(), [docx, pdf] = await Promise.all([proposalDocx(spec, tpl.bytes), proposalPdf(spec, tpl.bytes)]);
-  const meta = { trades: spec.trades.map((t) => ({ trade: t.title, amount: t.total })), flagged: spec.flagged, permitSet: spec.permitSet || null, madeBy: who(user) };
+  // a bundled job: a proposal made for one of the other GCs carries that GC's name and is saved in that GC's folder
+  const forGc = R.gcNames(o.gc_name, o.invitations).slice(1).find((g) => R.gcKey(g) === R.gcKey(spec.createdFor)) ?? null;
+  const gcFolder = forGc ? (await q('SELECT sp_path FROM opportunity_folders WHERE opportunity_id=$1 AND lower(gc_name)=lower($2)', [o.id, forGc]))[0] ?? null : null;
+  const meta = { trades: spec.trades.map((t) => ({ trade: t.title, amount: t.total })), flagged: spec.flagged, permitSet: spec.permitSet || null, madeBy: who(user), ...(forGc ? { gc: forGc } : {}) };
   const out = await tx(async (t) => {
     await t('SELECT id FROM opportunities WHERE id=$1 FOR UPDATE', [o.id]);
     const [{ v }] = await t('SELECT COALESCE(MAX(version),0)+1 AS v FROM opportunity_files WHERE opportunity_id=$1', [o.id]);
     // byOther Proposal-P#_GC_Project Name_Project Site City_Date. A second one on the same day gets (2), so none is ever replaced.
     // When that would make the path on a PC too long for Word, the GC and then the project name are left out (the folders already say them).
-    const d = todayEastern(), stem = folders.proposalStem(o, d);
+    const d = todayEastern(), stem = folders.proposalStem(forGc ? { ...o, gc_name: forGc, sp_path: gcFolder?.sp_path ?? null } : o, d);
     const taken = new Set((await t('SELECT lower(name) AS n FROM opportunity_files WHERE opportunity_id=$1', [o.id])).map((r) => r.n));
     let base = stem; for (let k = 2; taken.has(`${base}.pdf`.toLowerCase()) || taken.has(`${base}.docx`.toLowerCase()); k++) base = `${stem} (${k})`;
     const files = [];
@@ -213,10 +217,10 @@ export async function saveProposal(user, o, chatId, input) {
       const [row] = await t('INSERT INTO opportunity_files(opportunity_id,kind,name,storage_key,mime,size,created_by,sha256,version,chat_id,meta) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id', [o.id, 'Proposal', name, f.key, f.mime, f.size, user.id, f.sha256, v, chatId, JSON.stringify(meta)]);
       files.push({ id: row.id, name, kind: ext === '.pdf' ? 'PDF' : 'Word', bytes, mime: f.mime });
     }
-    await t(`INSERT INTO opportunity_notes(opportunity_id,user_id,kind,body) VALUES ($1,$2,'System',$3)`, [o.id, user.id, `Proposal version ${v} written with the AI estimator by ${who(user)}: ${spec.trades.map((x) => `${x.title} ${priceText(x.total)}`).join(', ')}. Earlier versions are kept.${spec.permitSet ? ` Permit set: ${spec.permitSet}.` : ''}${spec.flagged.length ? ` Flagged for review before sending (not printed on the proposal): ${spec.flagged.map((f) => `${f.item}${f.note ? ' (' + f.note + ')' : ''}`).join('; ').slice(0, 3000)}` : ''}`]);
+    await t(`INSERT INTO opportunity_notes(opportunity_id,user_id,kind,body) VALUES ($1,$2,'System',$3)`, [o.id, user.id, `Proposal version ${v}${forGc ? ` for ${forGc}` : ''} written with the AI estimator by ${who(user)}: ${spec.trades.map((x) => `${x.title} ${priceText(x.total)}`).join(', ')}. Earlier versions are kept.${spec.permitSet ? ` Permit set: ${spec.permitSet}.` : ''}${spec.flagged.length ? ` Flagged for review before sending (not printed on the proposal): ${spec.flagged.map((f) => `${f.item}${f.note ? ' (' + f.note + ')' : ''}`).join('; ').slice(0, 3000)}` : ''}`]);
     return { version: v, files };
   });
-  for (const f of out.files) folders.pushOpportunityFile(o.id, { kind: 'Proposal', filename: f.name, bytes: f.bytes, mime: f.mime }).then((up) => (up?.webUrl ? q('UPDATE opportunity_files SET sp_url=$2 WHERE id=$1', [f.id, up.webUrl]) : null)).catch(() => {});
+  for (const f of out.files) folders.pushOpportunityFile(o.id, { kind: 'Proposal', filename: f.name, bytes: f.bytes, mime: f.mime, gc: forGc }).then((up) => (up?.webUrl ? q('UPDATE opportunity_files SET sp_url=$2 WHERE id=$1', [f.id, up.webUrl]) : null)).catch(() => {});
   return { version: out.version, files: out.files.map((f) => ({ id: f.id, name: f.name, kind: f.kind })), blank: spec.trades.filter((t) => t.total === null).map((t) => t.title), flagged: spec.flagged.length };
 }
 // What a proposal written here says, as trades and prices, for the Submit window (so nothing is typed twice).

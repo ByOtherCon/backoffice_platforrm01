@@ -54,7 +54,7 @@ function filesPanel(o, canWrite, err) {
   const plansBox = h('div', {}, h('div', { class: 'row spread' }, h('label', {}, 'Plans'), canWrite ? h('span', {}, plansIn, h('button', { type: 'button', class: 'small primary', onclick: () => plansIn.click(), title: 'The zip from the BuildingConnected Files tab (Download All), or a PDF' }, 'Upload Plans')) : ''), plansLive,
     plans.length ? h('table', {}, h('tbody', {}, plans.map(rowOf))) : h('p', { class: 'muted', style: 'margin:.2rem 0' }, 'No plans uploaded here yet.'));
   // ---- Proposals: only the latest PDF and the latest Word file, wherever they were saved (made here, or saved into the library folder)
-  const propLive = h('div', {}, h('p', { class: 'muted', style: 'margin:.2rem 0' }, 'Checking the SharePoint folder…'));
+  const propLive = h('div', {}, h('p', { class: 'muted', style: 'margin:.2rem 0' }, 'Checking the SharePoint folder…')), gcLive = h('div'), propLabel = h('label', {}, 'Proposals');
   const fileLine = (label, f) => h('div', { style: 'padding:.2rem 0' }, h('span', { class: 'pill' }, label), ' ', h('a', { href: f.href, target: '_blank', rel: 'noopener' }, f.name), h('span', { class: 'muted', style: 'font-size:12px' }, `  ${f.at ? when(f.at) : ''}${f.where === 'SharePoint' ? ' · saved in SharePoint' : ''}`));
   const drawProps = (v, msg) => {
     const none = !v.latestPdf && !v.latestWord;
@@ -67,16 +67,22 @@ function filesPanel(o, canWrite, err) {
       v.error ? h('div', { class: 'err' }, v.error) : '', msg ? h('div', { class: msg.bad ? 'err' : 'ok' }, msg.text) : '',
       // without a library folder to open, the earlier files stay reachable here
       !v.proposalFolderUrl && v.earlier?.length ? h('details', { style: 'margin-top:.3rem' }, h('summary', {}, `Earlier (${v.earlier.length})`), v.earlier.map((f) => h('div', {}, h('a', { href: f.href, target: '_blank', rel: 'noopener', style: 'font-size:14px' }, f.name)))) : '');
+    // a bundled job: each other GC has its own proposals, in its own folder
+    gcLive.replaceChildren(...(v.gcs || []).map((g) => { const up = h('input', { type: 'file', accept: '.pdf', style: 'display:none', onchange: guard(err, async () => { const f = up.files[0]; up.value = ''; if (!f) return; notice(err, `Uploading ${f.name} for ${g.gc}…`, 'ok'); const r = await uploadFile(`/opportunities/${o.id}/files?kind=Proposal&gc=${encodeURIComponent(g.gc)}`, f); notice(err, r.sharepoint ? `${f.name} is saved in the ${g.gc} folder.` : `${f.name} is saved here. It was not copied to the ${g.gc} folder; press Sync With SharePoint.`, r.sharepoint ? 'ok' : 'err'); sync(false); }) });
+      return h('div', { style: 'margin-top:.9rem' }, h('div', { class: 'row spread' }, h('label', {}, `Proposals · ${g.gc}`), canWrite ? h('span', {}, up, h('button', { type: 'button', class: 'small', onclick: () => up.click() }, `Upload Proposal PDF For ${g.gc}`)) : ''),
+        g.latestPdf ? fileLine('Latest PDF', g.latestPdf) : '', g.latestWord ? fileLine('Latest Word', g.latestWord) : '', !g.latestPdf && !g.latestWord ? h('p', { class: 'muted', style: 'margin:.2rem 0' }, `No proposal for ${g.gc} yet. Upload its PDF here, save it into its 02. Proposal folder, or ask for it in the estimating chat ("make the proposal for ${g.gc}").`) : '',
+        g.proposalFolderUrl ? h('div', { style: 'font-size:14px;margin-top:.3rem' }, h('a', { href: g.proposalFolderUrl, target: '_blank', rel: 'noopener' }, `Open The ${g.gc} Proposal Folder In SharePoint${g.total > 2 ? ` (all ${g.total} files)` : ''}`)) : '', g.error ? h('div', { class: 'err' }, g.error) : ''); }));
+    propLabel.textContent = (v.gcs || []).length ? `Proposals · ${v.gc || o.gc}` : 'Proposals';
     plansLive.replaceChildren((v.plans || []).filter((p) => !plans.some((x) => x.name.toLowerCase() === p.name.toLowerCase())).length ? h('div', { style: 'margin:.2rem 0' }, (v.plans || []).filter((p) => !plans.some((x) => x.name.toLowerCase() === p.name.toLowerCase())).map((p) => h('div', {}, h('a', { href: p.webUrl, target: '_blank', rel: 'noopener' }, p.name), h('span', { class: 'muted', style: 'font-size:12px' }, '  (in SharePoint)')))) : '',
       v.plansFolderUrl ? h('div', { style: 'font-size:14px;margin:.2rem 0' }, h('a', { href: v.plansFolderUrl, target: '_blank', rel: 'noopener' }, 'Open The Plans Folder In SharePoint')) : '');
   };
   // Opening the lead brings the two in step: the folder is made if it should exist, files kept here are backed up, and the library is read.
   const sync = async (force) => { try { if (force) propLive.append(h('p', { class: 'muted' }, 'Syncing…')); const v = canWrite ? await api('POST', `/opportunities/${o.id}/sync`, { force: !!force }) : await api('GET', `/opportunities/${o.id}/proposal-files`); const sy = v.sync;
-    drawProps(v, sy?.error ? { bad: true, text: `The SharePoint folder could not be made: ${sy.error}` } : sy?.failed?.length ? { bad: true, text: `Not copied: ${sy.failed.join('; ')}` } : sy?.pushed || sy?.fixed || sy?.shortened ? { text: [sy.pushed ? `${sy.pushed} file${sy.pushed === 1 ? '' : 's'} copied to SharePoint as a backup.` : '', sy.fixed ? `${sy.fixed} file${sy.fixed === 1 ? '' : 's'} in SharePoint given ${sy.fixed === 1 ? 'its' : 'their'} full name (.pdf, .docx).` : '', sy.shortened ? `${sy.shortened} proposal file${sy.shortened === 1 ? '' : 's'} given a shorter name so Word can open and save ${sy.shortened === 1 ? 'it' : 'them'}.` : ''].filter(Boolean).join(' ') } : force ? { text: 'In step with SharePoint.' } : null);
+    drawProps(v, sy?.error ? { bad: true, text: `The SharePoint folder could not be made: ${sy.error}` } : sy?.failed?.length ? { bad: true, text: `Not copied: ${sy.failed.join('; ')}` } : sy?.pushed || sy?.fixed || sy?.shortened || sy?.plansCopied ? { text: [sy.pushed ? `${sy.pushed} file${sy.pushed === 1 ? '' : 's'} copied to SharePoint as a backup.` : '', sy.fixed ? `${sy.fixed} file${sy.fixed === 1 ? '' : 's'} in SharePoint given ${sy.fixed === 1 ? 'its' : 'their'} full name (.pdf, .docx).` : '', sy.plansCopied ? `${sy.plansCopied} plan file${sy.plansCopied === 1 ? '' : 's'} copied to the other GC folders.` : '', sy.shortened ? `${sy.shortened} proposal file${sy.shortened === 1 ? '' : 's'} given a shorter name so Word can open and save ${sy.shortened === 1 ? 'it' : 'them'}.` : ''].filter(Boolean).join(' ') } : force ? { text: 'In step with SharePoint.' } : null);
   } catch (e) { drawProps({ enabled: true, linked: false, earlier: props.map((f) => ({ name: f.name, href: f.local === false ? f.spUrl : '/api/opportunity-files/' + f.id })), latestPdf: null, latestWord: null, total: props.length }, { bad: true, text: e.message }); } };
   sync(false);
-  const propsBox = h('div', { style: 'margin-top:.9rem' }, h('label', {}, 'Proposals'), propLive);
-  return h('div', {}, plansBox, propsBox,
+  const propsBox = h('div', { style: 'margin-top:.9rem' }, propLabel, propLive);
+  return h('div', {}, plansBox, propsBox, gcLive,
     others.length ? h('div', { style: 'margin-top:.9rem' }, h('label', {}, 'Other files'), h('table', {}, h('tbody', {}, others.map(rowOf)))) : '',
     // once the job is a project, its own documents (contract, change orders, insurance) show here too
     o.projectDocs?.length ? h('div', { style: 'margin-top:.6rem' }, h('label', {}, 'Project documents'), o.projectDocs.map((d) => h('div', {}, h('a', { href: d.has_file ? `/api/documents/${d.id}/file` : d.url, target: '_blank', rel: 'noopener' }, d.name), ' ', h('span', { class: 'pill' }, d.category)))) : '');
@@ -137,25 +143,21 @@ async function opportunityForm(o) {   // a new opportunity, in a pop-up (an exis
   formModal('New opportunity', built.nodes, async () => {
     const b = built.body(), qs = new URLSearchParams({ name: b.name, gc: b.gc, city: b.addr?.city || '', address: b.addr?.street || '' });
     const same = (await api('GET', '/opportunities/similar?' + qs)).leads;
-    if (same.length) { const pick = await askBundle(same, b); if (!pick) throw new Error('Not saved yet. Choose Bundle or Create Separately.'); if (pick.bundleWith) { b.bundleWith = pick.bundleWith; b.folderPerGc = pick.folderPerGc; } }
+    if (same.length) { const pick = await askBundle(same, b); if (!pick) throw new Error('Not saved yet. Choose Bundle or Create Separately.'); if (pick.bundleWith) b.bundleWith = pick.bundleWith; }
     await api('POST', '/opportunities', b); render();
   }, 'Add opportunity');
 }
-// The folder question, asked whenever one job is under more than one GC.
-function folderChoice(initial = true) {
-  const name = 'fpg' + Math.random().toString(36).slice(2, 7), mk = (v, label, hint) => h('label', { class: 'choice', style: 'display:block;text-transform:none;letter-spacing:0;font-size:15px;font-weight:400;margin:.3rem 0' }, h('input', { type: 'radio', name, value: v, checked: v === String(initial) ? true : null }), ' ', label, h('div', { class: 'muted', style: 'font-size:13px;margin-left:1.4rem' }, hint));
-  const el = h('div', {}, h('label', {}, 'Folders in SharePoint'), mk('true', 'A folder for this job under each GC', 'Everything is duplicated: every file is saved in each GC\'s folder. When one GC awards the job, its folder becomes the contract folder.'), mk('false', 'One folder, under the main GC', 'Keeps a single folder. The GC that awards the job gets its own folder then.'));
-  return { el, value: () => el.querySelector('input:checked')?.value === 'true' };
-}
+// What happens to the folders of one job under more than one GC (there is no choice to make).
+const FOLDERS_SAY = 'Each GC gets its own project folder once the lead is Accepted or Started. Plans are copied into all of them. Proposals are not: each GC keeps its own, because the price can differ.';
 function askBundle(same, b) {
   return new Promise((done) => {
-    const name = 'bw' + Math.random().toString(36).slice(2, 7), fc = folderChoice(true); let settled = false;
+    const name = 'bw' + Math.random().toString(36).slice(2, 7); let settled = false;
     const finish = (v) => { if (settled) return; settled = true; bg.remove(); done(v); };
     const rows = same.map((l, i) => h('label', { style: 'display:block;text-transform:none;letter-spacing:0;font-size:15px;font-weight:400;margin:.3rem 0' }, h('input', { type: 'radio', name, value: l.id, checked: i === 0 ? true : null }), ' ', h('strong', {}, l.name), ` · ${l.gcs.join(', ')} · ${l.city || ''} · due ${l.due ? fmtDay(l.due) : '—'} · ${l.status}`));
-    const bg = modal('Same Job Already On The List', h('div', {}, h('p', {}, `${b.name} is already on the list under ${[...new Set(same.flatMap((l) => l.gcs))].join(', ')}. The same job from another GC is one job: one proposal, one submission, and any of those GCs can award it.`),
-      h('div', {}, rows), h('div', { style: 'margin-top:.8rem' }, fc.el),
+    const bg = modal('Same Job Already On The List', h('div', {}, h('p', {}, `${b.name} is already on the list under ${[...new Set(same.flatMap((l) => l.gcs))].join(', ')}. The same job from another GC is one job with one submission, and any of those GCs can award it.`),
+      h('div', {}, rows), h('p', { class: 'muted', style: 'margin-top:.8rem' }, FOLDERS_SAY),
       h('div', { class: 'row', style: 'margin-top:1rem;justify-content:flex-end;gap:.5rem' }, h('button', { type: 'button', onclick: () => finish(null) }, 'Go Back'), h('button', { type: 'button', onclick: () => finish({}) }, 'Create Separately'),
-        h('button', { type: 'button', class: 'primary', onclick: () => finish({ bundleWith: bg.querySelector(`input[name=${name}]:checked`)?.value, folderPerGc: fc.value() }) }, 'Bundle With This Job'))), { mode: 'edit' });
+        h('button', { type: 'button', class: 'primary', onclick: () => finish({ bundleWith: bg.querySelector(`input[name=${name}]:checked`)?.value }) }, 'Bundle With This Job'))), { mode: 'edit' });
   });
 }
 
@@ -266,7 +268,7 @@ async function importForm() {
 
 // ---------------------------------------------------------------- one job under several GCs
 function bundleModal(groups) {
-  const fc = folderChoice(true), err = h('div'), picks = groups.map((g) => ({ g, main: g.primaryId, on: new Set(g.leads.map((l) => l.id)) }));
+  const err = h('div'), picks = groups.map((g) => ({ g, main: g.primaryId, on: new Set(g.leads.map((l) => l.id)) }));
   const draw = () => box.replaceChildren(...picks.map((p, gi) => h('div', { class: 'card', style: 'margin:.6rem 0' },
     h('strong', {}, p.g.leads[0].name), h('div', { class: 'muted', style: 'font-size:13px' }, [p.g.leads[0].address, p.g.leads[0].city].filter(Boolean).join(', ')),
     p.g.blocked ? h('p', { class: 'neg' }, p.g.blocked) : '',
@@ -276,10 +278,10 @@ function bundleModal(groups) {
       h('td', {}, h('strong', {}, l.gc)), h('td', {}, l.name), h('td', {}, l.due ? fmtDay(l.due) : '—'), h('td', {}, l.status), h('td', {}, l.proposalId ? `${l.proposalId}${l.submissions ? ' · submitted' : ''}` : '—'))))),
     h('div', { class: 'row', style: 'justify-content:flex-end;margin-top:.5rem' }, h('button', { class: 'primary small', disabled: p.g.blocked ? true : null, onclick: guard(err, async () => {
       const others = [...p.on].filter((id) => id !== p.main); if (!others.length) throw new Error('Include at least one more lead to bundle.');
-      await api('POST', '/opportunities/bundle', { primaryId: p.main, otherIds: others, folderPerGc: fc.value() }); bg.remove(); render(); }) }, 'Bundle This Job')))));
+      await api('POST', '/opportunities/bundle', { primaryId: p.main, otherIds: others }); bg.remove(); render(); }) }, 'Bundle This Job')))));
   const box = h('div'); draw();
-  const bg = modal('Bundle Jobs Under More Than One GC', h('div', {}, h('p', {}, 'These jobs came in more than once, from different GCs. Bundled, a job is one lead with one proposal and one submission, because we price it once. Any of the GCs can award it, and we work with whichever does. Pick the main lead (it keeps the proposal number and the notes), tick the ones to join it, and choose how to keep the folders.'),
-    fc.el, err, box), { mode: 'edit' });
+  const bg = modal('Bundle Jobs Under More Than One GC', h('div', {}, h('p', {}, 'These jobs came in more than once, from different GCs. Bundled, a job is one lead with one submission. Any of the GCs can award it, and we work with whichever does. Pick the main lead (it keeps the proposal number and the notes) and tick the ones to join it.'),
+    h('p', { class: 'muted' }, FOLDERS_SAY), err, box), { mode: 'edit' });
 }
 
 // ---------------------------------------------------------------- Bid Opportunities
@@ -363,9 +365,9 @@ function latestPdfBox(o, { small = false } = {}) {
   const size = small ? '12px' : '13px', box = h('div', { style: `font-size:${size};white-space:normal;overflow-wrap:anywhere` });
   const a = (f, text) => h('a', { href: f.href, target: '_blank', rel: 'noopener', title: f.name, onclick: (e) => e.stopPropagation() }, text || f.name);
   const mine = o.files.filter((f) => f.kind === 'Proposal' && /\.pdf$/i.test(f.name)).sort((x, y) => String(y.at).localeCompare(String(x.at)))[0];
-  const draw = (list, note) => box.replaceChildren(...(list.length ? list.map((f) => h('div', {}, list.length > 1 ? [h('strong', {}, f.gc + ': '), a(f, small ? 'Latest PDF' : null)] : a(f, small ? 'Latest PDF' : null))) : [small ? '' : h('span', { class: 'muted' }, 'No proposal PDF yet')]), note ? h('div', { class: 'neg' }, note) : '');
+  const draw = (list, note, perGc) => box.replaceChildren(...(list.length ? list.map((f) => h('div', {}, perGc || list.length > 1 ? [h('strong', {}, f.gc + ': '), a(f, small ? 'Latest PDF' : null)] : a(f, small ? 'Latest PDF' : null))) : [small ? '' : h('span', { class: 'muted' }, 'No proposal PDF yet')]), note ? h('div', { class: 'neg' }, note) : '');
   draw(mine ? [{ gc: o.gc, name: mine.name, href: mine.local === false ? mine.spUrl : '/api/opportunity-files/' + mine.id }].filter((f) => f.href) : []);
-  if (o.spPath) latestPdfs(o).then((r) => { if (r.pdfs.length || !r.error) draw(r.pdfs, r.error ? 'SharePoint could not be read: ' + r.error : ''); }).catch(() => {});
+  if (o.spPath) latestPdfs(o).then((r) => { if (r.pdfs.length || !r.error) draw(r.pdfs, r.error ? 'SharePoint could not be read: ' + r.error : '', r.perGc); }).catch(() => {});
   return box;
 }
 function submittalList(rows, w) {
@@ -399,11 +401,11 @@ function calendar(rows) {
 
 // ---------------------------------------------------------------- one opportunity: Open and Edit share one layout
 function bundleSection(o, w, msg) {
-  const fc = folderChoice(!!o.folderPerGc), awarded = o.status === 'Awarded';
+  const awarded = o.status === 'Awarded';
   return h('div', { class: 'card', style: 'margin-top:.8rem;padding:.7rem 1rem' }, h('label', {}, 'Pitched to more than one GC'),
-    h('p', { style: 'margin:.2rem 0' }, o.gcs.join(' · '), '. One job, one proposal and one submission. ', awarded ? '' : 'Any of these GCs can award it.'),
-    w && !awarded ? h('div', {}, fc.el, h('div', { class: 'row', style: 'gap:.5rem;flex-wrap:wrap;margin-top:.4rem' }, h('button', { class: 'small', onclick: guard(msg, async () => { await api('PUT', `/opportunities/${o.id}/folder-policy`, { perGc: fc.value() }); render(); }) }, 'Save Folder Choice'),
-      (o.bundled || []).map((x) => h('button', { class: 'small', title: `Make ${x.gc} its own lead again`, onclick: guard(msg, async () => { if (!confirm(`Take ${x.gc} out of this bundle and make it its own lead again?`)) return; await api('POST', `/opportunities/${x.id}/unbundle`, {}); render(); }) }, `Split Out ${x.gc}`)))) : '');
+    h('p', { style: 'margin:.2rem 0' }, o.gcs.join(' · '), '. One job and one submission. ', awarded ? '' : 'Any of these GCs can award it.'), h('p', { class: 'muted', style: 'margin:.2rem 0;font-size:14px' }, FOLDERS_SAY),
+    w && !awarded && (o.bundled || []).length ? h('div', { class: 'row', style: 'gap:.5rem;flex-wrap:wrap;margin-top:.4rem' },
+      o.bundled.map((x) => h('button', { class: 'small', title: `Make ${x.gc} its own lead again`, onclick: guard(msg, async () => { if (!confirm(`Take ${x.gc} out of this bundle and make it its own lead again?`)) return; await api('POST', `/opportunities/${x.id}/unbundle`, {}); render(); }) }, `Split Out ${x.gc}`))) : '');
 }
 async function opportunityDetail(id, err, w, editing) {
   const o = await api('GET', '/opportunities/' + id), op = await opts(), known = await api('GET', '/gcs/known');

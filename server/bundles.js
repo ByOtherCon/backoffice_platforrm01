@@ -87,14 +87,14 @@ export async function mergeInto(user, primaryId, otherIds, { folderPerGc } = {})
       await note(t, id, user, `Bundled by ${who(user)} into the lead for ${main.gc_name}. It is the same job, so it is now one lead with one proposal. Its notes and files moved there.`);
     }
     const set = { invitations: JSON.stringify(invs), additional_gcs: additional(main.gc_name, invs) };
-    if (folderPerGc !== undefined) set.folder_per_gc = !!folderPerGc;
+    set.folder_per_gc = true;   // every GC of a bundle has its own project folder (made once the lead has its P number)
     // keep the earliest bid date among the bundle so nothing is missed
     const dues = rows.map((r) => r.due_date).filter(Boolean).sort(); if (dues.length && (!main.due_date || dues[0] < main.due_date) && ['New', 'Reviewing'].includes(main.status)) set.due_date = dues[0];
     const keys = Object.keys(set); await t(`UPDATE opportunities SET ${keys.map((k, i) => `${k}=$${i + 2}`).join(',')} WHERE id=$1`, [primaryId, ...keys.map((k) => set[k])]);
-    await note(t, primaryId, user, `Bundled by ${who(user)}: ${joined.map((o) => o.gc_name).join(', ')} invited us to the same job as ${main.gc_name}. It counts as one submission, and any of these GCs can award it. ${set.folder_per_gc ? 'A folder is kept under each GC.' : 'One folder is kept under the main GC.'}`);
-    return { id: primaryId, gcs: gcList({ ...main, invitations: invs }), folderPerGc: set.folder_per_gc ?? main.folder_per_gc };
+    await note(t, primaryId, user, `Bundled by ${who(user)}: ${joined.map((o) => o.gc_name).join(', ')} invited us to the same job as ${main.gc_name}. It counts as one submission, and any of these GCs can award it. Each GC has its own project folder once the lead is Accepted or Started: plans are copied to all of them, and each GC keeps its own proposal.`);
+    return { id: primaryId, gcs: gcList({ ...main, invitations: invs }), folderPerGc: true };
   });
-  if (done.folderPerGc) await folders.tryEnsureGcFolders(primaryId);
+  await folders.tryEnsureGcFolders(primaryId);   // nothing is made before the lead has its P number
   return done;
 }
 
@@ -114,17 +114,4 @@ export async function unmerge(user, leadId) {
     await note(t, main.id, user, `${o.gc_name} was taken out of this bundle by ${who(user)} and is its own lead again.`);
     return { id: leadId, mainId: main.id };
   });
-}
-
-// Folder policy for a bundle: a folder under each GC (everything duplicated), or one folder under the main GC.
-export async function setFolderPolicy(user, id, perGc) {
-  const [o] = await tx(async (t) => {
-    const rows = await t('SELECT id, folder_per_gc, invitations, gc_name, merged_into FROM opportunities WHERE id=$1 FOR UPDATE', [id]); if (!rows.length) throw new HttpError(404, 'Opportunity not found.');
-    if (rows[0].merged_into) throw new HttpError(409, 'This lead is part of a bundle. Change it on the main lead.');
-    await t('UPDATE opportunities SET folder_per_gc=$2 WHERE id=$1', [id, !!perGc]);
-    await note(t, id, user, `${who(user)} chose ${perGc ? 'a separate folder under each GC, with everything duplicated' : 'one folder under the main GC'} for this job.`);
-    return rows;
-  });
-  if (perGc && gcList(o).length > 1) await folders.tryEnsureGcFolders(id);
-  return { ok: true };
 }

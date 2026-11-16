@@ -75,9 +75,10 @@ export async function estimateChatView(oppId, canWrite) {
       sup ? [' ', tplUp, h('button', { class: 'small', type: 'button', onclick: () => tplUp.click() }, 'Load A New Template'), tp.custom ? [' ', h('button', { class: 'small', type: 'button', onclick: guard(err, async () => { if (!confirm('Go back to the original proposal template?')) return; await api('DELETE', '/estimating/proposal-template'); data = await load(); drawSide(); }) }, 'Back To The Original')] : ''] : '')) : '';
     side.replaceChildren(h('div', { class: 'card chat-side' },
       h('div', { class: 'row spread' }, h('label', { style: 'margin:0' }, 'Plans the AI reads'), canWrite ? h('span', {}, up, h('button', { class: 'small', type: 'button', onclick: () => up.click() }, data.plans.length ? 'Add Plans' : 'Upload Plans')) : ''), plans,
-      latest.latestPdf || latest.latestWord || latest.proposalFolderUrl ? h('div', { style: 'margin-top:.7rem' }, h('label', {}, 'Latest proposal'),
+      latest.latestPdf || latest.latestWord || latest.proposalFolderUrl || (latest.gcs || []).length ? h('div', { style: 'margin-top:.7rem' }, h('label', {}, 'Latest proposal'),
         [['PDF', latest.latestPdf], ['Word', latest.latestWord]].filter((x) => x[1]).map(([l, f]) => h('div', { class: 'chat-plan' }, h('strong', {}, l), ' ', h('a', { href: f.href, target: '_blank', rel: 'noopener' }, f.name), h('span', { class: 'muted' }, f.at ? ` · ${when(f.at)}` : ''))),
-        latest.proposalFolderUrl ? h('div', { class: 'chat-plan' }, h('a', { href: latest.proposalFolderUrl, target: '_blank', rel: 'noopener' }, 'Open The Proposal Folder In SharePoint')) : '') : '', template));
+        latest.proposalFolderUrl ? h('div', { class: 'chat-plan' }, h('a', { href: latest.proposalFolderUrl, target: '_blank', rel: 'noopener' }, 'Open The Proposal Folder In SharePoint')) : '',
+        (latest.gcs || []).map((g) => h('div', { class: 'chat-plan' }, h('strong', {}, g.gc + ': '), g.latestPdf ? h('a', { href: g.latestPdf.href, target: '_blank', rel: 'noopener' }, g.latestPdf.name) : h('span', { class: 'muted' }, 'no proposal yet. Ask: "make the proposal for ' + g.gc + '".')))) : '', template));
   };
   const draw = (stick) => {
     list.replaceChildren(...(data.messages.length ? data.messages.map(bubble) : [h('div', { class: 'chat-empty' }, h('h2', {}, 'Estimate this job with the AI'),

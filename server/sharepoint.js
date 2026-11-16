@@ -102,6 +102,11 @@ export async function renameItem(itemId, name) {
   const d = await driveId(); const r = await graph('PATCH', `/drives/${d}/items/${itemId}`, { body: { name: cleanName(name) } });
   if (!r) throw new HttpError(404, 'That SharePoint folder no longer exists.'); return { id: r.id, name: r.name, webUrl: r.webUrl };
 }
+// Copies a file or a whole folder into another folder of the library. SharePoint does the copy itself, in the background.
+export async function copyItem(itemId, destFolderId) {
+  const d = await driveId(); const r = await graph('POST', `/drives/${d}/items/${encodeURIComponent(itemId)}/copy`, { body: { parentReference: { driveId: d, id: destFolderId } } });
+  if (!r) throw new HttpError(404, 'That SharePoint item no longer exists.'); return true;
+}
 // Gives a file its name (keeping the ending). Used to repair copies that were saved without one.
 export async function renameFile(itemId, filename) {
   const d = await driveId(); const r = await graph('PATCH', `/drives/${d}/items/${itemId}`, { body: { name: cleanFileName(filename) } });

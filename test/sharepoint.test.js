@@ -38,6 +38,7 @@ const graph = async (url, init = {}) => {
     if (m === 'GET') return res({ value: kids(id).map(item) });
     const b = JSON.parse(init.body); if (kids(id).some((n) => n.name.toLowerCase() === b.name.toLowerCase())) return res({ error: { code: 'nameAlreadyExists' } }, 409); return res(item(add(id, b.name)), 201); }
   if ((g = r.match(/^\/drives\/drv1\/items\/([^/]+):\/(.+):\/children$/)) && m === 'GET') { let cur = nodes.get(g[1]); for (const seg of g[2].split('/')) cur = cur && kids(cur.id).find((n) => n.name === seg); return cur ? res({ value: kids(cur.id).map(item) }) : res({}, 404); }
+  if ((g = r.match(/^\/drives\/drv1\/items\/([^/]+)\/copy$/)) && m === 'POST') { const src = nodes.get(g[1]), to = JSON.parse(init.body).parentReference.id; if (!src || !nodes.get(to)) return res({}, 404); if (kids(to).some((n) => n.name.toLowerCase() === src.name.toLowerCase())) return res({ error: { code: 'nameAlreadyExists' } }, 409); const dup = (n, parent) => { const c = add(parent, n.name, n.folder, { size: n.size, bytes: n.bytes }); for (const k of kids(n.id)) dup(k, c.id); }; dup(src, to); return res({}, 202); }
   if ((g = r.match(/^\/drives\/drv1\/items\/([^/]+)$/)) && m === 'PATCH') { const n = nodes.get(g[1]); if (!n) return res({}, 404); n.name = JSON.parse(init.body).name; return res(item(n)); }
   if ((g = r.match(/^\/drives\/drv1\/items\/([^/]+):\/(.+):\/content$/)) && m === 'PUT') { const n = add(g[1], g[2], false, { size: init.body.length, text: Buffer.from(init.body).toString('latin1').slice(0, 20), bytes: init.body.length < 2e6 ? Buffer.from(init.body) : null }); return res(item(n), 201); }
   // reading a file back: its details, then its bytes
@@ -192,21 +193,39 @@ test('Upload plans: a zip is streamed to disk, filed with the opportunity, copie
   const dl2 = await fetch(`${base}/api/opportunity-files/${(await opp(id)).files.find((x) => x.name === 'More plans.zip').id}`, { headers: { cookie: est } }); assert.equal(dl2.status, 200); assert.equal(dl2.headers.get('content-type'), 'application/zip');
 });
 
-test('a job bundled under several GCs keeps a folder under each GC, files go into all of them, and the GC that awards it gets the C folder', async () => {
+test('a job bundled under several GCs has a folder under each GC once it is Accepted; plans go into all of them, each GC keeps its own proposal, and the GC that awards it gets the C folder', async () => {
   const addrB = await addrOk('55 Orange Ave', 'Orlando', '32801');
   const a = await mk({ name: 'Bundle Store', gc: 'GC Alpha', addr: addrB, due: shift(today, 9) }), b = await mk({ name: 'Bundle Store - Orlando', gc: 'GC Beta', addr: await addrOk('55 Orange Ave', 'Orlando', '32801'), due: shift(today, 9) });
-  assert.equal((await call('POST', `/api/opportunities/${a}/status`, { status: 'Accepted' }, est)).status, 200); const code = (await opp(a)).proposalId, dir = `${code}_Bundle Store_Orlando`;
-  assert.ok(find('ByOther', YEAR, 'GC Alpha', dir)); assert.equal(find('ByOther', YEAR, 'GC Beta', dir), null);
-  assert.equal((await call('POST', '/api/opportunities/bundle', { primaryId: a, otherIds: [b], folderPerGc: true }, est)).status, 200);
-  assert.ok(find('ByOther', YEAR, 'GC Beta', dir, '02. Proposal'), 'the same folder now exists under the second GC');
-  assert.ok((await opp(a)).notes.some((n) => /SharePoint folder for GC Beta/.test(n.body)));
+  // bundled while still New: no folder anywhere; Accepting makes one under each GC
+  assert.equal((await call('POST', '/api/opportunities/bundle', { primaryId: a, otherIds: [b] }, est)).status, 200); assert.equal(find('ByOther', YEAR, 'GC Alpha'), null); assert.equal(find('ByOther', YEAR, 'GC Beta'), null);
+  assert.equal((await call('POST', `/api/opportunities/${a}/status`, { status: 'Accepted' }, est)).status, 200); const code = (await opp(a)).proposalId, dir = `${code}_Bundle Store_Orlando`, A = ['ByOther', YEAR, 'GC Alpha', dir], B = ['ByOther', YEAR, 'GC Beta', dir];
+  assert.ok(find(...A, '02. Proposal')); assert.ok(find(...B, '02. Proposal'), 'the same folder exists under the second GC'); assert.ok((await opp(a)).notes.some((n) => /SharePoint folder for GC Beta/.test(n.body)));
+  // plans: uploaded in the app they go into both folders; dropped into the main folder by hand they are copied across by the sync
+  assert.equal((await call('POST', `/api/opportunities/${a}/plans`, mkPdf(), est, 'BID SET.pdf')).status, 200);
+  for (let i = 0; i < 200 && !find(...B, '01. DL', 'BID SET.pdf'); i++) await new Promise((ok) => setTimeout(ok, 50));
+  assert.ok(find(...A, '01. DL', 'BID SET.pdf')); assert.ok(find(...B, '01. DL', 'BID SET.pdf'));
+  add(find(...A, '01. DL').id, 'Addendum 1.pdf', false, { size: 4 }); const specs = add(find(...A, '01. DL').id, 'Specs'); add(specs.id, 'Div 09.pdf', false, { size: 6 });
+  let v = await syncNow(a); assert.equal(v.sync.plansCopied, 2); assert.ok(find(...B, '01. DL', 'Addendum 1.pdf')); assert.ok(find(...B, '01. DL', 'Specs', 'Div 09.pdf')); assert.ok((await opp(a)).notes.some((n) => /Plans copied to the GC Beta folder: Addendum 1\.pdf, Specs/.test(n.body)));
+  // a proposal belongs to one GC: the lead's own goes into the main GC's folder only
   const up = await call('POST', `/api/opportunities/${a}/files?kind=Proposal`, mkPdf(), est, 'Bundle proposal.pdf'); assert.equal(up.status, 200);
-  assert.ok(find('ByOther', YEAR, 'GC Alpha', dir, '02. Proposal', 'Bundle proposal.pdf')); assert.ok(find('ByOther', YEAR, 'GC Beta', dir, '02. Proposal', 'Bundle proposal.pdf'));
-  assert.equal((await call('POST', `/api/opportunities/${a}/submissions`, { fileId: up.body.fileId, date: today, method: 'Email', prices: [{ tradeId: tDemo, amount: 5000 }] }, est)).status, 200);
-  const r = await call('POST', `/api/opportunities/${a}/status`, { status: 'Awarded', awardedGc: 'GC Beta' }, est); assert.equal(r.status, 200, JSON.stringify(r.body)); const c = 'C' + code.slice(1);
-  assert.ok(find('ByOther', YEAR, 'GC Beta', `${c}_Bundle Store_Orlando`), 'the winner\'s folder is the contract folder'); assert.equal(find('ByOther', YEAR, 'GC Beta', dir), null);
-  assert.ok(find('ByOther', YEAR, 'GC Alpha', dir), 'the other GC keeps its proposal folder'); assert.equal(find('ByOther', YEAR, 'GC Alpha', `${c}_Bundle Store_Orlando`), null);
+  assert.ok(find(...A, '02. Proposal', 'Bundle proposal.pdf')); assert.equal(find(...B, '02. Proposal', 'Bundle proposal.pdf'), null);
+  // one made for the other GC goes into that GC's folder only, and is listed under that GC
+  const upB = await call('POST', `/api/opportunities/${a}/files?kind=Proposal&gc=${encodeURIComponent('gc beta')}`, mkPdf(), est, 'Beta price.pdf'); assert.deepEqual([upB.status, upB.body.sharepoint], [200, true]);
+  assert.ok(find(...B, '02. Proposal', 'Beta price.pdf')); assert.equal(find(...A, '02. Proposal', 'Beta price.pdf'), null);
+  assert.equal((await call('POST', `/api/opportunities/${a}/files?kind=Proposal&gc=Nobody`, mkPdf(), est, 'x.pdf')).status, 400);
+  add(find(...B, '02. Proposal').id, 'Beta price edited.docx', false, { size: 3 });   // and its Word file, saved there by hand
+  v = await syncNow(a); assert.deepEqual([v.sync.pushed, v.sync.plansCopied, v.sync.failed], [0, 0, []]); assert.equal(find(...A, '02. Proposal', 'Beta price.pdf'), null);
+  assert.deepEqual([v.gc, v.latestPdf.name, v.total], ['GC Alpha', 'Bundle proposal.pdf', 1]);
+  assert.deepEqual(v.gcs.map((g) => [g.gc, g.latestPdf?.name, g.latestWord?.name, g.total]), [['GC Beta', 'Beta price.pdf', 'Beta price edited.docx', 2]]); assert.match(v.gcs[0].proposalFolderUrl, /GC%20Beta\/.*\/02\.%20Proposal$/);
+  folders.forgetLatestPdfs(); const lp = (await call('GET', `/api/opportunities/${a}/latest-pdfs`, null, est)).body; assert.equal(lp.perGc, true); assert.deepEqual(lp.pdfs.map((x) => [x.gc, x.name]), [['GC Alpha', 'Bundle proposal.pdf'], ['GC Beta', 'Beta price.pdf']]);
+  // Beta awards it: its folder is the contract folder; Alpha keeps its own proposal, the submitted one goes with the award
+  assert.equal((await call('POST', `/api/opportunities/${a}/submissions`, { fileId: upB.body.fileId, date: today, method: 'Email', prices: [{ tradeId: tDemo, amount: 5000 }] }, est)).status, 200);
+  const r = await call('POST', `/api/opportunities/${a}/status`, { status: 'Awarded', awardedGc: 'GC Beta' }, est); assert.equal(r.status, 200, JSON.stringify(r.body)); const c = 'C' + code.slice(1), W = ['ByOther', YEAR, 'GC Beta', `${c}_Bundle Store_Orlando`];
+  assert.ok(find(...W), 'the winner\'s folder is the contract folder'); assert.equal(find(...B), null);
+  assert.ok(find(...A), 'the other GC keeps its proposal folder'); assert.equal(find('ByOther', YEAR, 'GC Alpha', `${c}_Bundle Store_Orlando`), null);
   const p = (await call('GET', `/api/projects/${r.body.projectId}`, null, owner)).body.project; assert.equal(p.spPath, `ByOther/${YEAR}/GC Beta/${c}_Bundle Store_Orlando`);
+  v = await syncNow(a); assert.deepEqual([v.sync.pushed, v.sync.failed], [0, []]); assert.equal(find(...W, '02. Proposal', 'Bundle proposal.pdf'), null);   // Alpha's proposal is not copied into the winner's folder
+  assert.deepEqual([v.gc, v.latestPdf.name], ['GC Beta', 'Beta price.pdf']); assert.deepEqual(v.gcs.map((g) => [g.gc, g.latestPdf?.name]), [['GC Alpha', 'Bundle proposal.pdf']]);
 });
 
 test('plans that live in SharePoint are read from there for the estimating chat: uploaded ones the app no longer keeps, and ones dropped straight into 01. DL', async () => {

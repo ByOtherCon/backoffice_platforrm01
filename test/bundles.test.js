@@ -77,7 +77,7 @@ test('entering a job that is already on the list under another GC asks first, an
   const v = (await call('POST', '/api/address/verify', { street: '8001 S Orange Blossom Trl', city: 'Orlando', state: 'FL', zip: '32809', kind: 'project' }, est)).body;
   const r = await call('POST', '/api/opportunities', { name: 'New Balance - Orlando', client: 'Turner', gc: 'Turner Construction', addr: { ...v.address, token: v.token }, sourceType: 'PlanHub', estimatorId: estId, due: shift(today, 9), type: 'Retail', bundleWith: a, folderPerGc: false }, est);
   assert.equal(r.status, 200, JSON.stringify(r.body)); assert.equal(r.body.id, a); assert.equal(r.body.bundled, true);
-  const o = await get(a); assert.equal(o.gcs.length, 4); assert.equal(o.folderPerGc, false);
+  const o = await get(a); assert.equal(o.gcs.length, 4); assert.equal(o.folderPerGc, true);   // a bundled job always has a folder under each GC
   assert.equal((await call('POST', '/api/opportunities', { name: 'x', gc: 'y', bundleWith: 'nope' }, est)).status, 400);
 });
 
@@ -109,8 +109,3 @@ test('a job with one GC is awarded as before, with no GC question', async () => 
   assert.equal((await call('POST', `/api/opportunities/${id}/status`, { status: 'Awarded' }, est)).status, 200); assert.equal((await get(id)).gc, 'Solo GC');
 });
 
-test('the folder choice for a bundled job can be changed, and is written to the log', async () => {
-  const r = await call('PUT', `/api/opportunities/${a}/folder-policy`, { perGc: true }, est); assert.equal(r.status, 200);
-  const o = await get(a); assert.equal(o.folderPerGc, true); assert.match(o.notes.map((n) => n.body).join(' | '), /separate folder under each GC/);
-  assert.equal((await call('PUT', `/api/opportunities/${c}/folder-policy`, { perGc: true }, est)).status, 409);   // c is bundled: change it on the main lead
-});

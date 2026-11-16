@@ -234,7 +234,6 @@ route('GET', '/api/opportunities/bundles', async ({ user }) => { estRead(user); 
 route('GET', '/api/opportunities/similar', async ({ req, user }) => { estRead(user); return { leads: await bn.similarFor({ name: q1(req, 'name'), city: q1(req, 'city'), address: q1(req, 'address'), gc: q1(req, 'gc') }) }; });
 route('POST', '/api/opportunities/bundle', async ({ user, body }) => { const u = estWrite(user); if (!Array.isArray(body.otherIds)) throw bad('Choose the leads to join.'); return bn.mergeInto(u, uuid(body.primaryId), body.otherIds.map(uuid), { folderPerGc: body.folderPerGc === undefined ? undefined : !!body.folderPerGc }); });
 route('POST', '/api/opportunities/:id/unbundle', async ({ user, params }) => bn.unmerge(estWrite(user), uuid(params.id)));
-route('PUT', '/api/opportunities/:id/folder-policy', async ({ user, params, body }) => bn.setFolderPolicy(estWrite(user), uuid(params.id), !!body.perGc));
 route('GET', '/api/opportunities/:id', async ({ user, params }) => { estRead(user); const d = await es.get(uuid(params.id)); return d.projectId && auth.MANAGE.includes(user.role) ? { ...d, projectDocs: await es.projectDocsForLead(d.projectId) } : d; });
 // The same lead files and job-folder listing, seen from the project (people on the project do not need Estimating access).
 route('GET', '/api/projects/:id/lead-files', async ({ user, params }) => { await auth.requireProject(user, uuid(params.id)); return es.leadFilesForProject(params.id); });
@@ -294,7 +293,7 @@ route('GET', '/api/sharepoint/status', async ({ req, user }) => { auth.requireRo
 route('POST', '/api/opportunities/:id/status', async ({ user, params, body }) => es.transition(estWrite(user), uuid(params.id), body));
 route('POST', '/api/opportunities/:id/notes', async ({ user, params, body }) => { await es.addUserNote(estWrite(user), uuid(params.id), body.body); return { ok: true }; });
 route('POST', '/api/opportunities/:id/plans', async ({ req, user, params }) => es.uploadPlans(estWrite(user), uuid(params.id), req, fname(req)), { raw: true });
-route('POST', '/api/opportunities/:id/files', async ({ req, user, params }) => es.uploadFile(estWrite(user), uuid(params.id), await readRaw(req), fname(req), q1(req, 'kind') || 'Proposal'), { raw: true });
+route('POST', '/api/opportunities/:id/files', async ({ req, user, params }) => es.uploadFile(estWrite(user), uuid(params.id), await readRaw(req), fname(req), q1(req, 'kind') || 'Proposal', q1(req, 'gc') || null), { raw: true });
 route('DELETE', '/api/opportunities/:id/files/:fid', async ({ user, params }) => { await es.deleteFile(estWrite(user), uuid(params.id), uuid(params.fid)); return { ok: true }; });
 route('GET', '/api/opportunity-files/:fid', async ({ res, user, params }) => {
   estRead(user); const d = await es.fileForDownload(uuid(params.fid)); if (!fs.existsSync(d.file)) throw new HttpError(404, 'File is missing from storage.');

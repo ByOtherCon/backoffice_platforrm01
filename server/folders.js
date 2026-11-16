@@ -52,11 +52,12 @@ export async function ensureOpportunityFolder(id) {
   await ensureGcFolders(id).catch(() => {});   // a bundled job that keeps a folder under each GC gets them all
   return d;
 }
-// A job pitched to several GCs (bundled) can keep the same project folder under each GC, with everything duplicated. Nothing is created
-// unless that was chosen on the lead. The main folder is the one on the lead; the others are listed in opportunity_folders.
+// A job pitched to several GCs (bundled) has its project folder under every one of them once it has its P number (Accepted or Started).
+// The main folder is the one on the lead; the others are listed in opportunity_folders. Plans are copied into all of them. Proposals are
+// not: each GC keeps its own, because the price to each GC can differ.
 export async function ensureGcFolders(id) {
   if (!enabled()) return [];
-  const [o] = await q('SELECT * FROM opportunities WHERE id=$1', [id]); if (!o || !o.folder_per_gc || !o.sp_item_id) return [];
+  const [o] = await q('SELECT * FROM opportunities WHERE id=$1', [id]); if (!o || !o.sp_item_id || !o.proposal_id) return [];
   const want = projectFolderName({ code: o.proposal_id, name: o.name, city: o.city }), year = (o.accepted_date || todayEastern()).slice(0, 4), out = [];
   const have = new Map((await q('SELECT * FROM opportunity_folders WHERE opportunity_id=$1', [id])).map((r) => [R.gcKey(r.gc_name), r]));
   for (const gc of R.gcNames(o.gc_name, o.invitations).slice(1)) {
@@ -74,10 +75,15 @@ export async function ensureGcFolders(id) {
 }
 export async function tryEnsureGcFolders(id) {
   if (!enabled()) return null;
+  const [o] = await q('SELECT proposal_id FROM opportunities WHERE id=$1', [id]); if (!o?.proposal_id) return null;   // nothing is made before the lead is Accepted
   try { await tryEnsureOpportunityFolder(id); return await ensureGcFolders(id); } catch (e) { await note(id, `The folders under the other GCs were not created: ${oneLine(e)}`).catch(() => {}); return null; }
 }
 // The GC that awarded a bundled job becomes the lead's main GC: its folder takes the main place (and is the one renamed to C), the old main folder is kept as an extra.
 export async function promoteGc(id, winner, oldMain) {
+  // Proposals made for the GC that was the main one stay that GC's: they are marked with its name before the winner takes the main place.
+  // The proposal that was submitted (and its Word file) is the job's own and goes with the award.
+  await q(`UPDATE opportunity_files f SET meta = COALESCE(f.meta, '{}'::jsonb) || jsonb_build_object('gc', $2::text) WHERE f.opportunity_id=$1 AND f.kind IN ('Proposal','Submittal') AND (f.meta->>'gc') IS NULL AND f.submission_id IS NULL
+    AND NOT EXISTS (SELECT 1 FROM opportunity_files s WHERE s.opportunity_id=$1 AND s.submission_id IS NOT NULL AND s.version IS NOT NULL AND s.version = f.version)`, [id, oldMain]).catch(() => {});
   if (!enabled()) return null;
   try {
     let [o] = await q('SELECT * FROM opportunities WHERE id=$1', [id]); if (!o) return null;
@@ -99,15 +105,27 @@ export async function tryEnsureOpportunityFolder(id) {
   if (!enabled()) return null;
   try { return await ensureOpportunityFolder(id); } catch (e) { await q('UPDATE opportunities SET sp_error=$2 WHERE id=$1', [id, oneLine(e)]).catch(() => {}); await note(id, `SharePoint folder not created: ${oneLine(e)}`).catch(() => {}); return null; }
 }
-const extraFolders = (oppId) => q(`SELECT f.* FROM opportunity_folders f JOIN opportunities o ON o.id=f.opportunity_id WHERE f.opportunity_id=$1 AND o.folder_per_gc AND f.sp_item_id IS NOT NULL`, [oppId]);
+const extraFolders = (oppId) => q(`SELECT f.* FROM opportunity_folders f WHERE f.opportunity_id=$1 AND f.sp_item_id IS NOT NULL ORDER BY f.gc_name`, [oppId]);
+// The other GCs of a bundled job (everyone but the lead's main GC), each with its folder when it has one. A proposal made for one of
+// them carries that GC's name (meta.gc) and is that GC's: it is listed under it and saved in its folder, never in the main GC's.
+async function otherGcs(oppId, o) {
+  const extras = await extraFolders(oppId), main = R.gcKey(o.gc_name), out = [];
+  for (const g of [...R.gcNames(o.gc_name, o.invitations).slice(1), ...extras.map((x) => x.gc_name)]) { const key = R.gcKey(g); if (key === main || out.some((x) => x.key === key)) continue; out.push({ key, gc: g, folder: extras.find((x) => R.gcKey(x.gc_name) === key) ?? null }); }
+  return out;
+}
+const ownerOf = (others, gc) => (gc ? others.find((x) => x.key === R.gcKey(gc)) ?? null : null);
+const mirrored = (kind) => (SUBFOLDER[kind] || SUBFOLDER.Other) !== SUBFOLDER.Proposal;   // everything but proposals goes into every GC's folder
 // Saves a copy of a file into the right numbered folder of an opportunity.
-export async function pushOpportunityFile(oppId, { kind, filename, bytes, mime }) {
+export async function pushOpportunityFile(oppId, { kind, filename, bytes, mime, gc = null }) {
   pdfSeen.delete(oppId);
   if (!enabled()) return null;
   try {
-    const dir = await ensureOpportunityFolder(oppId); const sub = await SP.ensureFolder(dir.id, SUBFOLDER[kind] || SUBFOLDER.Other);
+    const dir = await ensureOpportunityFolder(oppId), extras = await extraFolders(oppId), [o] = await q('SELECT gc_name, invitations FROM opportunities WHERE id=$1', [oppId]);
+    const owner = mirrored(kind) ? null : ownerOf(await otherGcs(oppId, o), gc);   // a proposal for another GC goes into that GC's folder
+    if (owner && !owner.folder) return null;   // that GC has no folder yet (the lead is not Accepted): the sync copies it once it has
+    const sub = await SP.ensureFolder(owner?.folder.sp_item_id ?? dir.id, SUBFOLDER[kind] || SUBFOLDER.Other);
     const up = await SP.uploadFile(sub.id, filename, bytes, mime);
-    for (const x of await extraFolders(oppId)) { try { const xs = await SP.ensureFolder(x.sp_item_id, SUBFOLDER[kind] || SUBFOLDER.Other); await SP.uploadFile(xs.id, filename, bytes, mime); } catch (e) { await note(oppId, `Not copied to the ${x.gc_name} folder: ${oneLine(e)}`).catch(() => {}); } }
+    if (mirrored(kind)) for (const x of extras) { try { const xs = await SP.ensureFolder(x.sp_item_id, SUBFOLDER[kind] || SUBFOLDER.Other); await SP.uploadFile(xs.id, filename, bytes, mime); } catch (e) { await note(oppId, `Not copied to the ${x.gc_name} folder: ${oneLine(e)}`).catch(() => {}); } }
     return up;
   } catch (e) { await note(oppId, `Saved in the app, but not copied to SharePoint: ${oneLine(e)}`).catch(() => {}); return null; }
 }
@@ -115,7 +133,7 @@ export async function pushOpportunityFile(oppId, { kind, filename, bytes, mime }
 export async function pushOpportunityFilePath(oppId, { kind, filename, filePath, size, mime }) {
   if (!enabled()) return null;
   try { const dir = await ensureOpportunityFolder(oppId); const sub = await SP.ensureFolder(dir.id, SUBFOLDER[kind] || SUBFOLDER.Other); const up = await SP.uploadFromPath(sub.id, filename, filePath, size, mime);
-    for (const x of await extraFolders(oppId)) { try { const xs = await SP.ensureFolder(x.sp_item_id, SUBFOLDER[kind] || SUBFOLDER.Other); await SP.uploadFromPath(xs.id, filename, filePath, size, mime); } catch (e) { await note(oppId, `Not copied to the ${x.gc_name} folder: ${oneLine(e)}`).catch(() => {}); } }
+    if (mirrored(kind)) for (const x of await extraFolders(oppId)) { try { const xs = await SP.ensureFolder(x.sp_item_id, SUBFOLDER[kind] || SUBFOLDER.Other); await SP.uploadFromPath(xs.id, filename, filePath, size, mime); } catch (e) { await note(oppId, `Not copied to the ${x.gc_name} folder: ${oneLine(e)}`).catch(() => {}); } }
     return up; }
   catch (e) { await note(oppId, `Saved in the app, but not copied to SharePoint: ${oneLine(e)}`).catch(() => {}); return null; }
 }
@@ -203,17 +221,20 @@ export async function syncOpportunity(id, { force = false } = {}) {
   try {
     let dir; try { dir = await ensureOpportunityFolder(id); } catch (e) { await q('UPDATE opportunities SET sp_error=$2 WHERE id=$1', [id, oneLine(e)]).catch(() => {}); return { enabled: true, linked: false, pushed: 0, error: oneLine(e) }; }
     // every file the app holds is checked against the library by name, so one that is missing there (never copied, or removed) is copied
-    const rows = await q(`SELECT id, kind, name, storage_key, mime, size, sp_url, version FROM opportunity_files WHERE opportunity_id=$1 AND storage_key IS NOT NULL ORDER BY created_at`, [id]);
-    const [lead] = await q('SELECT name, gc_name, city, proposal_id, sp_path FROM opportunities WHERE id=$1', [id]);
+    const rows = await q(`SELECT id, kind, name, storage_key, mime, size, sp_url, version, meta FROM opportunity_files WHERE opportunity_id=$1 AND storage_key IS NOT NULL ORDER BY created_at`, [id]);
+    const extras = await extraFolders(id);
+    const [lead] = await q('SELECT name, gc_name, city, proposal_id, sp_path, invitations FROM opportunities WHERE id=$1', [id]), others = await otherGcs(id, lead);
     const taken = new Set((await q('SELECT lower(name) AS n FROM opportunity_files WHERE opportunity_id=$1', [id])).map((r) => r.n));
     const { UPLOAD_DIR } = await import('./documents.js'), subs = new Map(), done = [], fixed = [], shortened = [], failed = [];
     for (const f of rows) {
       const file = path.join(UPLOAD_DIR, path.basename(f.storage_key)); if (!fs.existsSync(file)) continue;
       try {
-        const subName = SUBFOLDER[f.kind] || SUBFOLDER.Other; if (!subs.has(subName)) { const sf = await SP.ensureFolder(dir.id, subName); subs.set(subName, { id: sf.id, kids: await SP.listFolder(sf.id) }); }
-        const sub = subs.get(subName), named = (n) => sub.kids.find((k) => !k.folder && !k.claimed && k.name.toLowerCase() === (cleanFileName(n) || n).toLowerCase());
+        const subName = SUBFOLDER[f.kind] || SUBFOLDER.Other, owner = mirrored(f.kind) ? null : ownerOf(others, f.meta?.gc); if (owner && !owner.folder) continue;   // another GC's proposal waits for that GC's folder
+        const home = owner?.folder ?? null, base = home?.sp_item_id ?? dir.id, key = base + '|' + subName;
+        if (!subs.has(key)) { const sf = await SP.ensureFolder(base, subName); subs.set(key, { id: sf.id, kids: await SP.listFolder(sf.id) }); }
+        const sub = subs.get(key), named = (n) => sub.kids.find((k) => !k.folder && !k.claimed && k.name.toLowerCase() === (cleanFileName(n) || n).toLowerCase());
         // a proposal the app wrote under a name too long for Word gets the shorter one (in the library and here), unless that name is in use
-        let target = fittedName(lead, f); if (target !== f.name && taken.has(target.toLowerCase())) target = f.name;
+        let target = fittedName(home ? { ...lead, gc_name: home.gc_name, sp_path: home.sp_path } : lead, f); if (target !== f.name && taken.has(target.toLowerCase())) target = f.name;
         const there = named(target), prev = !there && target !== f.name ? named(f.name) : null;
         // A copy saved before file names kept their ending: the name was cut at 90 characters, which dropped ".pdf" or ".docx" from a long
         // one. The same file (same size, the cut name, no ending) is given its real name instead of being copied a second time.
@@ -229,11 +250,22 @@ export async function syncOpportunity(id, { force = false } = {}) {
         if (how === 'copied') done.push(target); else if (how === 'fixed') fixed.push(target);
       } catch (e) { failed.push(`${f.name}: ${oneLine(e)}`); }
     }
+    // a bundled job: whatever is in the main folder's 01. DL (files and folders) and missing under another GC is copied there
+    let plansCopied = 0;
+    if (extras.length) {
+      let src = []; try { src = await SP.listPath(dir.id, SUBFOLDER.Plans); } catch { /* tried again next time */ }
+      for (const x of extras) {
+        try { const dst = await SP.ensureFolder(x.sp_item_id, SUBFOLDER.Plans), have = new Set((await SP.listFolder(dst.id)).map((k) => k.name.toLowerCase())), names = [];
+          for (const k of src) if (!have.has(k.name.toLowerCase())) { await SP.copyItem(k.id, dst.id); names.push(k.name); }
+          if (names.length) { plansCopied += names.length; await note(id, `Plans copied to the ${x.gc_name} folder: ${names.slice(0, 12).join(', ')}${names.length > 12 ? ` and ${names.length - 12} more` : ''}.`); }
+        } catch (e) { failed.push(`Plans for ${x.gc_name}: ${oneLine(e)}`); }
+      }
+    }
     if (done.length) await note(id, `Copied to the SharePoint folder as a backup: ${done.slice(0, 12).join(', ')}${done.length > 12 ? ` and ${done.length - 12} more` : ''}.`);
     if (fixed.length) await note(id, `Files in the SharePoint folder that had lost their ending (.pdf, .docx) were given their full name: ${fixed.slice(0, 12).join(', ')}.`);
     if (shortened.length) await note(id, `Proposal files were given a shorter name so Word can open and save them from File Explorer (the GC and the project are already in the folder path): ${shortened.slice(0, 12).join(', ')}.`);
     if (failed.length) await note(id, `Not copied to SharePoint: ${failed.slice(0, 5).join('; ')}`);
-    return { enabled: true, linked: true, pushed: done.length, fixed: fixed.length, shortened: shortened.length, failed, folderUrl: dir.webUrl };
+    return { enabled: true, linked: true, pushed: done.length, fixed: fixed.length, shortened: shortened.length, plansCopied, failed, folderUrl: dir.webUrl };
   } finally { syncing.delete(id); }
 }
 
@@ -241,15 +273,27 @@ export async function syncOpportunity(id, { force = false } = {}) {
 // edited there, a PDF saved from it). The same file in both places is one entry and opens from the library. Newest first; `latestPdf`
 // and `latestWord` are what the lead and the project show.
 export async function proposalView(oppId) {
-  const app = await q(`SELECT id, name, created_at, sp_url, (storage_key IS NOT NULL) AS local FROM opportunity_files WHERE opportunity_id=$1 AND kind='Proposal'`, [oppId]);
+  const [o] = await q('SELECT gc_name, invitations FROM opportunities WHERE id=$1', [oppId]); if (!o) throw new HttpError(404, 'Opportunity not found.');
+  const app = await q(`SELECT id, name, created_at, sp_url, meta, (storage_key IS NOT NULL) AS local FROM opportunity_files WHERE opportunity_id=$1 AND kind='Proposal'`, [oppId]);
   let lib = { enabled: enabled(), linked: false, proposals: [] }; try { lib = await folderFiles(oppId); } catch (e) { lib = { enabled: enabled(), linked: false, proposals: [], error: oneLine(e) }; }
-  const iso = (d) => (d ? new Date(d).toISOString() : null), by = new Map();
-  for (const f of app) by.set((cleanFileName(f.name) || f.name).toLowerCase(), { name: f.name, at: iso(f.created_at), href: f.local ? `/api/opportunity-files/${f.id}` : f.sp_url, where: 'App', fileId: f.id });
-  for (const s of lib.proposals || []) { const k = s.name.toLowerCase(), cur = by.get(k); by.set(k, { name: s.name, at: iso(s.modified) ?? cur?.at ?? null, href: s.webUrl || cur?.href, where: cur ? 'App and SharePoint' : 'SharePoint', fileId: cur?.fileId ?? null }); }
-  const all = [...by.values()].filter((x) => x.href).sort((a, b) => String(b.at || '').localeCompare(String(a.at || '')));
-  const latestPdf = all.find((x) => /\.pdf$/i.test(x.name)) ?? null, latestWord = all.find((x) => /\.docx?$/i.test(x.name)) ?? null;
+  const others = await otherGcs(oppId, o), iso = (d) => (d ? new Date(d).toISOString() : null), wordOrPdf = (n) => /\.(pdf|docx?)$/i.test(n) && !n.startsWith('~$');
+  // one GC's proposals: what the app holds for it and what is in its folder, the same file counted once (it opens from the library)
+  const merge = (mine, found) => {
+    const by = new Map();
+    for (const f of mine) by.set((cleanFileName(f.name) || f.name).toLowerCase(), { name: f.name, at: iso(f.created_at), href: f.local ? `/api/opportunity-files/${f.id}` : f.sp_url, where: 'App', fileId: f.id });
+    for (const s of found) { const k = s.name.toLowerCase(), cur = by.get(k); by.set(k, { name: s.name, at: iso(s.modified) ?? cur?.at ?? null, href: s.webUrl || cur?.href, where: cur ? 'App and SharePoint' : 'SharePoint', fileId: cur?.fileId ?? null }); }
+    const all = [...by.values()].filter((x) => x.href).sort((x, y) => String(y.at || '').localeCompare(String(x.at || '')));
+    const latestPdf = all.find((x) => /\.pdf$/i.test(x.name)) ?? null, latestWord = all.find((x) => /\.docx?$/i.test(x.name)) ?? null;
+    return { latestPdf, latestWord, total: all.length, earlier: all.filter((x) => x !== latestPdf && x !== latestWord) };
+  };
+  const gcs = [];
+  for (const x of others) {
+    let found = [], error = null; if (enabled() && x.folder) { try { found = (await SP.listPath(x.folder.sp_item_id, SUBFOLDER.Proposal)).filter((k) => !k.folder && wordOrPdf(k.name)); } catch (e) { error = oneLine(e); } }
+    const url = x.folder?.folder_url ?? null;
+    gcs.push({ gc: x.gc, ...merge(app.filter((f) => ownerOf(others, f.meta?.gc) === x), found), folderUrl: url, proposalFolderUrl: url ? url.replace(/\/$/, '') + '/' + encodeURIComponent(SUBFOLDER.Proposal) : null, error });
+  }
   return { enabled: !!lib.enabled, linked: !!lib.linked, error: lib.error ?? null, folderUrl: lib.folderUrl ?? null, proposalFolderUrl: lib.proposalFolderUrl ?? null, plansFolderUrl: lib.plansFolderUrl ?? null,
-    latestPdf, latestWord, total: all.length, earlier: all.filter((x) => x !== latestPdf && x !== latestWord), plans: lib.allPlans ?? [] };
+    gc: o.gc_name, ...merge(app.filter((f) => !ownerOf(others, f.meta?.gc)), lib.proposals || []), gcs, plans: lib.allPlans ?? [] };
 }
 
 // The latest proposal PDF of a lead, for the Submittal Tracker: one for the lead's GC (the newer of the app's own and what is in the
@@ -259,16 +303,17 @@ const pdfSeen = new Map();
 export const forgetLatestPdfs = (oppId) => (oppId ? pdfSeen.delete(oppId) : pdfSeen.clear());
 export async function latestProposalPdfs(oppId) {
   const hit = pdfSeen.get(oppId); if (hit && Date.now() - hit.at < 60000) return hit.value;
-  const [o] = await q('SELECT id, gc_name, sp_item_id FROM opportunities WHERE id=$1', [oppId]); if (!o) throw new HttpError(404, 'Opportunity not found.');
-  const [a] = await q(`SELECT id, name, created_at, sp_url, (storage_key IS NOT NULL) AS local FROM opportunity_files WHERE opportunity_id=$1 AND kind='Proposal' AND name ~* '\.pdf$' ORDER BY created_at DESC LIMIT 1`, [oppId]);
-  const iso = (d) => (d ? new Date(d).toISOString() : null), app = a && (a.local || a.sp_url) ? { name: a.name, at: iso(a.created_at), href: a.local ? `/api/opportunity-files/${a.id}` : a.sp_url, where: 'App' } : null;
+  const [o] = await q('SELECT id, gc_name, sp_item_id, invitations FROM opportunities WHERE id=$1', [oppId]); if (!o) throw new HttpError(404, 'Opportunity not found.');
+  const rows = await q(`SELECT id, name, created_at, sp_url, meta, (storage_key IS NOT NULL) AS local FROM opportunity_files WHERE opportunity_id=$1 AND kind='Proposal' AND name ~* '\\.pdf$' ORDER BY created_at DESC`, [oppId]);
+  const others = await otherGcs(oppId, o), iso = (d) => (d ? new Date(d).toISOString() : null);
+  const appFor = (x) => { const a = rows.find((f) => ownerOf(others, f.meta?.gc) === x && (f.local || f.sp_url)); return a ? { name: a.name, at: iso(a.created_at), href: a.local ? `/api/opportunity-files/${a.id}` : a.sp_url, where: 'App' } : null; };
   let error = null;
   const inFolder = async (itemId) => { if (!enabled() || !itemId) return null; try { const p = (await SP.listPath(itemId, SUBFOLDER.Proposal)).filter((k) => !k.folder && /\.pdf$/i.test(k.name) && !k.name.startsWith('~$')).sort((x, y) => String(y.modified || '').localeCompare(String(x.modified || '')))[0]; return p ? { name: p.name, at: iso(p.modified), href: p.webUrl, where: 'SharePoint' } : null; } catch (e) { error = oneLine(e); return null; } };
-  const lib = await inFolder(o.sp_item_id), same = lib && app && (cleanFileName(app.name) || app.name).toLowerCase() === lib.name.toLowerCase();
-  const main = !app ? lib : !lib ? app : same || String(lib.at) >= String(app.at) ? lib : app;   // the same file opens from the library; otherwise the newer one
-  const pdfs = main ? [{ gc: o.gc_name, ...main }] : [];
-  for (const x of await extraFolders(oppId)) { const p = await inFolder(x.sp_item_id); if (p) pdfs.push({ gc: x.gc_name, ...p }); }
-  const value = { pdfs, perGc: pdfs.length > 1, error };
+  // the same file opens from the library; otherwise the newer one
+  const pick = (app, lib) => (!app ? lib : !lib ? app : (cleanFileName(app.name) || app.name).toLowerCase() === lib.name.toLowerCase() || String(lib.at) >= String(app.at) ? lib : app);
+  const main = pick(appFor(null), await inFolder(o.sp_item_id)), pdfs = main ? [{ gc: o.gc_name, ...main }] : [];
+  for (const x of others) { const p = pick(appFor(x), x.folder ? await inFolder(x.folder.sp_item_id) : null); if (p) pdfs.push({ gc: x.gc, ...p }); }
+  const value = { pdfs, perGc: others.length > 0, error };
   if (!error) pdfSeen.set(oppId, { at: Date.now(), value });
   return value;
 }

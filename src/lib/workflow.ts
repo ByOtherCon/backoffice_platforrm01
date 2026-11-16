@@ -6,8 +6,8 @@ export type Status = (typeof STATUSES)[number];
 export const LABEL: Record<string, string> = { 'No Communication': 'No Communication From GC', Awarded: 'Awarded — Create Project in JC' };
 export const statusName = (s: string) => (s === 'No Communication' ? 'No Communication From GC' : s);
 
-export const SOURCES = ['Building Connected', 'PlanHub', 'Website', 'In-Person'] as const;
-export const PROJECT_TYPES = ['Retail', 'Restaurant', 'Office / Medical / Other'] as const;
+export const SOURCES = ['Building Connected', 'PlanHub', 'Website', 'In-Person', 'Referral'] as const;
+export const PROJECT_TYPES = ['Retail', 'Restaurant', 'Office / Medical / Other', 'Other'] as const;   // the third reads "Medical / Office" on screen
 export const METHODS = ['Email', 'via BuildingConnected', 'PlanHub', 'Other'] as const;
 
 // Pre-selected reasons, so results can be reported on. Notes stay open text.

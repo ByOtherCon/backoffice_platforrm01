@@ -46,6 +46,56 @@ export async function callClaude({ userId, kind, label = null, system, bytes, mi
   return call.input;
 }
 
+// ------------------------------------------------------------------ conversations (the estimating chat)
+const baseHeaders = () => ({ 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', ...(process.env.ANTHROPIC_WORKSPACE_ID ? { 'anthropic-workspace-id': process.env.ANTHROPIC_WORKSPACE_ID } : {}) });
+const said = async (res) => res.json().then((j) => String(j?.error?.message || j?.error?.type || '').replace(/\s+/g, ' ').slice(0, 300)).catch(() => '');
+export const chatModel = () => process.env.ANTHROPIC_ESTIMATE_MODEL || MODEL();
+// Sends a file to the AI service once, so a long conversation can keep referring to it instead of sending it again every time.
+export async function uploadAiFile(filePath, name, mime = 'application/pdf') {
+  if (!aiConnected()) throw new HttpError(503, 'AI is not connected yet. Connect the Anthropic API key on the server.');
+  const fsm = await import('node:fs'), form = new FormData(); form.append('file', await fsm.openAsBlob(filePath, { type: mime }), String(name || 'plans.pdf').slice(0, 200));
+  const res = await fetchImpl('https://api.anthropic.com/v1/files', { method: 'POST', headers: baseHeaders(), body: form, signal: AbortSignal.timeout(20 * 60000) });
+  if (!res.ok) { const why = await said(res); throw new HttpError(502, `The AI service would not take ${name} (${res.status}${why ? ': ' + why : ''}).`); }
+  const j = await res.json(); if (!j?.id) throw new HttpError(502, `The AI service did not confirm ${name}.`); return j.id;
+}
+// Models that can hand a declined request to another model inside the same call (asked for by default, dropped if the service refuses the option).
+const WITH_FALLBACK = new Set(['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-opus-5', 'claude-fable-5-2', 'claude-fable-5-1']);
+// One answer in a conversation, streamed. `onText` gets each piece of text as it arrives. Returns the full content blocks exactly as the
+// service sent them (they go back unchanged on the next request), why it stopped, and what it used.
+export async function streamClaude({ userId, kind, label = null, system, messages, tools = [], maxTokens = 32000, onText = () => {} }) {
+  if (!aiConnected()) throw new HttpError(503, 'AI is not connected yet. Connect the Anthropic API key on the server.');
+  const u = await usageThisMonth(); if (u.tokens >= u.cap) throw new HttpError(429, 'The monthly AI usage cap has been reached. A Super Admin can raise it in Settings.');
+  const model = chatModel(), body = { model, max_tokens: maxTokens, stream: true, system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }], messages, ...(tools.length ? { tools } : {}) };
+  const ctl = new AbortController(); let idle; const alive = () => { clearTimeout(idle); idle = setTimeout(() => ctl.abort(), 5 * 60000); }; alive();
+  const send = (fallback) => fetchImpl('https://api.anthropic.com/v1/messages', { method: 'POST', signal: ctl.signal,
+    headers: { ...baseHeaders(), 'content-type': 'application/json', ...(fallback ? { 'anthropic-beta': 'server-side-fallback-2026-07-01' } : {}) }, body: JSON.stringify(fallback ? { ...body, fallbacks: 'default' } : body) });
+  const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }; const blocks = []; let stop = null, served = model;
+  try {
+    let res = await send(WITH_FALLBACK.has(model));
+    if (res.status === 400 && WITH_FALLBACK.has(model)) { const why = await said(res); if (/fallback|beta/i.test(why)) res = await send(false); else throw new HttpError(502, `The AI service refused the request (400${why ? ': ' + why : ''}).`); }
+    if (!res.ok) { const why = await said(res); throw new HttpError(res.status === 429 || res.status === 529 ? 503 : 502, res.status === 429 || res.status === 529 ? `The AI service is busy right now (${res.status}). Wait a minute and send it again.` : `The AI service refused the request (${res.status}${why ? ': ' + why : ''}).`); }
+    const take = (ev) => {
+      if (ev.type === 'message_start') { const g = ev.message?.usage || {}; usage.input = g.input_tokens ?? 0; usage.cacheRead = g.cache_read_input_tokens ?? 0; usage.cacheWrite = g.cache_creation_input_tokens ?? 0; usage.output = g.output_tokens ?? 0; served = ev.message?.model || served; }
+      else if (ev.type === 'content_block_start') { blocks[ev.index] = { ...ev.content_block }; if (ev.content_block?.type === 'tool_use') blocks[ev.index]._json = ''; }
+      else if (ev.type === 'content_block_delta') { const b = blocks[ev.index], d = ev.delta || {}; if (!b) return;
+        if (d.type === 'text_delta') { b.text = (b.text || '') + d.text; onText(d.text); } else if (d.type === 'input_json_delta') b._json += d.partial_json || '';
+        else if (d.type === 'thinking_delta') b.thinking = (b.thinking || '') + d.thinking; else if (d.type === 'signature_delta') b.signature = (b.signature || '') + d.signature;
+        else if (d.type === 'citations_delta') (b.citations ||= []).push(d.citation); }
+      else if (ev.type === 'content_block_stop') { const b = blocks[ev.index]; if (b?.type === 'tool_use') { try { b.input = b._json ? JSON.parse(b._json) : (b.input ?? {}); } catch { b.input = {}; b._invalid = true; } delete b._json; } }
+      else if (ev.type === 'message_delta') { stop = ev.delta?.stop_reason ?? stop; if (ev.usage?.output_tokens != null) usage.output = ev.usage.output_tokens; }
+      else if (ev.type === 'error') throw new HttpError(502, `The AI service stopped part way (${String(ev.error?.message || ev.error?.type || 'error').slice(0, 200)}). Send it again.`);
+    };
+    const dec = new TextDecoder(); let buf = '';
+    const lines = (text) => { buf += text; let i; while ((i = buf.indexOf('\n')) >= 0) { const line = buf.slice(0, i).replace(/\r$/, ''); buf = buf.slice(i + 1); if (line.startsWith('data:')) { const raw = line.slice(5).trim(); if (raw && raw !== '[DONE]') { let ev = null; try { ev = JSON.parse(raw); } catch { /* a partial line never gets here */ } if (ev) take(ev); } } } };
+    if (res.body && typeof res.body.getReader === 'function') { const rd = res.body.getReader(); for (;;) { const { done, value } = await rd.read(); if (done) break; alive(); lines(dec.decode(value, { stream: true })); } lines('\n'); }
+    else lines((await res.text()) + '\n');
+  } catch (e) { if (e?.name === 'AbortError') throw new HttpError(504, 'The AI service went quiet for too long. Send it again.'); throw e; }
+  finally { clearTimeout(idle);
+    await q('INSERT INTO ai_usage(user_id,kind,label,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)', [userId, kind, label ? String(label).slice(0, 200) : null, served, (usage.input + usage.cacheWrite) || null, usage.output || null, usage.cacheRead || null, usage.cacheWrite || null]).catch(() => {}); }
+  const content = blocks.filter(Boolean).map((b) => { const { _invalid, ...rest } = b; return rest; });
+  return { content, invalidTools: blocks.filter((b) => b?._invalid).map((b) => b.id), stopReason: stop, usage, model: served };
+}
+
 const RECEIPT_TOOL = { name: 'record_receipt', description: 'Record what is printed on a purchase receipt or supplier invoice.', input_schema: { type: 'object', additionalProperties: false,
   required: ['merchant', 'number', 'date', 'subtotal', 'tax', 'total', 'paid', 'jobHint', 'lines', 'warnings'],
   properties: {

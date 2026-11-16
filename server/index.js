@@ -38,6 +38,7 @@ import * as qbo from './quickbooks.js';
 import * as qbr from './qbReset.js';
 import * as vr from './vendorRead.js';
 import * as bn from './bundles.js';
+import * as ec from './estimateChat.js';
 import * as qbi from './qbImport.js';
 import * as acc from './access.js';
 import * as gl from './googleLogin.js';
@@ -326,6 +327,12 @@ route('DELETE', '/api/invoice-schedule/:id', async ({ user, params }) => { manag
 route('GET', '/api/projects/:id/origin', async ({ user, params }) => { await auth.requireProject(user, uuid(params.id)); return es.projectOrigin(params.id); });
 route('POST', '/api/opportunities/:id/takeoff', async ({ req, user, params }) => tk.runTakeoff(estWrite(user), uuid(params.id), await readRaw(req), fname(req)), { raw: true });
 route('GET', '/api/opportunities/:id/takeoff', async ({ user, params }) => { estRead(user); return tk.getTakeoff(uuid(params.id)); });
+// Estimating with AI: the conversation on a lead. Sending a message returns at once; the answer is written in the background and read by asking again.
+route('GET', '/api/opportunities/:id/estimate-chat', async ({ req, user, params }) => { const c = q1(req, 'chat'); return ec.getChat(estRead(user), uuid(params.id), c ? uuid(c) : null); });
+route('POST', '/api/opportunities/:id/estimate-chat', async ({ user, params, body }) => ec.postMessage(estWrite(user), uuid(params.id), { text: body.text, chatId: body.chatId ? uuid(body.chatId) : null, newChat: !!body.newChat }));
+route('GET', '/api/opportunity-files/:fid/prices', async ({ user, params }) => { estRead(user); return ec.proposalPrices(uuid(params.fid)); });
+route('GET', '/api/estimating/instructions', async ({ user }) => { estRead(user); return ec.getInstructions(); });
+route('PUT', '/api/estimating/instructions', async ({ user, body }) => { auth.requireRole(user, auth.SUPER); return ec.saveInstructions(user, body); });
 route('POST', '/api/takeoff/:id/items', async ({ user, params, body }) => tk.addItem(uuid(params.id), (estWrite(user), body)));
 route('PUT', '/api/takeoff/items/:id', async ({ user, params, body }) => { estWrite(user); await tk.updateItem(uuid(params.id), body); return { ok: true }; });
 route('DELETE', '/api/takeoff/items/:id', async ({ user, params }) => { estWrite(user); await tk.deleteItem(uuid(params.id)); return { ok: true }; });

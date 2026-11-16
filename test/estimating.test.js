@@ -53,7 +53,7 @@ test('setup and who may do what', async () => {
   assert.equal((await call('POST', '/api/opportunities', await form(), asst)).status, 403);                    // read-only for the assistant
   assert.equal((await call('GET', '/api/opportunities?tab=bids', null, asst)).status, 200); assert.equal((await call('GET', '/api/opportunities?tab=bids', null, pm)).status, 403); assert.equal((await call('GET', '/api/opportunities?tab=bids')).status, 401);
   assert.deepEqual((await call('GET', '/api/team/estimators', null, est)).body.map((u) => u.email), ['est@x.net', 'owner@x.net']);
-  const o = (await call('GET', '/api/estimating/options', null, est)).body; assert.deepEqual(o.sources, ['Building Connected', 'PlanHub', 'Website', 'In-Person']); assert.deepEqual(o.projectTypes, ['Retail', 'Restaurant', 'Office / Medical / Other']); assert.equal(o.rules.declineNewDays, 2);
+  const o = (await call('GET', '/api/estimating/options', null, est)).body; assert.deepEqual(o.sources, ['Building Connected', 'PlanHub', 'Website', 'In-Person', 'Referral']); assert.deepEqual(o.projectTypes, ['Retail', 'Restaurant', 'Office / Medical / Other', 'Other']); assert.equal(o.rules.declineNewDays, 2);
 });
 
 test('addresses are checked field by field, matched to a real address, and a green check cannot be faked', async () => {

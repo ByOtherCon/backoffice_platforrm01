@@ -36,7 +36,10 @@ const graph = async (url, init = {}) => {
     if (m === 'GET') return res({ value: kids(id).map(item) });
     const b = JSON.parse(init.body); if (kids(id).some((n) => n.name.toLowerCase() === b.name.toLowerCase())) return res({ error: { code: 'nameAlreadyExists' } }, 409); return res(item(add(id, b.name)), 201); }
   if ((g = r.match(/^\/drives\/drv1\/items\/([^/]+)$/)) && m === 'PATCH') { const n = nodes.get(g[1]); if (!n) return res({}, 404); n.name = JSON.parse(init.body).name; return res(item(n)); }
-  if ((g = r.match(/^\/drives\/drv1\/items\/([^/]+):\/(.+):\/content$/)) && m === 'PUT') { const n = add(g[1], g[2], false, { size: init.body.length, text: Buffer.from(init.body).toString('latin1').slice(0, 20) }); return res(item(n), 201); }
+  if ((g = r.match(/^\/drives\/drv1\/items\/([^/]+):\/(.+):\/content$/)) && m === 'PUT') { const n = add(g[1], g[2], false, { size: init.body.length, text: Buffer.from(init.body).toString('latin1').slice(0, 20), bytes: init.body.length < 2e6 ? Buffer.from(init.body) : null }); return res(item(n), 201); }
+  // reading a file back: its details, then its bytes
+  if ((g = r.match(/^\/drives\/drv1\/items\/([^/]+)\/content$/)) && m === 'GET') { const n = nodes.get(g[1]); if (!n?.bytes) return res({}, 404); return { ok: true, status: 200, headers: { get: () => null }, arrayBuffer: async () => n.bytes.buffer.slice(n.bytes.byteOffset, n.bytes.byteOffset + n.bytes.length) }; }
+  if ((g = r.match(/^\/drives\/drv1\/items\/([^/]+)$/)) && m === 'GET') { const n = nodes.get(g[1]); if (!n) return res({}, 404); return res({ id: n.id, name: n.name, size: n.size, ...(n.folder ? { folder: {} } : { file: {} }) }); }
   if ((g = r.match(/^\/drives\/drv1\/items\/([^/]+):\/(.+):\/createUploadSession$/))) { const key = '/' + (++seq); uploads.parent = { ...(uploads.parent || {}), [key]: g[1] }; uploads.name = { ...(uploads.name || {}), [key]: g[2] }; return res({ uploadUrl: 'https://upload.fake' + key }); }
   return res({ error: { code: 'notFound' } }, 404);
 };
@@ -201,4 +204,19 @@ test('a job bundled under several GCs keeps a folder under each GC, files go int
   assert.ok(find('ByOther', YEAR, 'GC Beta', `${c}_Bundle Store_Orlando`), 'the winner\'s folder is the contract folder'); assert.equal(find('ByOther', YEAR, 'GC Beta', dir), null);
   assert.ok(find('ByOther', YEAR, 'GC Alpha', dir), 'the other GC keeps its proposal folder'); assert.equal(find('ByOther', YEAR, 'GC Alpha', `${c}_Bundle Store_Orlando`), null);
   const p = (await call('GET', `/api/projects/${r.body.projectId}`, null, owner)).body.project; assert.equal(p.spPath, `ByOther/${YEAR}/GC Beta/${c}_Bundle Store_Orlando`);
+});
+
+test('plans that live in SharePoint are read from there for the estimating chat: uploaded ones the app no longer keeps, and ones dropped straight into 01. DL', async () => {
+  const plans = await import('../server/plans.js'); const sent = [];
+  ai.setFetch(async (url, init) => { if (String(url).endsWith('/v1/files')) { const f = init.body.get('file'); sent.push([f.name, Buffer.from(await f.arrayBuffer()).toString()]); return { ok: true, status: 200, json: async () => ({ id: 'file_sp_' + sent.length }) }; } return { ok: false, status: 500, json: async () => ({}) }; });
+  process.env.ANTHROPIC_API_KEY = 'test-key';
+  const id = await mk({ name: 'SP plans job', gc: 'SP Plans GC', addr: await addrOk('12 Plan St', 'Orlando', '32801') }); await call('POST', `/api/opportunities/${id}/status`, { status: 'Accepted' }, est);
+  const body = Buffer.from('%PDF-1.4\n% bid set from the app\n%%EOF'); assert.equal((await call('POST', `/api/opportunities/${id}/plans`, body, est, 'BID SET.pdf')).status, 200);
+  for (let i = 0; i < 200 && (await q('SELECT storage_key FROM opportunity_files WHERE opportunity_id=$1', [id]))[0].storage_key !== null; i++) await new Promise((ok) => setTimeout(ok, 50));
+  assert.equal((await q('SELECT storage_key FROM opportunity_files WHERE opportunity_id=$1', [id]))[0].storage_key, null);   // the app's own copy is gone; SharePoint has it
+  const o = await opp(id), dl = find('ByOther', YEAR, 'SP Plans GC', `${o.proposalId}_SP plans job_Orlando`, '01. DL'); const extra = Buffer.from('%PDF-1.4\n% dropped into the folder by hand\n%%EOF'); add(dl.id, 'Addendum 2.pdf', false, { size: extra.length, bytes: extra });
+  const src = await plans.planSources(id); assert.deepEqual(src.map((x) => [x.name, x.where, !!x.spId]), [['BID SET.pdf', 'SharePoint', true], ['Addendum 2.pdf', 'SharePoint', true]]);
+  const prep = await plans.preparePlans(id); assert.deepEqual(prep.problems, []); assert.deepEqual(prep.docs.map((d) => [d.name, d.fileId]), [['BID SET.pdf', 'file_sp_1'], ['Addendum 2.pdf', 'file_sp_2']]);
+  assert.deepEqual(sent.map((x) => x[0]), ['BID SET.pdf', 'Addendum 2.pdf']); assert.match(sent[0][1], /bid set from the app/); assert.match(sent[1][1], /dropped into the folder by hand/);
+  const again = await plans.preparePlans(id); assert.equal(again.docs.length, 2); assert.equal(sent.length, 2);   // nothing is fetched or sent a second time
 });

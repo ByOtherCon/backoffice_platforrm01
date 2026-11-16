@@ -152,6 +152,21 @@ export async function downloadFile(itemId) {
     return { name: item.name, bytes: Buffer.from(await r.arrayBuffer()) };
   }
 }
+// A large file (a plan set) straight to disk, without holding it in memory. Returns its name and size.
+export async function downloadToFile(itemId, destPath, maxBytes = 700 * 1024 * 1024) {
+  const d = await driveId(); const item = await graph('GET', `/drives/${d}/items/${encodeURIComponent(itemId)}?$select=id,name,size,file,folder`);
+  if (!item) throw new HttpError(404, 'That SharePoint file was not found.'); if (item.folder || !item.file) throw new HttpError(400, 'Choose a file, not a folder.');
+  if (item.size > maxBytes) throw new HttpError(413, `${item.name} is too large to read from SharePoint (${Math.round(item.size / 1048576)} MB).`);
+  const fsm = await import('node:fs'), { pipeline } = await import('node:stream/promises'), { Readable } = await import('node:stream');
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const r = await gfetch(`https://graph.microsoft.com/v1.0/drives/${d}/items/${encodeURIComponent(itemId)}/content`, { headers: { authorization: 'Bearer ' + (await token()) }, redirect: 'follow' });
+    if (r.status === 401 && attempt === 0) { tok = { value: null, exp: 0 }; continue; }
+    if (!r.ok) throw new HttpError(502, `SharePoint would not hand over that file (${r.status}).`);
+    if (r.body && typeof r.body.getReader === 'function') await pipeline(Readable.fromWeb(r.body), fsm.createWriteStream(destPath, { mode: 0o600 }));
+    else await fsm.promises.writeFile(destPath, Buffer.from(await r.arrayBuffer()), { mode: 0o600 });
+    return { name: item.name, size: item.size };
+  }
+}
 export async function status() {
   const s = settings(); if (!configured()) return { configured: false, connected: false, needs: ['MS_TENANT_ID', 'MS_CLIENT_ID', 'MS_CLIENT_SECRET', 'MS_SITE_URL'].filter((k) => !process.env[k]) };
   try { resetCache(); const d = await driveId(); const root = await graph('GET', `/drives/${d}/root?$select=webUrl,name`); return { configured: true, connected: true, siteUrl: s.siteUrl, library: s.library, root: s.root.join('/'), webUrl: root?.webUrl ?? null }; }

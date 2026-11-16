@@ -280,3 +280,30 @@ table tr.grp th{text-align:center;border-bottom:1px solid var(--line);padding-bo
   main>.row.spread>.row{justify-content:space-between}
   main>.row.spread>.row>button.primary{flex:1 1 100%}
 }
+
+/* ---- Estimate With AI: the conversation page. Messages flow down the page; the box to type in stays at the bottom of the window. */
+.chat-page{max-width:980px;margin:0 auto}
+.chat-side{padding:.8rem 1rem;margin:.8rem 0}
+.chat-plan{font-size:14px;padding:.15rem 0}
+.chat-list{display:flex;flex-direction:column;gap:1rem;margin:1rem 0 1.2rem;min-height:30vh}
+.chat-msg{display:flex;flex-direction:column;max-width:100%}
+.chat-msg.me{align-items:flex-end}
+.chat-who{font-size:12px;color:var(--muted,#6b7280);margin:0 .3rem .2rem}
+.chat-bubble{background:#fff;border:1px solid var(--line);border-radius:14px;padding:.75rem 1rem;max-width:100%;overflow-wrap:anywhere;line-height:1.5}
+.chat-msg.me .chat-bubble{background:var(--navy);color:#fff;border-color:var(--navy);max-width:80%;white-space:normal}
+.chat-msg.ai .chat-bubble{width:100%}
+.chat-bubble p{margin:.35rem 0}.chat-bubble h2,.chat-bubble h3,.chat-bubble h4,.chat-bubble h5{margin:.8rem 0 .3rem;font-size:1.02rem}
+.chat-bubble ul,.chat-bubble ol{margin:.3rem 0 .3rem 1.2rem;padding:0}.chat-bubble li{margin:.15rem 0}
+.chat-bubble table{font-size:14px;margin:.4rem 0}.chat-bubble pre{background:#f4f5f8;border-radius:8px;padding:.6rem .8rem;overflow:auto;font-size:13px}
+.chat-bubble strong{font-weight:700}.chat-bubble th.n,.chat-bubble td.n{text-align:right}
+.chat-bubble code{background:#f4f5f8;border-radius:4px;padding:0 .25rem;font-size:.92em}
+.chat-files{display:flex;flex-wrap:wrap;gap:.5rem;margin-top:.6rem}
+.chat-file{display:inline-block;border:1px solid var(--navy);border-radius:10px;padding:.4rem .7rem;font-size:14px;text-decoration:none;background:#f6f7fb}
+.chat-dots{display:flex;gap:5px;padding:.3rem 0}.chat-dots i{width:7px;height:7px;border-radius:50%;background:var(--navy);opacity:.35;animation:chatdot 1.2s infinite}
+.chat-dots i:nth-child(2){animation-delay:.2s}.chat-dots i:nth-child(3){animation-delay:.4s}
+@keyframes chatdot{0%,80%,100%{opacity:.25}40%{opacity:1}}
+.chat-empty{text-align:center;padding:2rem 1rem;border:1px dashed var(--line);border-radius:14px;background:#fff}
+.chat-starters{display:flex;flex-direction:column;gap:.5rem;align-items:center;margin-top:.8rem}.chat-starters button{white-space:normal;text-align:left;max-width:640px}
+.chat-compose{position:sticky;bottom:.6rem;display:flex;gap:.6rem;align-items:flex-end;background:#fff;border:1px solid var(--line);border-radius:14px;padding:.6rem;box-shadow:0 8px 24px rgba(20,22,40,.10);z-index:5}
+.chat-compose textarea{flex:1;border:0;outline:0;resize:vertical;min-height:2.6rem;max-height:40vh;font:inherit;padding:.3rem .4rem;background:transparent}
+@media (max-width:700px){.chat-compose{bottom:calc(66px + env(safe-area-inset-bottom))}.chat-msg.me .chat-bubble{max-width:92%}}

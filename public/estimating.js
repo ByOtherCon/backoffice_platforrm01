@@ -2,8 +2,9 @@
 // that every tracker uses. Everything is inserted with textContent (never innerHTML).
 import { h, usd, notice, guard, oneAtATime, folderError, modal, formModal, field, todayStr, num } from '/ui.js';
 import { addressBlock as makeAddressBlock } from '/address.js';
+import * as estchat from '/estchat.js';
 let C;
-export const init = (c) => { C = c; };
+export const init = (c) => { C = c; estchat.init(c); };
 const api = (...a) => C.api(...a);
 const render = () => C.render();
 const uploadFile = (...a) => C.uploadFile(...a);
@@ -179,7 +180,12 @@ async function submitModal(o) {
     redraw();
   });
   redraw();
-  formModal(`Submit proposal · ${o.name}`, [summary(o), h('div', { class: 'wide' }, h('label', {}, lbl('Proposal PDF', true)), file, info), h('div', { class: 'wide' }, h('label', {}, lbl('Trades and amounts', true)), table, h('div', { class: 'row', style: 'justify-content:space-between;margin-top:.4rem' }, h('span', { class: 'muted' }, 'Proposal total'), total)),
+  // a proposal written in the estimating chat is already saved on the lead: pick it instead of uploading it again, and its prices fill in
+  const savedList = (o.files || []).filter((x) => x.kind === 'Proposal' && x.version && /\.pdf$/i.test(x.name) && !x.used).sort((a, b) => b.version - a.version);
+  const saved = h('select', {}, h('option', { value: '' }, 'Choose a saved proposal…'), savedList.map((x) => h('option', { value: x.id }, `Version ${x.version} · ${x.name}`)));
+  saved.onchange = guard(info, async () => { if (!saved.value) return; const r = await api('GET', `/opportunity-files/${saved.value}/prices`); fileId = r.fileId; file.value = '';
+    if (r.trades.length) rows = r.trades.map((t) => ({ tradeId: t.tradeId || '', amount: t.amount, hint: t.trade })); notice(info, `Using ${r.name}. ${r.trades.length ? 'Its prices were filled in below; check every amount before saving.' : 'It has no prices yet; enter the trades and amounts below.'}`, 'ok'); redraw(); });
+  formModal(`Submit proposal · ${o.name}`, [summary(o), h('div', { class: 'wide' }, h('label', {}, lbl('Proposal PDF', true)), file, savedList.length ? h('div', { style: 'margin-top:.4rem' }, h('span', { class: 'muted', style: 'font-size:13px' }, 'Or one written in the estimating chat: '), saved) : '', info), h('div', { class: 'wide' }, h('label', {}, lbl('Trades and amounts', true)), table, h('div', { class: 'row', style: 'justify-content:space-between;margin-top:.4rem' }, h('span', { class: 'muted' }, 'Proposal total'), total)),
     field(lbl('Date submitted', true), f.date), field(lbl('How it was sent', true), f.method), field('Known project start (optional)', f.start), field('Note', f.note, 'wide')],
   async () => {
     if (!fileId) throw new Error('Upload the proposal PDF first.');
@@ -200,6 +206,7 @@ function statusSelect(o, w) {
 // ---------------------------------------------------------------- the page
 const TABS = [['bids', 'Bid Opportunities'], ['proposals', 'Proposal Tracker'], ['submittals', 'Submittal Tracker'], ['followups', 'Follow Ups'], ['insights', 'Insights']];
 export async function estimatingView(arg, arg2) {
+  if (arg && arg2 === 'chat') return estchat.estimateChatView(arg, canEstimate());   // Estimate With AI: its own page for one lead
   const tab = TABS.some(([t]) => t === arg) ? arg : 'bids', detailId = arg && !TABS.some(([t]) => t === arg) ? arg : null, err = h('div'), w = canEstimate();
   const search = state.estSearch || '';
   const sbox = h('input', { placeholder: 'Find a project, GC, or proposal #', value: search, onchange: (e) => { state.estSearch = e.target.value; render(); } });
@@ -363,7 +370,7 @@ async function opportunityDetail(id, err, w, editing) {
     h('div', { style: 'margin-top:.8rem' }, h('label', {}, 'Shared folder'), folderButtons(o, w, 'opportunity', OPTS?.sharepoint !== false)),
     h('div', { style: 'margin-top:.8rem' }, filesPanel(o, w, err)),
     h('div', { style: 'margin-top:.8rem' }, notesPanel(o, w)),
-    o.acceptedDate && !o.projectId ? await takeoffCard(o, err, w) : '');
+    await takeoffCard(o, err, w));
 }
 
 // ---------------------------------------------------------------- Follow Ups
@@ -424,8 +431,8 @@ export async function originCard(projectId) {
   if (!o) return h('div', { class: 'card soon' }, h('h2', {}, 'Bid History'), h('p', {}, 'This project was not created from an estimate, so there is no lead or proposal history.'));
   const row = (l, v) => h('div', {}, h('label', {}, l), h('div', {}, v || '—'));
   return h('div', {}, h('div', { class: 'card' }, h('h2', {}, 'From the lead'), h('div', { class: 'form' }, row('Client', o.client), row('GC', o.gc), row('GC contact', [o.contact, o.email, o.phone].filter(Boolean).join(' · ')), row('Project address', o.address), row('Source', o.sourceType), row('Invitation', o.link && h('a', { href: o.link, target: '_blank', rel: 'noopener' }, 'Open invitation')),
-    row('Project type', o.type), row('Estimator', o.estimator), row('Proposal #', o.proposalId), row('Bid due', o.due ? fmtDay(o.due) : ''), row('Accepted', o.acceptedDate ? fmtDay(o.acceptedDate) : ''), row('Trades considered', o.consideredTrades.map((t) => t.name).join(', ')))),
-    h('div', { class: 'card' }, h('h2', {}, 'Proposal and submittal'), o.submissions.length ? h('table', {}, h('thead', {}, h('tr', {}, ['Version', 'Submitted', 'How', 'Price', 'Trades'].map((t) => h('th', {}, t)))), h('tbody', {}, o.submissions.map((s) => h('tr', {}, h('td', {}, 'v' + s.version), h('td', {}, fmtDay(s.date)), h('td', {}, s.method), h('td', {}, usd(s.price)), h('td', {}, (s.trades || []).map((t) => `${t.name} ${usd(t.amount)}`).join(' · ')))))) : '',
+    row('Project type', o.type === 'Office / Medical / Other' ? 'Medical / Office' : o.type), row('Estimator', o.estimator), row('Proposal #', o.proposalId), row('Bid due', o.due ? fmtDay(o.due) : ''), row('Accepted', o.acceptedDate ? fmtDay(o.acceptedDate) : ''), row('Trades considered', o.consideredTrades.map((t) => t.name).join(', ')))),
+    h('div', { class: 'card' }, h('div', { class: 'row spread' }, h('h2', {}, 'Proposal and submittal'), o.id ? h('a', { href: `#/estimating/${o.id}/chat` }, 'Open The Estimating Chat') : ''), o.submissions.length ? h('table', {}, h('thead', {}, h('tr', {}, ['Version', 'Submitted', 'How', 'Price', 'Trades'].map((t) => h('th', {}, t)))), h('tbody', {}, o.submissions.map((s) => h('tr', {}, h('td', {}, 'v' + s.version), h('td', {}, fmtDay(s.date)), h('td', {}, s.method), h('td', {}, usd(s.price)), h('td', {}, (s.trades || []).map((t) => `${t.name} ${usd(t.amount)}`).join(' · ')))))) : '',
       h('label', { style: 'margin-top:.6rem' }, 'Files'), o.files.length ? h('div', {}, o.files.map((f) => h('div', {}, h('a', { href: '/api/opportunity-files/' + f.id, target: '_blank', rel: 'noopener' }, f.name), h('span', { class: 'muted' }, ` · ${f.kind}`)))) : h('p', { class: 'muted' }, 'No files.'), o.folderUrl ? h('p', {}, h('a', { href: o.folderUrl, target: '_blank', rel: 'noopener' }, 'OneDrive folder')) : ''),
     h('div', { class: 'card' }, h('h2', {}, 'Notes and history'), h('div', { class: 'notes' }, o.notes.map((n) => h('div', { class: 'note ' + n.kind }, h('div', {}, n.body), h('div', { class: 'meta' }, `${n.kind === 'System' ? 'System' : n.who || 'User'} · ${when(n.at)} ET`)))),
       o.communications.length ? h('p', { class: 'muted' }, 'Follow-up: ' + o.communications.map((c) => `${fmtDay(c.date)} ${c.kind}`).join(' · ')) : ''));
@@ -460,8 +467,9 @@ async function takeoffCard(o, err, w) {
       w && r.status !== 'Applied' ? h('div', { class: 'row', style: 'margin-top:.8rem' }, h('button', { onclick: () => { const d = h('input'), s2 = h('select', {}, sections.map((x) => h('option', { value: x }, x))); formModal('Add an item the plans missed', [field('Section', s2), field('Description', d, 'wide')], async () => { await api('POST', `/takeoff/${r.id}/items`, { section: s2.value, description: d.value }); render(); }, 'Add'); } }, '+ Add item'),
         h('button', { onclick: guard(msg, async () => { await api('POST', `/takeoff/${r.id}/verify`, {}); render(); }) }, 'Mark verified'), h('button', { class: 'primary', disabled: r.status !== 'Verified' ? true : null, title: r.status !== 'Verified' ? 'Verify every included item first' : '', onclick: guard(msg, async () => { const x = await api('POST', `/takeoff/${r.id}/apply`, {}); notice(msg, `Applied to ${x.trades} trade prices. Review them under Price trades.`, 'ok'); render(); }) }, 'Apply to proposal prices')) : '');
   };
-  return h('div', { style: 'margin-top:1rem;border-top:1px solid var(--line);padding-top:.8rem' }, h('div', { class: 'row spread' }, h('h2', {}, 'Plan takeoff (AI-assisted)'), w && h('div', { class: 'row' }, file, h('button', { onclick: () => file.click() }, 'Read plans with AI (PDF)'))),
-    h('p', { class: 'muted' }, 'Reads demo keynotes, wall types, paint by code, and carpentry the responsibility matrix assigns to the contractor. You verify each item and add prices; nothing reaches the proposal until you apply it.'), msg, runs.map(runCard), runs.length ? '' : h('p', { class: 'muted' }, 'No takeoff yet.'));
+  return h('div', { style: 'margin-top:1rem;border-top:1px solid var(--line);padding-top:.8rem' }, h('div', { class: 'row spread' }, h('h2', {}, 'Estimate With AI'), h('div', { class: 'row' }, file, h('button', { class: 'primary', onclick: () => (location.hash = `#/estimating/${o.id}/chat`) }, 'Open The Estimating Chat'))),
+    h('p', { class: 'muted' }, 'Reads the plans already on this lead (it asks for plans only when there are none), follows the byOther estimating instructions, and works through scope and pricing with you. Each proposal it writes is saved here as a new version, and the conversation stays with the lead.'), msg,
+    runs.length ? h('details', { style: 'margin-top:.6rem' }, h('summary', {}, `Earlier plan readings (${runs.length})`), runs.map(runCard)) : '');
 }
 
 

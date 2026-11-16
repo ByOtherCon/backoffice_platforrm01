@@ -5,7 +5,7 @@ export const SEARCH_DAYS = 30;
 export const withinSearchWindow = (lastSeen: Date | string, now = new Date()): boolean => now.getTime() - new Date(lastSeen).getTime() <= SEARCH_DAYS * 86400000;
 
 // Ranking inside a week: region tier, then shopping-center jobs, then project type.
-export const TYPE_ORDER = ['Retail', 'Restaurant', 'Office / Medical / Other'];
+export const TYPE_ORDER = ['Retail', 'Restaurant', 'Office / Medical / Other', 'Other'];
 export const rankLeads = <T extends { tier: number; mall: boolean; type: string; name: string; gc: string }>(a: T, b: T) =>
   a.tier - b.tier || Number(b.mall) - Number(a.mall) || TYPE_ORDER.indexOf(a.type) - TYPE_ORDER.indexOf(b.type) || a.name.localeCompare(b.name) || a.gc.localeCompare(b.gc);
 const norm = (s: string) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');

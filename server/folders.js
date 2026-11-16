@@ -102,6 +102,7 @@ export async function tryEnsureOpportunityFolder(id) {
 const extraFolders = (oppId) => q(`SELECT f.* FROM opportunity_folders f JOIN opportunities o ON o.id=f.opportunity_id WHERE f.opportunity_id=$1 AND o.folder_per_gc AND f.sp_item_id IS NOT NULL`, [oppId]);
 // Saves a copy of a file into the right numbered folder of an opportunity.
 export async function pushOpportunityFile(oppId, { kind, filename, bytes, mime }) {
+  pdfSeen.delete(oppId);
   if (!enabled()) return null;
   try {
     const dir = await ensureOpportunityFolder(oppId); const sub = await SP.ensureFolder(dir.id, SUBFOLDER[kind] || SUBFOLDER.Other);
@@ -168,6 +169,7 @@ export async function syncGcs(year = todayEastern().slice(0, 4)) {
 // right numbered folder). Safe to run as often as wanted: a file already copied is not copied again.
 const syncing = new Set();
 export async function syncOpportunity(id, { force = false } = {}) {
+  pdfSeen.delete(id);
   if (!enabled()) return { enabled: false, pushed: 0 };
   // Opening a lead runs this. A new or declined lead that has no folder, no P number and nothing to back up is left alone (no folder is
   // made just by looking); `force` is the Sync button, which always makes the folder.
@@ -217,6 +219,27 @@ export async function proposalView(oppId) {
   const latestPdf = all.find((x) => /\.pdf$/i.test(x.name)) ?? null, latestWord = all.find((x) => /\.docx?$/i.test(x.name)) ?? null;
   return { enabled: !!lib.enabled, linked: !!lib.linked, error: lib.error ?? null, folderUrl: lib.folderUrl ?? null, proposalFolderUrl: lib.proposalFolderUrl ?? null, plansFolderUrl: lib.plansFolderUrl ?? null,
     latestPdf, latestWord, total: all.length, earlier: all.filter((x) => x !== latestPdf && x !== latestWord), plans: lib.allPlans ?? [] };
+}
+
+// The latest proposal PDF of a lead, for the Submittal Tracker: one for the lead's GC (the newer of the app's own and what is in the
+// library's 02. Proposal), and, for a job pitched to several GCs that keeps a folder under each, one per GC from that GC's own folder
+// (their prices can differ, so their PDFs can too). One request to SharePoint per folder; the answer is kept for a minute.
+const pdfSeen = new Map();
+export const forgetLatestPdfs = (oppId) => (oppId ? pdfSeen.delete(oppId) : pdfSeen.clear());
+export async function latestProposalPdfs(oppId) {
+  const hit = pdfSeen.get(oppId); if (hit && Date.now() - hit.at < 60000) return hit.value;
+  const [o] = await q('SELECT id, gc_name, sp_item_id FROM opportunities WHERE id=$1', [oppId]); if (!o) throw new HttpError(404, 'Opportunity not found.');
+  const [a] = await q(`SELECT id, name, created_at, sp_url, (storage_key IS NOT NULL) AS local FROM opportunity_files WHERE opportunity_id=$1 AND kind='Proposal' AND name ~* '\.pdf$' ORDER BY created_at DESC LIMIT 1`, [oppId]);
+  const iso = (d) => (d ? new Date(d).toISOString() : null), app = a && (a.local || a.sp_url) ? { name: a.name, at: iso(a.created_at), href: a.local ? `/api/opportunity-files/${a.id}` : a.sp_url, where: 'App' } : null;
+  let error = null;
+  const inFolder = async (itemId) => { if (!enabled() || !itemId) return null; try { const p = (await SP.listPath(itemId, SUBFOLDER.Proposal)).filter((k) => !k.folder && /\.pdf$/i.test(k.name) && !k.name.startsWith('~$')).sort((x, y) => String(y.modified || '').localeCompare(String(x.modified || '')))[0]; return p ? { name: p.name, at: iso(p.modified), href: p.webUrl, where: 'SharePoint' } : null; } catch (e) { error = oneLine(e); return null; } };
+  const lib = await inFolder(o.sp_item_id), same = lib && app && (cleanFileName(app.name) || app.name).toLowerCase() === lib.name.toLowerCase();
+  const main = !app ? lib : !lib ? app : same || String(lib.at) >= String(app.at) ? lib : app;   // the same file opens from the library; otherwise the newer one
+  const pdfs = main ? [{ gc: o.gc_name, ...main }] : [];
+  for (const x of await extraFolders(oppId)) { const p = await inFolder(x.sp_item_id); if (p) pdfs.push({ gc: x.gc_name, ...p }); }
+  const value = { pdfs, perGc: pdfs.length > 1, error };
+  if (!error) pdfSeen.set(oppId, { at: Date.now(), value });
+  return value;
 }
 
 // What is in the job's folder right now: the BID SET plan PDFs in 01. DL (for the Open Plans link) and the PDFs in 02. Proposal.

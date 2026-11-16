@@ -37,6 +37,7 @@ const graph = async (url, init = {}) => {
   if ((g = r.match(/^\/drives\/drv1\/(root|items\/([^/]+))\/children$/))) { const id = g[2] || 'root';
     if (m === 'GET') return res({ value: kids(id).map(item) });
     const b = JSON.parse(init.body); if (kids(id).some((n) => n.name.toLowerCase() === b.name.toLowerCase())) return res({ error: { code: 'nameAlreadyExists' } }, 409); return res(item(add(id, b.name)), 201); }
+  if ((g = r.match(/^\/drives\/drv1\/items\/([^/]+):\/(.+):\/children$/)) && m === 'GET') { let cur = nodes.get(g[1]); for (const seg of g[2].split('/')) cur = cur && kids(cur.id).find((n) => n.name === seg); return cur ? res({ value: kids(cur.id).map(item) }) : res({}, 404); }
   if ((g = r.match(/^\/drives\/drv1\/items\/([^/]+)$/)) && m === 'PATCH') { const n = nodes.get(g[1]); if (!n) return res({}, 404); n.name = JSON.parse(init.body).name; return res(item(n)); }
   if ((g = r.match(/^\/drives\/drv1\/items\/([^/]+):\/(.+):\/content$/)) && m === 'PUT') { const n = add(g[1], g[2], false, { size: init.body.length, text: Buffer.from(init.body).toString('latin1').slice(0, 20), bytes: init.body.length < 2e6 ? Buffer.from(init.body) : null }); return res(item(n), 201); }
   // reading a file back: its details, then its bytes
@@ -292,4 +293,20 @@ test('a long file name keeps its .pdf / .docx in SharePoint, and copies saved wi
   assert.ok((await q('SELECT sp_url FROM opportunity_files WHERE opportunity_id=$1', [id])).every((f) => /\.pdf$/.test(decodeURIComponent(f.sp_url))));
   assert.ok((await opp(id)).notes.some((n) => /had lost their ending/.test(n.body)));
   const again = await syncNow(id); assert.deepEqual([again.sync.fixed, again.sync.pushed], [0, 0]); assert.equal(kids(prop.id).length, 3);
+});
+
+test('Submittal Tracker: the latest proposal PDF only (never Word or plans), newest of app and library, and one per GC for a bundled job with a folder under each', async () => {
+  const latest = async (id) => { folders.forgetLatestPdfs(); return (await call('GET', `/api/opportunities/${id}/latest-pdfs`, null, est)).body; };
+  const id = await mk({ name: 'Tracker job', gc: 'Tracker GC', addr: await addrOk('2 List Ave', 'Orlando', '32801') }); await call('POST', `/api/opportunities/${id}/status`, { status: 'Accepted' }, est);
+  assert.deepEqual(await latest(id), { pdfs: [], perGc: false, error: null });
+  await call('POST', `/api/opportunities/${id}/plans`, mkPdf(), est, 'Site Plan.pdf'); await call('POST', `/api/opportunities/${id}/files?kind=Proposal`, mkPdf(), est, 'Tracker v1.pdf'); await call('POST', `/api/opportunities/${id}/files?kind=Proposal`, mkPdf(), est, 'Tracker v2.pdf');
+  let r = await latest(id); assert.deepEqual(r.pdfs.map((x) => [x.gc, x.name, x.where]), [['Tracker GC', 'Tracker v2.pdf', 'SharePoint']]); assert.equal(r.perGc, false);
+  const o = await opp(id), prop = find('ByOther', YEAR, 'Tracker GC', `${o.proposalId}_Tracker job_Orlando`, '02. Proposal'); add(prop.id, 'Tracker v3 by hand.docx', false, { size: 9 }); add(prop.id, 'Tracker v3 by hand.pdf', false, { size: 9 });
+  r = await latest(id); assert.deepEqual(r.pdfs.map((x) => x.name), ['Tracker v3 by hand.pdf']); assert.match(r.pdfs[0].href, /02\.%20Proposal\/Tracker%20v3%20by%20hand\.pdf$/);
+  graphDown = true; const down = await latest(id); graphDown = false; assert.deepEqual(down.pdfs.map((x) => [x.name, x.where]), [['Tracker v2.pdf', 'App']]); assert.ok(down.error);   // SharePoint down: the app's own latest still shows
+  assert.equal((await call('GET', `/api/opportunities/${id}/latest-pdfs`, null, pm)).status, 403);
+  // a job that keeps a folder under a second GC: that GC's own latest PDF, which can be a different file
+  const xf = add(add(find('ByOther', YEAR).id, 'Second GC').id, 'Tracker job_Orlando'), xp = add(xf.id, '02. Proposal'); add(xp.id, 'Tracker for Second GC.pdf', false, { size: 5 });
+  await q('UPDATE opportunities SET folder_per_gc=true WHERE id=$1', [id]); await q('INSERT INTO opportunity_folders(opportunity_id, gc_name, sp_item_id, sp_path, folder_url) VALUES ($1,$2,$3,$4,$5)', [id, 'Second GC', xf.id, 'x', 'https://byother.sharepoint.com/x']);
+  r = await latest(id); assert.equal(r.perGc, true); assert.deepEqual(r.pdfs.map((x) => [x.gc, x.name]), [['Tracker GC', 'Tracker v3 by hand.pdf'], ['Second GC', 'Tracker for Second GC.pdf']]);
 });

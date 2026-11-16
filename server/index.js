@@ -248,6 +248,7 @@ route('PUT', '/api/opportunities/:id', async ({ user, params, body }) => { await
 route('GET', '/api/opportunities/:id/folder-files', async ({ user, params }) => { estRead(user); return folders.folderFiles(uuid(params.id)); });
 // The lead and its library folder kept in step: the folder is made if it is missing, files held in the app are copied in as a backup, and
 // what is in the library (a proposal saved there by hand) is read back.
+route('GET', '/api/opportunities/:id/latest-pdfs', async ({ user, params }) => { estRead(user); return folders.latestProposalPdfs(uuid(params.id)); });   // the Submittal Tracker: the latest proposal PDF, one per GC for a bundled job
 route('GET', '/api/opportunities/:id/proposal-files', async ({ user, params }) => { estRead(user); return folders.proposalView(uuid(params.id)); });
 route('POST', '/api/opportunities/:id/sync', async ({ user, params, body }) => { estWrite(user); const id = uuid(params.id), sync = await folders.syncOpportunity(id, { force: !!body?.force }); return { sync, ...(await folders.proposalView(id)) }; });
 route('GET', '/api/projects/:id/lead-proposals', async ({ user, params }) => { await auth.requireProject(user, uuid(params.id)); const [o] = await q('SELECT id FROM opportunities WHERE project_id=$1', [params.id]); return o ? folders.proposalView(o.id) : { enabled: false, linked: false, total: 0, latestPdf: null, latestWord: null, earlier: [], plans: [] }; });

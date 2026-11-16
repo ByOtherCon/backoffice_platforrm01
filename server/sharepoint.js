@@ -145,6 +145,12 @@ export async function findFiles(folderId, match, depth = 3) {
   await walk(folderId, depth); return out;
 }
 export async function listFolder(itemId) { return (await children(itemId)).map((c) => ({ id: c.id, name: c.name, folder: !!c.folder, webUrl: c.webUrl, modified: c.lastModifiedDateTime ?? null, size: c.size ?? null })); }
+// What is in a folder reached by name below a known folder ("02. Proposal" inside a job folder), in one request. Empty when it is not there.
+export async function listPath(itemId, rel) {
+  const d = await driveId(); const out = []; let next = `/drives/${d}/items/${encodeURIComponent(itemId)}:/${String(rel).split('/').map(encodeURIComponent).join('/')}:/children?$top=200&$select=id,name,folder,webUrl,size,lastModifiedDateTime`;
+  for (let i = 0; i < 10 && next; i++) { const r = await graph('GET', next, { absolute: next.startsWith('http') }); if (!r) break; out.push(...(r.value || [])); next = r['@odata.nextLink'] || null; }
+  return out.map((c) => ({ id: c.id, name: c.name, folder: !!c.folder, webUrl: c.webUrl, modified: c.lastModifiedDateTime ?? null, size: c.size ?? null }));
+}
 // One item as it is now, or null when it is no longer in the library (deleted, or moved somewhere this app cannot see).
 export async function getItem(itemId) {
   const d = await driveId(), r = await graph('GET', `/drives/${d}/items/${encodeURIComponent(itemId)}?$select=id,name,webUrl,folder,file,size`);

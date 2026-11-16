@@ -353,16 +353,38 @@ function tradeTally(rows) {
   return h('details', { open: true, style: 'margin:.2rem 0 .8rem' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, `Submitted and waiting: ${rows.length} bid${rows.length === 1 ? '' : 's'}, ${usd(total)}`),
     h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Trade'), h('th', { class: 'n' }, 'Bids'), h('th', { class: 'n' }, 'Total'))), h('tbody', {}, [...by].sort((a, b) => b[1].amount - a[1].amount).map(([n, e]) => h('tr', {}, h('td', {}, n), h('td', { class: 'n' }, e.bids), h('td', { class: 'n' }, usd(e.amount))))), h('tfoot', {}, h('tr', { class: 'total' }, h('td', {}, 'All trades'), h('td', { class: 'n' }, [...by.values()].reduce((n, e) => n + e.bids, 0)), h('td', { class: 'n' }, usd(total))))));
 }
-// The PDFs in the job's 02. Proposal folder, loaded when asked for (it asks SharePoint).
-const folderPdfs = (o) => { const box = h('div'); box.append(h('button', { type: 'button', class: 'small', onclick: async (e) => { e.target.textContent = 'Looking…'; try { const r = await api('GET', `/opportunities/${o.id}/folder-files`); box.replaceChildren(r.proposals.length ? r.proposals.map((p) => h('div', {}, h('a', { href: p.webUrl, target: '_blank', rel: 'noopener', style: 'font-size:13px' }, p.name))) : h('span', { class: 'muted', style: 'font-size:13px' }, 'No PDFs in the proposal folder')); } catch (er) { box.replaceChildren(h('span', { class: 'neg', style: 'font-size:13px' }, er.message)); } } }, 'Folder PDFs')); return box; };
+// The latest proposal PDF of a lead (one per GC when the job keeps a folder under each GC). The one the app holds shows at once; the
+// library is then asked, a few leads at a time, and the answer is kept for a minute so redrawing the page does not ask again.
+const pdfSeen = new Map(), pdfQueue = []; let pdfBusy = 0;
+const pdfPump = () => { while (pdfBusy < 4 && pdfQueue.length) { const job = pdfQueue.shift(); pdfBusy++; job().finally(() => { pdfBusy--; pdfPump(); }); } };
+const latestPdfs = (o) => { const hit = pdfSeen.get(o.id); if (hit && Date.now() - hit.at < 60000) return hit.p;
+  const p = new Promise((ok, no) => { pdfQueue.push(() => api('GET', `/opportunities/${o.id}/latest-pdfs`).then(ok, no)); pdfPump(); }); pdfSeen.set(o.id, { at: Date.now(), p }); p.catch(() => pdfSeen.delete(o.id)); return p; };
+function latestPdfBox(o, { small = false } = {}) {
+  const size = small ? '12px' : '13px', box = h('div', { style: `font-size:${size};white-space:normal;overflow-wrap:anywhere` });
+  const a = (f, text) => h('a', { href: f.href, target: '_blank', rel: 'noopener', title: f.name, onclick: (e) => e.stopPropagation() }, text || f.name);
+  const mine = o.files.filter((f) => f.kind === 'Proposal' && /\.pdf$/i.test(f.name)).sort((x, y) => String(y.at).localeCompare(String(x.at)))[0];
+  const draw = (list, note) => box.replaceChildren(...(list.length ? list.map((f) => h('div', {}, list.length > 1 ? [h('strong', {}, f.gc + ': '), a(f, small ? 'Latest PDF' : null)] : a(f, small ? 'Latest PDF' : null))) : [small ? '' : h('span', { class: 'muted' }, 'No proposal PDF yet')]), note ? h('div', { class: 'neg' }, note) : '');
+  draw(mine ? [{ gc: o.gc, name: mine.name, href: mine.local === false ? mine.spUrl : '/api/opportunity-files/' + mine.id }].filter((f) => f.href) : []);
+  if (o.spPath) latestPdfs(o).then((r) => { if (r.pdfs.length || !r.error) draw(r.pdfs, r.error ? 'SharePoint could not be read: ' + r.error : ''); }).catch(() => {});
+  return box;
+}
 function submittalList(rows, w) {
   if (!rows.length) return h('p', { class: 'muted', style: 'padding:1rem 0' }, 'Nothing here. Accepted and Started work appears here until it is submitted.');
-  return h('div', { class: 'scroll' }, h('table', { class: 'biglist' }, h('thead', {}, h('tr', {}, ['Proposal / Project', 'General Contractors', 'Due', 'Submitted', 'Price By Trade', 'Status', 'Proposal PDFs', 'Actions'].map((t) => h('th', {}, t)))),
+  return h('div', { class: 'scroll' }, h('table', { class: 'biglist' }, h('thead', {}, h('tr', {}, ['Proposal / Project', 'General Contractors', 'Due', 'Submitted', 'Price By Trade', 'Status', 'Latest Proposal PDF', 'Actions'].map((t) => h('th', {}, t)))),
     h('tbody', {}, rows.map((o) => { const s = o.lastSubmission; return h('tr', { class: 'tone-' + (o.tone || 'none') }, h('td', { style: 'white-space:normal;min-width:200px' }, h('strong', {}, o.proposalId || ''), h('div', { class: 'edit', onclick: () => (location.hash = '#/estimating/' + o.id) }, o.name), sub(addrLine(o))),
       h('td', { style: 'white-space:normal' }, o.gc, o.contact ? sub(o.contact) : ''), h('td', {}, fmtDay(o.due)), h('td', {}, s ? [fmtDay(s.date), sub(`Version ${s.version} · ${s.method}`)] : h('span', { class: 'muted' }, 'Not yet')), h('td', {}, tradeList(o)), h('td', {}, statusSelect(o, w)),
-      h('td', {}, o.files.filter((f) => f.kind !== 'Other').length ? o.files.filter((f) => f.kind !== 'Other').map((f) => h('div', {}, h('a', { href: '/api/opportunity-files/' + f.id, target: '_blank', rel: 'noopener', style: 'font-size:13px' }, f.name))) : h('span', { class: 'muted' }, 'No PDFs yet'), o.spPath ? folderPdfs(o) : ''),
+      h('td', { style: 'min-width:220px;max-width:340px' }, latestPdfBox(o)),
       h('td', {}, h('div', { class: 'stack' }, w && ['Accepted', 'Started'].includes(o.status) ? h('button', { class: 'small primary', onclick: () => submitModal(o) }, 'Submit') : '', s ? h('button', { class: 'small', onclick: () => (location.hash = '#/estimating/followups/' + o.id) }, 'Follow up') : '', h('button', { class: 'small', onclick: () => (location.hash = '#/estimating/' + o.id) }, 'Open'))));
     }))));
+}
+function calEvent(o) {
+  const s = o.lastSubmission, open = () => (location.hash = '#/estimating/' + o.id);
+  if (!s) return h('button', { type: 'button', class: 'ev due', title: 'Bid due', onclick: open }, h('strong', {}, 'Due'), h('div', {}, o.name));
+  const trades = s.trades || [], total = s.price ?? trades.reduce((n, t) => n + Number(t.amount || 0), 0);
+  return h('div', { class: 'ev sub', title: `Submitted ${s.date}; original due ${o.due || 'unknown'}` },
+    h('div', { class: 'ev-head', role: 'button', tabindex: 0, onclick: open, onkeydown: (e) => { if (e.key === 'Enter') open(); } }, h('strong', {}, `Submitted V${s.version}`), h('div', {}, o.name), h('div', { class: 'muted' }, o.gcs?.length > 1 ? o.gcs.join(' · ') : o.gc), o.due ? h('div', { class: 'muted' }, 'Due ' + fmtDay(o.due)) : ''),
+    trades.length || total ? h('div', { class: 'ev-sum' }, trades.map((t) => h('div', { class: 'row spread' }, h('span', {}, t.name), h('span', {}, usd(t.amount)))), h('div', { class: 'row spread ev-total' }, h('span', {}, 'Total'), h('span', {}, usd(total)))) : '',
+    latestPdfBox(o, { small: true }));
 }
 function calendar(rows) {
   const month = state.subMonth || todayStr().slice(0, 7), [y, m] = month.split('-').map(Number), first = new Date(y, m - 1, 1), days = new Date(y, m, 0).getDate(), pad = (first.getDay() + 6) % 7, today = todayStr();
@@ -370,7 +392,7 @@ function calendar(rows) {
   const by = {}; for (const o of rows) if (o.calendarDate) (by[o.calendarDate] ||= []).push(o);
   const cells = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((d) => h('div', { class: 'dow' }, d));
   for (let i = 0; i < pad; i++) cells.push(h('div', { class: 'day off' }));
-  for (let d = 1; d <= days; d++) { const key = `${month}-${String(d).padStart(2, '0')}`; cells.push(h('div', { class: 'day' + (key === today ? ' today' : '') }, h('div', { class: 'muted' }, d), (by[key] || []).map((o) => h('button', { type: 'button', class: 'ev ' + (o.lastSubmission ? 'sub' : 'due'), title: o.lastSubmission ? `Submitted ${o.lastSubmission.date}; original due ${o.due || 'unknown'}` : 'Bid due', onclick: () => (location.hash = '#/estimating/' + o.id) }, h('strong', {}, o.lastSubmission ? `Submitted V${o.lastSubmission.version}` : 'Due'), h('div', {}, o.name), o.lastSubmission && o.due ? h('div', { class: 'muted' }, 'Due ' + fmtDay(o.due)) : '')))); }
+  for (let d = 1; d <= days; d++) { const key = `${month}-${String(d).padStart(2, '0')}`; cells.push(h('div', { class: 'day' + (key === today ? ' today' : '') }, h('div', { class: 'muted' }, d), (by[key] || []).map(calEvent))); }
   return h('div', {}, h('div', { class: 'row spread', style: 'margin-bottom:.6rem' }, h('button', { class: 'small', onclick: () => nav(-1) }, '← Previous'), h('strong', {}, first.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })), h('button', { class: 'small', onclick: () => nav(1) }, 'Next →')), h('div', { class: 'cal' }, cells),
     h('p', { class: 'muted', style: 'font-size:13px' }, 'Submitted bids sit on the day they were actually sent, with the original due date shown. Bids not yet sent sit on their due date.'));
 }

@@ -31,7 +31,7 @@ export async function saveInstructions(user, body) {
 const APP_RULES = `You are the estimating assistant inside the by Other Desk Platform, working with an estimator at byOther Construction on one bid. The plan PDFs on this lead are attached to the conversation (when there are any). Work the way the byOther estimating instructions below describe.
 
 How working here differs from the instructions' assumptions:
-- You cannot run code or write files yourself. When the estimator asks for the proposal document, or agrees it is ready, call the save_proposal tool with the complete proposal content. The app builds the .docx and the .pdf in byOther's format and saves both on the lead as a new version; earlier versions are kept. Disregard anything below about the docx skill, Node scripts, or copying files to an outputs folder: the tool replaces all of it.
+- You cannot run code or write files yourself. Show the proposal in the conversation first. Only when the estimator approves it (asks for the document, or says it is ready) call the save_proposal tool with the complete proposal content; never save a draft on your own. The app builds the .docx and the .pdf in byOther's format, names them, and saves both on the lead and in the Proposal folder of the job's SharePoint folder as a new version; earlier versions are kept. Disregard anything below about the docx skill, Node scripts, or copying files to an outputs folder: the tool replaces all of it.
 - Send the whole proposal every time you call save_proposal, not only what changed since the last version.
 - Pricing breakdowns go in the conversation as a table, as the instructions say. Put a trade's total in save_proposal only after the estimator has confirmed that number; otherwise leave it out and the document prints $_____.
 - After a save, tell the estimator in a sentence or two which version was saved and what still needs their attention (prices left blank, flagged items, quantities to measure).
@@ -41,7 +41,7 @@ How working here differs from the instructions' assumptions:
 export async function systemPrompt() { return `${APP_RULES}\n\n# byOther estimating instructions\n\n${(await getInstructions()).text}`; }
 
 export const SAVE_TOOL = { name: 'save_proposal', eager_input_streaming: true,
-  description: 'Save the proposal as a new version on the lead. The app writes the .docx and .pdf in byOther format from this content. Call it when the estimator asks for the document or confirms it is ready. Always send the complete proposal.',
+  description: 'Save the approved proposal as a new version. The app writes the .docx and .pdf in byOther format from this content and files them on the lead and in the job\'s Proposal folder. Call it only after the estimator has approved the proposal (asked for the document or said it is ready). Always send the complete proposal.',
   input_schema: { type: 'object', required: ['projectName', 'trades'], properties: {
     createdFor: { type: 'string', description: 'The GC the proposal is for.' }, projectName: { type: 'string' }, projectAddress: { type: 'string', description: 'Full project address from the cover sheet.' },
     permitSet: { type: 'string', description: 'Architect name, project number and issue date of the permit set.' }, scopeLine: { type: 'string', description: 'The trades included, separated by " / ".' },
@@ -167,7 +167,12 @@ export async function saveProposal(user, o, chatId, input) {
   const out = await tx(async (t) => {
     await t('SELECT id FROM opportunities WHERE id=$1 FOR UPDATE', [o.id]);
     const [{ v }] = await t('SELECT COALESCE(MAX(version),0)+1 AS v FROM opportunity_files WHERE opportunity_id=$1', [o.id]);
-    const base = [o.proposal_id, cleanName(spec.projectName).replace(/[\s_-]+/g, '_'), 'Proposal_byOther', 'v' + v].filter(Boolean).join('_'), files = [];
+    // byOther Proposal-P#_GC_Project Name_Project Site City_Date. A second one on the same day gets (2), so none is ever replaced.
+    const d = todayEastern(), part = (x, n) => cleanName(String(x || '')).slice(0, n).trim();
+    const stem = 'byOther Proposal-' + [o.proposal_id, part(o.gc_name, 60), part(o.name, 80), part(o.city, 40), `${d.slice(5, 7)}-${d.slice(8, 10)}-${d.slice(0, 4)}`].filter(Boolean).join('_');
+    const taken = new Set((await t('SELECT lower(name) AS n FROM opportunity_files WHERE opportunity_id=$1', [o.id])).map((r) => r.n));
+    let base = stem; for (let k = 2; taken.has(`${base}.pdf`.toLowerCase()) || taken.has(`${base}.docx`.toLowerCase()); k++) base = `${stem} (${k})`;
+    const files = [];
     for (const [bytes, ext] of [[pdf, '.pdf'], [docx, '.docx']]) {
       const name = base + ext, f = await saveFile(bytes, name);
       const [row] = await t('INSERT INTO opportunity_files(opportunity_id,kind,name,storage_key,mime,size,created_by,sha256,version,chat_id,meta) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id', [o.id, 'Proposal', name, f.key, f.mime, f.size, user.id, f.sha256, v, chatId, JSON.stringify(meta)]);

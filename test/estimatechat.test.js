@@ -119,7 +119,8 @@ test('asking for the document saves a .pdf and a .docx on the lead as version 1;
   const second = requests[1].body.messages; assert.equal(second.length, 3); assert.equal(second[1].role, 'assistant'); assert.deepEqual(second[1].content.map((b) => b.type), ['thinking', 'text']); assert.equal(second[1].content[0].signature, 'sig-abc');   // the earlier answer goes back exactly as it came
   assert.ok(!second[2].content.some((b) => b.type === 'document'));
   const third = requests[2].body.messages, result = third.at(-1).content[0]; assert.equal(third.at(-2).content.at(-1).type, 'tool_use'); assert.deepEqual(third.at(-2).content.at(-1).input.trades[0].total, 12500);
-  assert.equal(result.type, 'tool_result'); assert.match(result.content, /^Saved as version 1: Wingstop_St_Cloud_Proposal_byOther_v1\.pdf and Wingstop_St_Cloud_Proposal_byOther_v1\.docx\. Prices still blank: FRAMING\.$/);
+  const stem = `byOther Proposal-CW Hayes Construction_Wingstop - St Cloud_St Cloud_${today.slice(5, 7)}-${today.slice(8, 10)}-${today.slice(0, 4)}`;   // byOther Proposal-P#_GC_Project Name_City_Date (no P# until the lead is accepted)
+  assert.equal(result.type, 'tool_result'); assert.equal(result.content, `Saved as version 1: ${stem}.pdf and ${stem}.docx. Prices still blank: FRAMING.`);
   const c = await chat(), last = c.messages.at(-1); assert.equal(last.text, 'Saving it now.\n\nVersion 1 is saved. Framing still needs a price.'); assert.deepEqual(last.files.map((f) => f.kind), ['PDF', 'Word']);
   const dl = await fetch(`${base}/api/opportunity-files/${last.files[0].id}`, { headers: { cookie: est } }); assert.equal(dl.status, 200); assert.equal(Buffer.from(await dl.arrayBuffer()).subarray(0, 5).toString(), '%PDF-');
   const dx = await fetch(`${base}/api/opportunity-files/${last.files[1].id}`, { headers: { cookie: est } }); assert.equal(dx.status, 200); assert.equal(Buffer.from(await dx.arrayBuffer()).subarray(0, 2).toString(), 'PK');
@@ -131,7 +132,9 @@ test('asking for the document saves a .pdf and a .docx on the lead as version 1;
 test('saving again adds version 2 and keeps version 1', async () => {
   script = [toolAnswer({ ...PROPOSAL, trades: [PROPOSAL.trades[0], { ...PROPOSAL.trades[1], total: 30000 }] }, ''), textAnswer('Version 2 is saved.')];
   await say('Framing is $30,000. Update it.');
-  const c = await chat(); assert.deepEqual(c.proposals.map((p) => p.version), [2, 2, 1, 1]); assert.match(c.proposals[0].name, /_v2\.(pdf|docx)$/);
+  const c = await chat(); assert.deepEqual(c.proposals.map((p) => p.version), [2, 2, 1, 1]); assert.match(c.proposals[0].name, /^byOther Proposal-CW Hayes Construction_Wingstop - St Cloud_St Cloud_\d\d-\d\d-\d{4} \(2\)\.(pdf|docx)$/);   // a second one the same day is added beside the first
+  await q(`UPDATE opportunities SET proposal_id='P26011' WHERE id=$1`, [oid]); script = [toolAnswer(PROPOSAL, ''), textAnswer('Saved.')]; await say('Save it once more.');
+  assert.match((await chat()).proposals[0].name, /^byOther Proposal-P26011_CW Hayes Construction_Wingstop - St Cloud_St Cloud_\d\d-\d\d-\d{4}\.(pdf|docx)$/);   // once the lead has its P number the name starts with it await q(`UPDATE opportunities SET proposal_id=NULL WHERE id=$1`, [oid]);
   assert.equal((await q('SELECT count(*)::int AS n FROM opportunity_files WHERE opportunity_id=$1 AND version=1', [oid]))[0].n, 2);
 });
 
@@ -139,7 +142,7 @@ test('a proposal the AI sends incomplete is not saved: it is told why and can tr
   script = [toolAnswer({ projectName: 'Wingstop - St Cloud', trades: [] }, ''), textAnswer('It needs at least one trade. What should it include?')];
   await say('Save a blank one.');
   const res = requests.at(-1).body.messages.at(-1).content[0]; assert.equal(res.is_error, true); assert.match(res.content, /^Not saved: The proposal needs at least one trade/);
-  assert.equal((await chat()).proposals.length, 4);
+  assert.equal((await chat()).proposals.length, 6);
   script = [{ status: 500, message: 'overloaded' }]; await say('And the ceilings?');
   let c = await chat(); assert.deepEqual([c.messages.at(-1).status, c.messages.at(-1).role], ['error', 'assistant']); assert.match(c.messages.at(-1).error, /AI service refused the request \(500: overloaded\)/);
   script = [textAnswer('ACT ceiling: 2x2 grid.')]; await say('Try again: and the ceilings?');

@@ -164,6 +164,28 @@ export async function syncGcs(year = todayEastern().slice(0, 4)) {
   } catch { return { added: 0, found: 0 }; }
 }
 
+// ---- the name of a proposal file
+// byOther Proposal-P#_GC_Project Name_City_MM-DD-YYYY. Word and Excel on Windows cannot open or save a file whose whole path on the PC is
+// longer than 259 characters, and the synced path already holds the GC and the project (…/GC/P#_Project_City/02. Proposal/). So when the
+// full name would not fit, the parts the folders already say are left out: first the GC, then the project name. Nothing is cut mid-word.
+// PC_PATH_PREFIX_CHARS is the part of the path before the library's top folder on the PC ("C:\Users\name\OneDrive - company\shortcut\").
+const PC_PREFIX = Number(process.env.PC_PATH_PREFIX_CHARS) || 80, WORD_LIMIT = 259;
+export function proposalStem(o, date) {
+  const part = (x, n) => cleanName(String(x || '')).slice(0, n).trim();
+  const folder = o.sp_path || ['ByOther', date.slice(0, 4), cleanName(o.gc_name || ''), projectFolderName({ code: o.proposal_id, name: o.name, city: o.city })].join('/');
+  const room = WORD_LIMIT - PC_PREFIX - folder.length - 1 - SUBFOLDER.Proposal.length - 1 - 9;   // 9: " (2)" and ".docx"
+  const md = `${date.slice(5, 7)}-${date.slice(8, 10)}-${date.slice(0, 4)}`, gc = part(o.gc_name, 60), name = part(o.name, 80), city = part(o.city, 40);
+  const forms = [[o.proposal_id, gc, name, city, md], [o.proposal_id, name, city, md], [o.proposal_id, city, md]].map((x) => 'byOther Proposal-' + x.filter(Boolean).join('_'));
+  return forms.find((x) => x.length <= room) ?? forms.at(-1);
+}
+// A proposal the app wrote earlier under a name too long for Word: the shorter name it should have (same date, same "(2)"), or its own name.
+const fittedName = (o, f) => {
+  if (f.kind !== 'Proposal' || f.version == null) return f.name;
+  const m = f.name.match(/^byOther Proposal-.*_(\d\d)-(\d\d)-(\d{4})( \(\d+\))?(\.pdf|\.docx)$/i); if (!m) return f.name;
+  const fit = proposalStem(o, `${m[3]}-${m[1]}-${m[2]}`) + (m[4] || '') + m[5];
+  return fit.length < f.name.length ? fit : f.name;
+};
+
 // ---- keeping the lead and its library folder in step
 // Makes sure the folder is there, then copies every file the app holds for the lead that the library does not have yet (a backup, in the
 // right numbered folder). Safe to run as often as wanted: a file already copied is not copied again.
@@ -181,28 +203,37 @@ export async function syncOpportunity(id, { force = false } = {}) {
   try {
     let dir; try { dir = await ensureOpportunityFolder(id); } catch (e) { await q('UPDATE opportunities SET sp_error=$2 WHERE id=$1', [id, oneLine(e)]).catch(() => {}); return { enabled: true, linked: false, pushed: 0, error: oneLine(e) }; }
     // every file the app holds is checked against the library by name, so one that is missing there (never copied, or removed) is copied
-    const rows = await q(`SELECT id, kind, name, storage_key, mime, size, sp_url FROM opportunity_files WHERE opportunity_id=$1 AND storage_key IS NOT NULL ORDER BY created_at`, [id]);
-    const { UPLOAD_DIR } = await import('./documents.js'), subs = new Map(), done = [], fixed = [], failed = [];
+    const rows = await q(`SELECT id, kind, name, storage_key, mime, size, sp_url, version FROM opportunity_files WHERE opportunity_id=$1 AND storage_key IS NOT NULL ORDER BY created_at`, [id]);
+    const [lead] = await q('SELECT name, gc_name, city, proposal_id, sp_path FROM opportunities WHERE id=$1', [id]);
+    const taken = new Set((await q('SELECT lower(name) AS n FROM opportunity_files WHERE opportunity_id=$1', [id])).map((r) => r.n));
+    const { UPLOAD_DIR } = await import('./documents.js'), subs = new Map(), done = [], fixed = [], shortened = [], failed = [];
     for (const f of rows) {
       const file = path.join(UPLOAD_DIR, path.basename(f.storage_key)); if (!fs.existsSync(file)) continue;
       try {
         const subName = SUBFOLDER[f.kind] || SUBFOLDER.Other; if (!subs.has(subName)) { const sf = await SP.ensureFolder(dir.id, subName); subs.set(subName, { id: sf.id, kids: await SP.listFolder(sf.id) }); }
-        const sub = subs.get(subName), want = (cleanFileName(f.name) || f.name).toLowerCase(), there = sub.kids.find((k) => !k.folder && k.name.toLowerCase() === want);   // already in the library
+        const sub = subs.get(subName), named = (n) => sub.kids.find((k) => !k.folder && !k.claimed && k.name.toLowerCase() === (cleanFileName(n) || n).toLowerCase());
+        // a proposal the app wrote under a name too long for Word gets the shorter one (in the library and here), unless that name is in use
+        let target = fittedName(lead, f); if (target !== f.name && taken.has(target.toLowerCase())) target = f.name;
+        const there = named(target), prev = !there && target !== f.name ? named(f.name) : null;
         // A copy saved before file names kept their ending: the name was cut at 90 characters, which dropped ".pdf" or ".docx" from a long
         // one. The same file (same size, the cut name, no ending) is given its real name instead of being copied a second time.
-        const cut = cleanName(f.name).toLowerCase(), broken = there || cut === want ? null : sub.kids.find((k) => !k.folder && !k.claimed && !/\.[a-z0-9]{1,8}$/i.test(k.name) && k.name.toLowerCase().startsWith(cut) && Number(k.size) === Number(f.size));
+        const cut = cleanName(f.name).toLowerCase(), broken = there || prev || cut === (cleanFileName(f.name) || f.name).toLowerCase() ? null : sub.kids.find((k) => !k.folder && !k.claimed && !/\.[a-z0-9]{1,8}$/i.test(k.name) && k.name.toLowerCase().startsWith(cut) && Number(k.size) === Number(f.size));
         let up = there, how = there ? 'there' : 'copied';
-        if (broken) { try { up = await SP.renameFile(broken.id, f.name); broken.claimed = true; broken.name = up.name; how = 'fixed'; } catch { up = null; } }
-        if (!up) { up = await SP.uploadFromPath(sub.id, f.name, file, Number(f.size) || fs.statSync(file).size, f.mime || 'application/octet-stream'); sub.kids.push({ id: up.id, name: up.name ?? f.name, folder: false, webUrl: up.webUrl, size: f.size }); how = 'copied'; }
+        const old = prev || broken;
+        if (old) { try { up = await SP.renameFile(old.id, target); old.name = up.name; how = broken ? 'fixed' : 'there'; } catch { target = f.name; up = prev; how = 'there'; } }   // a rename that is refused (the file is open) leaves everything as it was
+        if (up) (there || old).claimed = true;
+        if (!up) { up = await SP.uploadFromPath(sub.id, target, file, Number(f.size) || fs.statSync(file).size, f.mime || 'application/octet-stream'); sub.kids.push({ id: up.id, name: up.name ?? target, folder: false, webUrl: up.webUrl, size: f.size, claimed: true }); how = 'copied'; }
+        if (target !== f.name) { await q('UPDATE opportunity_files SET name=$2 WHERE id=$1', [f.id, target]); taken.delete(f.name.toLowerCase()); taken.add(target.toLowerCase()); shortened.push(target); }
         if (f.kind === 'Plans') { await q('UPDATE opportunity_files SET sp_url=$2, storage_key=NULL WHERE id=$1', [f.id, up.webUrl ?? null]); await fs.promises.rm(file, { force: true }); }   // big plan sets live in the library only, as when they are uploaded
         else if ((up.webUrl ?? null) !== f.sp_url) await q('UPDATE opportunity_files SET sp_url=$2 WHERE id=$1', [f.id, up.webUrl ?? null]);
-        if (how === 'copied') done.push(f.name); else if (how === 'fixed') fixed.push(f.name);
+        if (how === 'copied') done.push(target); else if (how === 'fixed') fixed.push(target);
       } catch (e) { failed.push(`${f.name}: ${oneLine(e)}`); }
     }
     if (done.length) await note(id, `Copied to the SharePoint folder as a backup: ${done.slice(0, 12).join(', ')}${done.length > 12 ? ` and ${done.length - 12} more` : ''}.`);
     if (fixed.length) await note(id, `Files in the SharePoint folder that had lost their ending (.pdf, .docx) were given their full name: ${fixed.slice(0, 12).join(', ')}.`);
+    if (shortened.length) await note(id, `Proposal files were given a shorter name so Word can open and save them from File Explorer (the GC and the project are already in the folder path): ${shortened.slice(0, 12).join(', ')}.`);
     if (failed.length) await note(id, `Not copied to SharePoint: ${failed.slice(0, 5).join('; ')}`);
-    return { enabled: true, linked: true, pushed: done.length, fixed: fixed.length, failed, folderUrl: dir.webUrl };
+    return { enabled: true, linked: true, pushed: done.length, fixed: fixed.length, shortened: shortened.length, failed, folderUrl: dir.webUrl };
   } finally { syncing.delete(id); }
 }
 

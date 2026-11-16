@@ -203,8 +203,8 @@ export async function saveProposal(user, o, chatId, input) {
     await t('SELECT id FROM opportunities WHERE id=$1 FOR UPDATE', [o.id]);
     const [{ v }] = await t('SELECT COALESCE(MAX(version),0)+1 AS v FROM opportunity_files WHERE opportunity_id=$1', [o.id]);
     // byOther Proposal-P#_GC_Project Name_Project Site City_Date. A second one on the same day gets (2), so none is ever replaced.
-    const d = todayEastern(), part = (x, n) => cleanName(String(x || '')).slice(0, n).trim();
-    const stem = 'byOther Proposal-' + [o.proposal_id, part(o.gc_name, 60), part(o.name, 80), part(o.city, 40), `${d.slice(5, 7)}-${d.slice(8, 10)}-${d.slice(0, 4)}`].filter(Boolean).join('_');
+    // When that would make the path on a PC too long for Word, the GC and then the project name are left out (the folders already say them).
+    const d = todayEastern(), stem = folders.proposalStem(o, d);
     const taken = new Set((await t('SELECT lower(name) AS n FROM opportunity_files WHERE opportunity_id=$1', [o.id])).map((r) => r.n));
     let base = stem; for (let k = 2; taken.has(`${base}.pdf`.toLowerCase()) || taken.has(`${base}.docx`.toLowerCase()); k++) base = `${stem} (${k})`;
     const files = [];

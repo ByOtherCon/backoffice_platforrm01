@@ -310,3 +310,21 @@ test('Submittal Tracker: the latest proposal PDF only (never Word or plans), new
   await q('UPDATE opportunities SET folder_per_gc=true WHERE id=$1', [id]); await q('INSERT INTO opportunity_folders(opportunity_id, gc_name, sp_item_id, sp_path, folder_url) VALUES ($1,$2,$3,$4,$5)', [id, 'Second GC', xf.id, 'x', 'https://byother.sharepoint.com/x']);
   r = await latest(id); assert.equal(r.perGc, true); assert.deepEqual(r.pdfs.map((x) => [x.gc, x.name]), [['Tracker GC', 'Tracker v3 by hand.pdf'], ['Second GC', 'Tracker for Second GC.pdf']]);
 });
+
+test('a proposal name too long for Word on a PC leaves out the GC, then the project name; ones already saved are renamed in the library and in the app', async () => {
+  const gandy = { proposal_id: 'P11151', gc_name: 'Allstate Construction, Inc', name: 'Gandy and Palonis Park - Picnic Shelters', city: 'Tampa', sp_path: 'ByOther/2026/Allstate Construction, Inc/P11151_Gandy and Palonis Park - Picnic Shelters_Tampa' };
+  assert.equal(folders.proposalStem(gandy, '2026-11-16'), 'byOther Proposal-P11151_Tampa_11-16-2026');
+  assert.equal(folders.proposalStem({ proposal_id: 'P26011', gc_name: 'CW Hayes Construction', name: 'Wingstop - St Cloud', city: 'St Cloud', sp_path: 'ByOther/2026/CW Hayes Construction/P26011_Wingstop - St Cloud_St Cloud' }, '2026-11-16'), 'byOther Proposal-P26011_CW Hayes Construction_Wingstop - St Cloud_St Cloud_11-16-2026');   // fits: the full name
+  assert.equal(folders.proposalStem({ proposal_id: 'P1', gc_name: 'A Fairly Long General Contractor Name LLC', name: 'Medium Project Name Here', city: 'Orlando', sp_path: 'ByOther/2026/A Fairly Long General Contractor Name LLC/P1_Medium Project Name Here_Orlando' }, '2026-01-05'), 'byOther Proposal-P1_Medium Project Name Here_Orlando_01-05-2026');   // the GC goes first
+  const id = await mk({ name: 'Gandy Park Picnic Shelters And Pavilions Phase Two', gc: 'Allstate Builders Of Florida, Inc', addr: await addrOk('5151 W Gandy Blvd', 'Tampa', '33611') }); await call('POST', `/api/opportunities/${id}/status`, { status: 'Accepted' }, est);
+  const o = await opp(id), root = ['ByOther', YEAR, 'Allstate Builders Of Florida, Inc', `${o.proposalId}_Gandy Park Picnic Shelters And Pavilions Phase Two_Tampa`], long = `byOther Proposal-${o.proposalId}_Allstate Builders Of Florida, Inc_Gandy Park Picnic Shelters And Pavilions Phase Two_Tampa_11-16-2026`, short = `byOther Proposal-${o.proposalId}_Tampa_11-16-2026`;
+  for (const n of [long + '.pdf', long + ' (2).pdf', 'Hand named by the estimator with a very long name that stays exactly as it is because the app did not write it - 11-16-2026.pdf']) assert.equal((await call('POST', `/api/opportunities/${id}/files?kind=Proposal`, mkPdf(), est, n)).body.sharepoint, true);
+  await q(`UPDATE opportunity_files SET version=1 WHERE opportunity_id=$1 AND name LIKE 'byOther Proposal-%'`, [id]);   // as the estimating chat writes them
+  const prop = find(...root, '02. Proposal'), ids = kids(prop.id).map((n) => n.id).sort();
+  const v = await syncNow(id); assert.deepEqual([v.sync.shortened, v.sync.pushed, v.sync.failed], [2, 0, []]);
+  assert.deepEqual(kids(prop.id).map((n) => n.name).sort(), ['Hand named by the estimator with a very long name that stays exactly as it is because the app did not write it - 11-16-2026.pdf', short + ' (2).pdf', short + '.pdf'].sort()); assert.deepEqual(kids(prop.id).map((n) => n.id).sort(), ids);   // renamed in place, nothing copied
+  assert.deepEqual((await q(`SELECT name FROM opportunity_files WHERE opportunity_id=$1 AND version=1 ORDER BY name`, [id])).map((r) => r.name), [short + ' (2).pdf', short + '.pdf']);
+  assert.ok((await q(`SELECT sp_url FROM opportunity_files WHERE opportunity_id=$1 AND version=1`, [id])).every((r) => decodeURIComponent(r.sp_url).includes(short)));
+  assert.ok((await opp(id)).notes.some((n) => /given a shorter name so Word can open and save them/.test(n.body)));
+  const again = await syncNow(id); assert.deepEqual([again.sync.shortened, again.sync.pushed], [0, 0]); assert.equal(kids(prop.id).length, 3); assert.equal(again.total, 3);
+});

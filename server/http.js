@@ -6,9 +6,11 @@ export async function readJson(req, limit = 1_000_000) {
   if (!size) return {};
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { throw bad('Invalid JSON.'); }
 }
+// One value for each deployed version (the commit Render built, or the start time elsewhere). The page reloads itself when it changes.
+export const APP_VERSION = (process.env.RENDER_GIT_COMMIT || '').slice(0, 12) || 'started-' + Date.now();
 export const send = (res, status, body, headers = {}) => {
   const json = typeof body === 'string' || Buffer.isBuffer(body) ? body : JSON.stringify(body);
-  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', ...headers });
+  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'x-app-version': APP_VERSION, ...headers });
   res.end(json);
 };
 // A cookie with a broken %-escape is read as it is instead of failing the whole request.

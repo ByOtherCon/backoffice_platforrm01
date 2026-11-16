@@ -225,7 +225,9 @@ export async function saveProposal(user, o, chatId, input) {
 }
 // What a proposal written here says, as trades and prices, for the Submit window (so nothing is typed twice).
 export async function proposalPrices(fileId) {
-  const [f] = await q('SELECT id, name, meta, version FROM opportunity_files WHERE id=$1 AND version IS NOT NULL', [fileId]); if (!f) throw new HttpError(404, 'Proposal not found.');
+  const [f] = await q(`SELECT id, name, meta, version, parsed FROM opportunity_files WHERE id=$1 AND kind='Proposal'`, [fileId]); if (!f) throw new HttpError(404, 'Proposal not found.');
   if (!/\.pdf$/i.test(f.name)) throw bad('Choose the PDF of the proposal.');
+  // one uploaded by hand: the prices read from it when it was uploaded
+  if (f.version == null) return { fileId: f.id, name: f.name, version: null, trades: (f.parsed?.trades || []).filter((t) => t && t.trade && Number(t.amount) > 0).map((t) => ({ trade: t.trade, tradeId: t.tradeId ?? null, amount: Number(t.amount) })) };
   return { fileId: f.id, name: f.name, version: f.version, trades: await matchTrades((f.meta?.trades || []).filter((t) => t.amount !== null && t.amount !== undefined)) };
 }

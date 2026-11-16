@@ -13,8 +13,17 @@ const isManager = () => MANAGERS.includes(state.user?.role);
 const isSuper = () => state.user?.role === 'Super Admin';
 
 
+// A page left open keeps running the version it was opened with. Every answer from the server carries the live version: when it changes,
+// a bar offers a refresh, and the page refreshes by itself the next time you go to another page (never in the middle of a form).
+let liveVersion = null, staleVersion = false;
+function seeVersion(v) {
+  if (!v) return; if (!liveVersion) { liveVersion = v; return; } if (v === liveVersion || staleVersion) return; staleVersion = true;
+  const bar = document.createElement('div'); bar.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:9999;background:#1B1462;color:#fff;padding:.55rem 1rem;display:flex;gap:.8rem;justify-content:center;align-items:center;font-size:14px';
+  const b = document.createElement('button'); b.textContent = 'Refresh Now'; b.onclick = () => location.reload(); bar.append('A newer version of the platform is ready.', b); document.body.append(bar);
+}
 async function api(method, path, body) {
   const res = await fetch('/api' + path, { method, headers: body ? { 'content-type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
+  seeVersion(res.headers.get('x-app-version'));
   const data = await res.json().catch(() => ({}));
   if (res.status === 401 && path !== '/login') { state.user = null; render(); throw new Error('Please sign in again.'); }
   if (!res.ok) throw new Error(data.error || 'Something went wrong.');
@@ -1512,5 +1521,5 @@ async function render() {
     if (token === rendering) { $app.replaceChildren(view); updateBell(); updateMessagesBadge(); }
   } catch (e) { if (token === rendering && state.user) $app.replaceChildren(shell(page, h('div', { class: 'err' }, e.message))); }
 }
-addEventListener('hashchange', () => { document.querySelectorAll('.modal-bg').forEach((m) => m.remove()); render(); });   // going to another page closes any open window
+addEventListener('hashchange', () => { if (staleVersion) { location.reload(); return; } document.querySelectorAll('.modal-bg').forEach((m) => m.remove()); render(); });   // going to another page closes any open window
 boot();

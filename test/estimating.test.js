@@ -321,3 +321,20 @@ test('several leads are found from a pasted list (declined ones too) so they can
   // awards carry the day they were given, and the figures count them
   const st = (await call('GET', '/api/opportunities?tab=submittals&scope=all', null, owner)).body.stats; assert.ok(st.awardedAll >= 1); assert.ok(st.awarded >= 1); assert.equal((await get(wing)).awardedDate, today);
 });
+
+test('the owner can record a submission that went out before the lead was accepted here; a PDF already on the lead is used again instead of being refused', async () => {
+  const id = await mk({ name: 'Backdated Bid', gc: 'Back GC', addr: await verified('77 Past Ave', 'Orlando', '32801'), due: shift(today, -12) });
+  assert.equal((await status(id, 'Accepted')).status, 200); const pdf = mkPdf();
+  const up1 = await upload(id, pdf, 'Sent on the 5th.pdf'); assert.equal(up1.status, 200); assert.equal(up1.body.reused, undefined);
+  const body = { fileId: up1.body.fileId, date: shift(today, -11), method: 'Email', prices: [{ tradeId: tDemo, amount: 9100 }] };
+  const no = await call('POST', `/api/opportunities/${id}/submissions`, body, est); assert.equal(no.status, 400); assert.match(no.body.error, /cannot be before the proposal started\. The owner can record an earlier date/);
+  // trying again with the same PDF: the copy already on the lead is used
+  const up2 = await upload(id, pdf, 'Sent on the 5th (again).pdf'); assert.deepEqual([up2.status, up2.body.reused, up2.body.fileId, up2.body.name], [200, true, up1.body.fileId, 'Sent on the 5th.pdf']);
+  assert.equal((await get(id)).files.filter((f) => f.kind === 'Proposal').length, 1);
+  const pr = await call('GET', `/api/opportunity-files/${up1.body.fileId}/prices`, null, est); assert.equal(pr.status, 200); assert.equal(pr.body.fileId, up1.body.fileId);   // an uploaded PDF can be picked in the Submit window too
+  assert.equal((await call('POST', `/api/opportunities/${id}/submissions`, { ...body, date: shift(today, 1) }, owner)).status, 400);   // never in the future, for anyone
+  const ok = await call('POST', `/api/opportunities/${id}/submissions`, body, owner); assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  const o = await get(id); assert.deepEqual([o.status, o.lastSubmission.date, o.startDate, o.acceptedDate], ['Submitted', shift(today, -11), shift(today, -11), shift(today, -11)]);
+  assert.ok(o.notes.some((n) => /Recorded by the owner with a date before the lead was accepted here/.test(n.body)));
+  const other = await mk({ name: 'Other lead same PDF', gc: 'Back GC', addr: await verified('78 Past Ave', 'Orlando', '32801') }); assert.equal((await upload(other, pdf, 'Copy.pdf')).status, 409);   // the same file on another lead is still refused
+});

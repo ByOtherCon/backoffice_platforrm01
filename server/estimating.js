@@ -9,7 +9,7 @@ import { registerLinkable } from './messaging.js';
 import { tradeStats } from '../src/lib/costing.ts';
 import { sweepDeclines, regionMap } from './bids.js';
 import { requireVerified } from './address.js';
-import { saveFile, adoptFile, UPLOAD_DIR } from './documents.js';
+import { saveFile, adoptFile, sha256, UPLOAD_DIR } from './documents.js';
 import { callClaude, aiConnected } from './ai.js';
 import * as folders from './folders.js';
 import * as bundles from './bundles.js';
@@ -388,6 +388,13 @@ export async function uploadFile(user, id, bytes, filename, kind = 'Proposal', g
   // a bundled job: a proposal for one of the other GCs is kept for that GC and saved in that GC's folder only
   let forGc = null; if (gc && kind === 'Proposal') { const all = R.gcNames(o.gc_name, o.invitations), hit = all.find((g) => R.gcKey(g) === R.gcKey(gc)); if (!hit) throw bad('That GC is not on this lead.'); if (R.gcKey(hit) !== R.gcKey(o.gc_name)) forGc = hit; }
   const ext = path.extname(filename).toLowerCase(); if (kind === 'Proposal' && !['.pdf', '.docx'].includes(ext)) throw bad('The proposal must be a PDF or a Word (.docx) file.');
+  // The same file is already on this lead (a first try that did not finish, or one taken out of the folder): that copy is used, nothing is kept twice.
+  const [same] = kind === 'Proposal' && bytes.length ? await q(`SELECT id, name, parsed, mime, sp_url, sp_removed_at, storage_key FROM opportunity_files WHERE opportunity_id=$1 AND kind=$2 AND sha256=$3 ORDER BY created_at LIMIT 1`, [id, kind, sha256(bytes)]) : [];
+  if (same) {
+    let inLibrary = !!same.sp_url && !same.sp_removed_at;
+    if (!inLibrary && same.storage_key) { await q('UPDATE opportunity_files SET sp_removed_at=NULL, sp_url=NULL, sp_item_id=NULL WHERE id=$1', [same.id]); const again = await folders.pushOpportunityFile(id, { kind, filename: same.name, bytes, mime: same.mime, gc: forGc }); if (again?.webUrl) { await q('UPDATE opportunity_files SET sp_url=$2, sp_item_id=$3 WHERE id=$1', [same.id, again.webUrl, again.id ?? null]); inLibrary = true; } }
+    return { fileId: same.id, name: same.name, parsed: same.parsed ?? null, aiError: null, sharepoint: inLibrary, reused: true };
+  }
   const f = await saveFile(bytes, filename); let parsed = null, aiError = null;
   const copy = folders.pushOpportunityFile(id, { kind, filename, bytes, mime: f.mime, gc: forGc });   // runs alongside the AI reading; a SharePoint problem only adds a note
   const [row] = await q('INSERT INTO opportunity_files(opportunity_id,kind,name,storage_key,mime,size,created_by,sha256,meta) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id', [id, kind, filename.slice(0, 200), f.key, f.mime, f.size, user.id, f.sha256, forGc ? JSON.stringify({ gc: forGc }) : null]);
@@ -482,7 +489,10 @@ export async function addSubmission(user, id, b) {
   return tx(async (t) => {
     const [o] = await t('SELECT * FROM opportunities WHERE id=$1 FOR UPDATE', [id]); if (!o) throw new HttpError(404, 'Opportunity not found.');
     if (!['Accepted', 'Started'].includes(o.status)) throw new HttpError(409, o.status === 'Submitted' ? 'Already submitted. Reopen it for revision to submit a new version.' : `A ${W.statusName(o.status)} opportunity cannot be submitted.`);
-    if (o.start_date && date < o.start_date) throw bad('Submission cannot be before the proposal started.');
+    // A submission dated before the lead was accepted is refused, except for the owner, who records bids that went out before they were
+    // entered here. The accepted and started dates then move back to that day so the lead's dates stay in order.
+    const early = !!o.start_date && date < o.start_date;
+    if (early && user.role !== 'Super Admin') throw bad('Submission cannot be before the proposal started. The owner can record an earlier date.');
     const [f] = await t(`SELECT id, kind, name, submission_id FROM opportunity_files WHERE id=$1 AND opportunity_id=$2 FOR UPDATE`, [b.fileId, id]); if (!f || f.kind !== 'Proposal' || !/\.pdf$/i.test(f.name)) throw bad('Upload the proposal PDF for this opportunity.'); if (f.submission_id) throw bad('That PDF was already used for a submission. Upload the new version.');
     const trades = []; for (const r of rows) { const [tr] = await t('SELECT id, name FROM trades WHERE id=$1 AND NOT archived', [r.tradeId]); if (!tr) throw bad('Choose trades from Admin.'); trades.push({ tradeId: tr.id, name: tr.name, amount: r.amount }); }
     const price = r2(trades.reduce((n, x) => n + x.amount, 0)); const [{ v }] = await t('SELECT COALESCE(MAX(version),0)+1 AS v FROM submissions WHERE opportunity_id=$1', [id]);
@@ -491,8 +501,9 @@ export async function addSubmission(user, id, b) {
     await t('DELETE FROM opportunity_trades WHERE opportunity_id=$1', [id]); for (const x of trades) await t('INSERT INTO opportunity_trades(opportunity_id,trade_id,amount) VALUES ($1,$2,$3)', [id, x.tradeId, x.amount]);
     await closeCases(t, id, 'Superseded', `Replaced by bid version ${v}`); await openCase(t, id, s.id);
     const sets = ['status', 'progress'], vals = ['Submitted', 'Done']; if (b.plannedStart) { sets.push('planned_start'); vals.push(dateStr(b.plannedStart, 'Planned start date')); }
+    if (early) { sets.push('start_date'); vals.push(date); if (o.accepted_date && o.accepted_date > date) { sets.push('accepted_date'); vals.push(date); } }
     await t(`UPDATE opportunities SET ${sets.map((k, i) => `${k}=$${i + 2}`).join(',')}, result='Pending', lost_reason=NULL WHERE id=$1`, [id, ...vals]);
-    await sys(t, id, user, `Status changed ${W.statusName(o.status)} → Submitted by ${who(user)}. Bid version ${v} sent ${date} (${b.method}), ${price.toFixed(2)} across ${trades.length} trade${trades.length === 1 ? '' : 's'}. Follow-up case opened.`);
+    await sys(t, id, user, `Status changed ${W.statusName(o.status)} → Submitted by ${who(user)}. Bid version ${v} sent ${date} (${b.method}), ${price.toFixed(2)} across ${trades.length} trade${trades.length === 1 ? '' : 's'}. Follow-up case opened.${early ? ` Recorded by the owner with a date before the lead was accepted here (${o.start_date}); the accepted and started dates were moved back to ${date}.` : ''}`);
     const n = text(b.noteText, 'Note', { max: 2000, required: false }); if (n) await addNote(t, id, user, 'User', n);
     return { id: s.id, version: v, price };
   });

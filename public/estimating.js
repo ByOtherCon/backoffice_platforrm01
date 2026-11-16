@@ -210,19 +210,19 @@ async function submitModal(o) {
   file.onchange = guard(info, async () => {
     const pdf = file.files[0]; if (!pdf) return; fileId = null; notice(info, 'Uploading and reading the proposal…', 'ok');
     const r = await uploadFile(`/opportunities/${o.id}/files?kind=Proposal`, pdf); fileId = r.fileId;
-    const copied = r.sharepoint ? ' It was also copied to the 02. Proposal folder in SharePoint.' : '';
+    const copied = r.reused ? ' This PDF was already on the lead, so that copy is used.' : r.sharepoint ? ' It was also copied to the 02. Proposal folder in SharePoint.' : '';
     if (r.parsed) { rows = r.parsed.trades.map((t) => ({ tradeId: t.tradeId || '', amount: t.amount, hint: t.trade })); notice(info, `Read ${rows.length} trade${rows.length === 1 ? '' : 's'} from the PDF. Check every amount before saving.${copied}`, 'ok'); r.parsed.warnings.forEach((w) => info.append(h('div', { class: 'err' }, w))); }
-    else { notice(info, r.aiError ? r.aiError : 'The PDF is saved. Enter the trades and amounts below.', r.aiError ? 'err' : 'ok'); }
+    else { notice(info, r.aiError ? r.aiError : `The PDF is saved. Enter the trades and amounts below.${r.reused ? copied : ''}`, r.aiError ? 'err' : 'ok'); }
     redraw();
   });
   redraw();
   // a proposal written in the estimating chat is already saved on the lead: pick it instead of uploading it again, and its prices fill in
-  const savedList = (o.files || []).filter((x) => x.kind === 'Proposal' && x.version && /\.pdf$/i.test(x.name) && !x.used).sort((a, b) => b.version - a.version);
-  const saved = h('select', {}, h('option', { value: '' }, 'Choose a saved proposal…'), savedList.map((x) => h('option', { value: x.id }, `Version ${x.version} · ${x.name}`)));
+  const savedList = (o.files || []).filter((x) => x.kind === 'Proposal' && /\.pdf$/i.test(x.name) && !x.used && !x.removed).sort((a, b) => String(b.at).localeCompare(String(a.at)));
+  const saved = h('select', {}, h('option', { value: '' }, 'Choose a saved proposal…'), savedList.map((x) => h('option', { value: x.id }, `${x.version ? `Version ${x.version} · ` : ''}${x.name}`)));
   saved.onchange = guard(info, async () => { if (!saved.value) return; const r = await api('GET', `/opportunity-files/${saved.value}/prices`); fileId = r.fileId; file.value = '';
     if (r.trades.length) rows = r.trades.map((t) => ({ tradeId: t.tradeId || '', amount: t.amount, hint: t.trade })); notice(info, `Using ${r.name}. ${r.trades.length ? 'Its prices were filled in below; check every amount before saving.' : 'It has no prices yet; enter the trades and amounts below.'}`, 'ok'); redraw(); });
-  formModal(`Submit proposal · ${o.name}`, [summary(o), h('div', { class: 'wide' }, h('label', {}, lbl('Proposal PDF', true)), file, savedList.length ? h('div', { style: 'margin-top:.4rem' }, h('span', { class: 'muted', style: 'font-size:13px' }, 'Or one written in the estimating chat: '), saved) : '', info), h('div', { class: 'wide' }, h('label', {}, lbl('Trades and amounts', true)), table, h('div', { class: 'row', style: 'justify-content:space-between;margin-top:.4rem' }, h('span', { class: 'muted' }, 'Proposal total'), total)),
-    field(lbl('Date submitted', true), f.date), field(lbl('How it was sent', true), f.method), field('Known project start (optional)', f.start), field('Note', f.note, 'wide')],
+  formModal(`Submit proposal · ${o.name}`, [summary(o), h('div', { class: 'wide' }, h('label', {}, lbl('Proposal PDF', true)), file, savedList.length ? h('div', { style: 'margin-top:.4rem' }, h('span', { class: 'muted', style: 'font-size:13px' }, 'Or one already on this lead: '), saved) : '', info), h('div', { class: 'wide' }, h('label', {}, lbl('Trades and amounts', true)), table, h('div', { class: 'row', style: 'justify-content:space-between;margin-top:.4rem' }, h('span', { class: 'muted' }, 'Proposal total'), total)),
+    h('div', {}, h('label', {}, lbl('Date submitted', true)), f.date, state.user.role === 'Super Admin' && o.startDate ? h('div', { class: 'muted', style: 'font-size:12px' }, `As the owner you can enter a date before ${fmtDay(o.startDate)}, the day it was accepted here.`) : ''), field(lbl('How it was sent', true), f.method), field('Known project start (optional)', f.start), field('Note', f.note, 'wide')],
   async () => {
     if (!fileId) throw new Error('Upload the proposal PDF first.');
     if (rows.some((r) => !r.tradeId || !(Number(r.amount) > 0))) throw new Error('Every row needs a trade and an amount.');

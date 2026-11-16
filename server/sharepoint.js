@@ -107,6 +107,8 @@ export async function copyItem(itemId, destFolderId) {
   const d = await driveId(); const r = await graph('POST', `/drives/${d}/items/${encodeURIComponent(itemId)}/copy`, { body: { parentReference: { driveId: d, id: destFolderId } } });
   if (!r) throw new HttpError(404, 'That SharePoint item no longer exists.'); return true;
 }
+// Deletes a file from the library (it goes to the SharePoint recycle bin). Already gone counts as done.
+export async function deleteItem(itemId) { const d = await driveId(); await graph('DELETE', `/drives/${d}/items/${encodeURIComponent(itemId)}`); return true; }
 // Gives a file its name (keeping the ending). Used to repair copies that were saved without one.
 export async function renameFile(itemId, filename) {
   const d = await driveId(); const r = await graph('PATCH', `/drives/${d}/items/${itemId}`, { body: { name: cleanFileName(filename) } });

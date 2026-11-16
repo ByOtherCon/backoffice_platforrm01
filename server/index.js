@@ -294,6 +294,7 @@ route('POST', '/api/opportunities/:id/status', async ({ user, params, body }) =>
 route('POST', '/api/opportunities/:id/notes', async ({ user, params, body }) => { await es.addUserNote(estWrite(user), uuid(params.id), body.body); return { ok: true }; });
 route('POST', '/api/opportunities/:id/plans', async ({ req, user, params }) => es.uploadPlans(estWrite(user), uuid(params.id), req, fname(req)), { raw: true });
 route('POST', '/api/opportunities/:id/files', async ({ req, user, params }) => es.uploadFile(estWrite(user), uuid(params.id), await readRaw(req), fname(req), q1(req, 'kind') || 'Proposal', q1(req, 'gc') || null), { raw: true });
+route('POST', '/api/opportunities/:id/proposals/remove', async ({ user, params, body }) => es.removeProposal(estWrite(user), uuid(params.id), body || {}));
 route('DELETE', '/api/opportunities/:id/files/:fid', async ({ user, params }) => { await es.deleteFile(estWrite(user), uuid(params.id), uuid(params.fid)); return { ok: true }; });
 route('GET', '/api/opportunity-files/:fid', async ({ res, user, params }) => {
   estRead(user); const d = await es.fileForDownload(uuid(params.fid)); if (!fs.existsSync(d.file)) throw new HttpError(404, 'File is missing from storage.');

@@ -300,14 +300,14 @@ export async function syncOpportunity(id, { force = false } = {}) {
 // and `latestWord` are what the lead and the project show.
 export async function proposalView(oppId) {
   const [o] = await q('SELECT gc_name, invitations FROM opportunities WHERE id=$1', [oppId]); if (!o) throw new HttpError(404, 'Opportunity not found.');
-  const app = await q(`SELECT id, name, created_at, sp_url, meta, (storage_key IS NOT NULL) AS local FROM opportunity_files WHERE opportunity_id=$1 AND kind='Proposal' AND sp_removed_at IS NULL`, [oppId]);
+  const app = await q(`SELECT id, name, created_at, sp_url, sp_item_id, submission_id, meta, (storage_key IS NOT NULL) AS local FROM opportunity_files WHERE opportunity_id=$1 AND kind='Proposal' AND sp_removed_at IS NULL`, [oppId]);
   let lib = { enabled: enabled(), linked: false, proposals: [] }; try { lib = await folderFiles(oppId); } catch (e) { lib = { enabled: enabled(), linked: false, proposals: [], error: oneLine(e) }; }
   const others = await otherGcs(oppId, o), iso = (d) => (d ? new Date(d).toISOString() : null), wordOrPdf = (n) => /\.(pdf|docx?)$/i.test(n) && !n.startsWith('~$');
   // one GC's proposals: what the app holds for it and what is in its folder, the same file counted once (it opens from the library)
   const merge = (mine, found) => {
     const by = new Map();
-    for (const f of mine) by.set((cleanFileName(f.name) || f.name).toLowerCase(), { name: f.name, at: iso(f.created_at), href: f.local ? `/api/opportunity-files/${f.id}` : f.sp_url, where: 'App', fileId: f.id });
-    for (const s of found) { const k = s.name.toLowerCase(), cur = by.get(k); by.set(k, { name: s.name, at: iso(s.modified) ?? cur?.at ?? null, href: s.webUrl || cur?.href, where: cur ? 'App and SharePoint' : 'SharePoint', fileId: cur?.fileId ?? null }); }
+    for (const f of mine) by.set((cleanFileName(f.name) || f.name).toLowerCase(), { name: f.name, at: iso(f.created_at), href: f.local ? `/api/opportunity-files/${f.id}` : f.sp_url, where: 'App', fileId: f.id, itemId: f.sp_item_id ?? null, used: !!f.submission_id });
+    for (const s of found) { const k = s.name.toLowerCase(), cur = by.get(k); by.set(k, { name: s.name, at: iso(s.modified) ?? cur?.at ?? null, href: s.webUrl || cur?.href, where: cur ? 'App and SharePoint' : 'SharePoint', fileId: cur?.fileId ?? null, itemId: s.id ?? cur?.itemId ?? null, used: !!cur?.used }); }
     const all = [...by.values()].filter((x) => x.href).sort((x, y) => String(y.at || '').localeCompare(String(x.at || '')));
     const latestPdf = all.find((x) => /\.pdf$/i.test(x.name)) ?? null, latestWord = all.find((x) => /\.docx?$/i.test(x.name)) ?? null;
     return { latestPdf, latestWord, total: all.length, earlier: all.filter((x) => x !== latestPdf && x !== latestWord) };
@@ -320,6 +320,20 @@ export async function proposalView(oppId) {
   }
   return { enabled: !!lib.enabled, linked: !!lib.linked, error: lib.error ?? null, folderUrl: lib.folderUrl ?? null, proposalFolderUrl: lib.proposalFolderUrl ?? null, plansFolderUrl: lib.plansFolderUrl ?? null,
     gc: o.gc_name, ...merge(app.filter((f) => !ownerOf(others, f.meta?.gc)), lib.proposals || []), gcs, plans: lib.allPlans ?? [] };
+}
+
+// Deletes one proposal file from the lead's library folders (02. Proposal of the main GC or of another GC of a bundle), by the library's
+// id or, failing that, by name. Only a file that really is in one of those folders can be deleted this way. Returns its name, or null.
+export async function removeLibraryProposal(oppId, { itemId = null, name = null }) {
+  pdfSeen.delete(oppId);
+  if (!enabled()) return null;
+  const [o] = await q('SELECT sp_item_id FROM opportunities WHERE id=$1', [oppId]); if (!o) throw new HttpError(404, 'Opportunity not found.');
+  const want = name ? (cleanFileName(name) || name).toLowerCase() : null;
+  for (const folderId of [o.sp_item_id, ...(await extraFolders(oppId)).map((x) => x.sp_item_id)].filter(Boolean)) {
+    const kids = (await SP.listPath(folderId, SUBFOLDER.Proposal)).filter((k) => !k.folder), hit = (itemId && kids.find((k) => k.id === itemId)) || (!itemId && want && kids.find((k) => k.name.toLowerCase() === want));
+    if (hit) { await SP.deleteItem(hit.id); return { name: hit.name }; }
+  }
+  return null;
 }
 
 // The latest proposal PDF of a lead, for the Submittal Tracker: one for the lead's GC (the newer of the app's own and what is in the

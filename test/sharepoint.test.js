@@ -39,6 +39,7 @@ const graph = async (url, init = {}) => {
     const b = JSON.parse(init.body); if (kids(id).some((n) => n.name.toLowerCase() === b.name.toLowerCase())) return res({ error: { code: 'nameAlreadyExists' } }, 409); return res(item(add(id, b.name)), 201); }
   if ((g = r.match(/^\/drives\/drv1\/items\/([^/]+):\/(.+):\/children$/)) && m === 'GET') { let cur = nodes.get(g[1]); for (const seg of g[2].split('/')) cur = cur && kids(cur.id).find((n) => n.name === seg); return cur ? res({ value: kids(cur.id).map(item) }) : res({}, 404); }
   if ((g = r.match(/^\/drives\/drv1\/items\/([^/]+)\/copy$/)) && m === 'POST') { const src = nodes.get(g[1]), to = JSON.parse(init.body).parentReference.id; if (!src || !nodes.get(to)) return res({}, 404); if (kids(to).some((n) => n.name.toLowerCase() === src.name.toLowerCase())) return res({ error: { code: 'nameAlreadyExists' } }, 409); const dup = (n, parent) => { const c = add(parent, n.name, n.folder, { size: n.size, bytes: n.bytes }); for (const k of kids(n.id)) dup(k, c.id); }; dup(src, to); return res({}, 202); }
+  if ((g = r.match(/^\/drives\/drv1\/items\/([^/]+)$/)) && m === 'DELETE') { if (!nodes.get(g[1])) return res({}, 404); drop(g[1]); return res({}, 204); }
   if ((g = r.match(/^\/drives\/drv1\/items\/([^/]+)$/)) && m === 'PATCH') { const n = nodes.get(g[1]); if (!n) return res({}, 404); n.name = JSON.parse(init.body).name; return res(item(n)); }
   if ((g = r.match(/^\/drives\/drv1\/items\/([^/]+):\/(.+):\/content$/)) && m === 'PUT') { const n = add(g[1], g[2], false, { size: init.body.length, text: Buffer.from(init.body).toString('latin1').slice(0, 20), bytes: init.body.length < 2e6 ? Buffer.from(init.body) : null }); return res(item(n), 201); }
   // reading a file back: its details, then its bytes
@@ -369,4 +370,30 @@ test('a file deleted in SharePoint stays deleted: it is not copied back and drop
   // moved into a folder of my own inside the job folder: left alone, still listed
   const mineDir = add(prop.id, 'Old versions'); find(...root, '02. Proposal', 'Renamed by me.pdf').parent = mineDir.id;
   const moved = await syncNow(id); assert.deepEqual([moved.sync.removed, moved.sync.pushed], [0, 0]); assert.equal(kids(prop.id).filter((n) => !n.folder).length, 1); assert.deepEqual((await opp(id)).files.map((f) => f.name), ['Renamed by me.pdf']);
+});
+
+test('proposals are uploaded and removed on the lead like plans: PDF or Word; Remove takes the file off the lead and out of SharePoint, and the next newest shows', async () => {
+  const id = await mk({ name: 'Proposal desk job', gc: 'Desk GC', addr: await addrOk('3 Paper St', 'Orlando', '32801') }); await call('POST', `/api/opportunities/${id}/status`, { status: 'Accepted' }, est);
+  const view = async () => (await call('GET', `/api/opportunities/${id}/proposal-files`, null, est)).body, remove = (b, who = est) => call('POST', `/api/opportunities/${id}/proposals/remove`, b, who);
+  const docx = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.from('word/document.xml a small word file')]);
+  const p1 = await call('POST', `/api/opportunities/${id}/files?kind=Proposal`, mkPdf(), est, 'Price v1.pdf'); assert.equal(p1.status, 200);
+  const w1 = await call('POST', `/api/opportunities/${id}/files?kind=Proposal`, docx, est, 'Price v1.docx'); assert.equal(w1.status, 200, JSON.stringify(w1.body)); assert.equal(w1.body.parsed, null);
+  assert.match((await call('POST', `/api/opportunities/${id}/files?kind=Proposal`, Buffer.from('hello'), est, 'notes.txt')).body.error, /PDF or a Word/);
+  assert.equal((await call('POST', `/api/opportunities/${id}/submissions`, { fileId: w1.body.fileId, date: today, method: 'Email', prices: [{ tradeId: tDemo, amount: 100 }] }, est)).status, 400);   // only a PDF can be submitted
+  const o = await opp(id), root = ['ByOther', YEAR, 'Desk GC', `${o.proposalId}_Proposal desk job_Orlando`], prop = find(...root, '02. Proposal'); add(prop.id, 'Hand saved.pdf', false, { size: 8 });
+  let v = await view(); assert.deepEqual([v.latestPdf.name, v.latestPdf.fileId, !!v.latestPdf.itemId, v.latestWord.name], ['Hand saved.pdf', null, true, 'Price v1.docx']); assert.deepEqual(v.earlier.map((x) => x.name), ['Price v1.pdf']);
+  // a file saved into the folder by hand: removed from the folder
+  let r = await remove({ itemId: v.latestPdf.itemId }); assert.deepEqual([r.status, r.body.library, r.body.name], [200, true, 'Hand saved.pdf']); assert.equal(find(...root, '02. Proposal', 'Hand saved.pdf'), null);
+  assert.equal((await remove({ itemId: find(...root, '01. DL').id })).status, 404); assert.equal((await remove({ itemId: 'nope' })).status, 404); assert.equal((await remove({})).status, 400); assert.equal((await remove({ fileId: p1.body.fileId }, pm)).status, 403);
+  // one the app holds: off the lead and out of the folder, and the sync does not bring it back
+  v = await view(); assert.equal(v.latestPdf.name, 'Price v1.pdf'); r = await remove({ fileId: v.latestPdf.fileId, itemId: v.latestPdf.itemId }); assert.deepEqual([r.status, r.body.library, r.body.kept], [200, true, false]);
+  assert.equal(find(...root, '02. Proposal', 'Price v1.pdf'), null); assert.deepEqual((await opp(id)).files.map((f) => f.name), ['Price v1.docx']);
+  const s1 = await syncNow(id); assert.deepEqual([s1.sync.pushed, s1.sync.removed, s1.latestPdf], [0, 0, null]); assert.equal(s1.latestWord.name, 'Price v1.docx');
+  assert.ok((await opp(id)).notes.some((n) => /Proposal file "Price v1\.pdf" removed by est \(also from the SharePoint folder/.test(n.body)));
+  // one that was submitted: gone from the folder and the list, kept on the submission
+  const p2 = await call('POST', `/api/opportunities/${id}/files?kind=Proposal`, mkPdf(), est, 'Sent.pdf');
+  assert.equal((await call('POST', `/api/opportunities/${id}/submissions`, { fileId: p2.body.fileId, date: today, method: 'Email', prices: [{ tradeId: tDemo, amount: 4000 }] }, est)).status, 200);
+  r = await remove({ fileId: p2.body.fileId }); assert.deepEqual([r.status, r.body.kept, r.body.library], [200, true, true]); assert.equal(find(...root, '02. Proposal', 'Sent.pdf'), null);
+  const after = await opp(id); assert.ok(after.files.some((f) => f.name === 'Sent.pdf' && f.removed)); assert.equal(after.submissions[0].fileId, p2.body.fileId); assert.equal((await view()).latestPdf, null);
+  assert.equal((await fetch(`${base}/api/opportunity-files/${p2.body.fileId}`, { headers: { cookie: est } })).status, 200);   // still opens from the submission
 });

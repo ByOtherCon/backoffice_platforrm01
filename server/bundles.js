@@ -225,3 +225,26 @@ export async function splitStartedBundles() {
   for (const r of rows) { try { n += (await splitByGc(null, r.id)).length; } catch (e) { console.error('splitting a started bundle failed', e.message); } }
   return n;
 }
+
+// ------------------------------------------------------------------ an invitation that landed on the wrong lead
+// A GC's invitation that was joined to a lead by mistake (another store at the same mall, for example) is taken off it. Its email is
+// marked unread for the feed, so the next refresh reads it again and, now that it no longer matches, makes it a lead of its own.
+// A GC that came in as a lead of its own and was bundled is taken out with Split Out instead.
+export async function removeInvitation(user, id, b) {
+  const gc = String(b?.gc || '').trim(); if (!gc) throw bad('Choose the GC to take out.');
+  const out = await tx(async (t) => {
+    const [o] = await t('SELECT * FROM opportunities WHERE id=$1 FOR UPDATE', [id]); if (!o) throw new HttpError(404, 'Opportunity not found.');
+    if (o.merged_into) throw new HttpError(409, 'This job was bundled into another lead. Open the main lead.');
+    if (['Awarded'].includes(o.status) || o.project_id) throw new HttpError(409, 'The job is already awarded.');
+    if (R.gcKey(gc) === R.gcKey(o.gc_name)) throw bad('That is the main GC of this lead.');
+    const invs = Array.isArray(o.invitations) ? o.invitations : [], inv = invs.find((x) => R.gcKey(x.gc) === R.gcKey(gc)); if (!inv) throw bad('That GC is not on this lead.');
+    const [own] = await t('SELECT id FROM opportunities WHERE merged_into=$1 AND lower(gc_name)=lower($2)', [id, inv.gc]); if (own) throw new HttpError(409, `${inv.gc} came in as its own lead. Use Split Out ${inv.gc} instead.`);
+    const left = invs.filter((x) => x !== inv);
+    await t('UPDATE opportunities SET invitations=$2, additional_gcs=$3, gmail_thread_id = CASE WHEN gmail_thread_id=$4 THEN NULL ELSE gmail_thread_id END WHERE id=$1', [id, JSON.stringify(left), additional(o.gc_name, left), inv.threadId || '']);
+    await t('DELETE FROM opportunity_folders WHERE opportunity_id=$1 AND lower(gc_name)=lower($2)', [id, inv.gc]);
+    if (inv.threadId) await t('DELETE FROM bid_threads WHERE thread_id=$1', [inv.threadId]);
+    await note(t, id, user, `${who(user)} took ${inv.gc}'s invitation off this lead: it is a different job.${inv.threadId ? ' Its email will be read again on the next refresh and become a lead of its own.' : ''}${o.folder_per_gc || o.sp_item_id ? ' A SharePoint folder already made under that GC stays where it is.' : ''}`);
+    return { ok: true, gc: inv.gc, reread: !!inv.threadId };
+  });
+  return out;
+}

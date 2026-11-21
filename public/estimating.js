@@ -459,8 +459,12 @@ function bundleSection(o, w, msg) {
   const awarded = o.status === 'Awarded';
   return h('div', { class: 'card', style: 'margin-top:.8rem;padding:.7rem 1rem' }, h('label', {}, 'Pitched to more than one GC'),
     h('p', { style: 'margin:.2rem 0' }, o.gcs.join(' · '), '. One job and one submission. ', awarded ? '' : 'Any of these GCs can award it.'), h('p', { class: 'muted', style: 'margin:.2rem 0;font-size:14px' }, FOLDERS_SAY),
-    w && !awarded && (o.bundled || []).length ? h('div', { class: 'row', style: 'gap:.5rem;flex-wrap:wrap;margin-top:.4rem' },
-      o.bundled.map((x) => h('button', { class: 'small', title: `Make ${x.gc} its own lead again`, onclick: guard(msg, async () => { if (!confirm(`Take ${x.gc} out of this bundle and make it its own lead again?`)) return; await api('POST', `/opportunities/${x.id}/unbundle`, {}); render(); }) }, `Split Out ${x.gc}`))) : '');
+    w && !awarded ? h('div', { class: 'row', style: 'gap:.5rem;flex-wrap:wrap;margin-top:.4rem' },
+      (o.bundled || []).map((x) => h('button', { class: 'small', title: `Make ${x.gc} its own lead again`, onclick: guard(msg, async () => { if (!confirm(`Take ${x.gc} out of this bundle and make it its own lead again?`)) return; await api('POST', `/opportunities/${x.id}/unbundle`, {}); render(); }) }, `Split Out ${x.gc}`)),
+      // a GC whose invitation email was joined to this lead (it never had a lead of its own): taken off when it is a different job
+      o.gcs.slice(1).filter((g) => !(o.bundled || []).some((x) => x.gc.toLowerCase() === g.toLowerCase())).map((g) => h('button', { class: 'small', title: `${g}'s invitation is a different job: take it off this lead`, onclick: guard(msg, async () => {
+        if (!confirm(`Take ${g}'s invitation off this lead?\n\nUse this when it is a different job (another store at the same mall, for example). Its email is read again on the next refresh and becomes a lead of its own.`)) return;
+        const r = await api('POST', `/opportunities/${o.id}/invitations/remove`, { gc: g }); render(); if (r.reread) setTimeout(() => alert(`${g} is off this lead. Press Refresh Now on Bid Opportunities to bring its invitation in as its own lead.`), 50); }) }, `Not This Job: ${g}`))) : '');
 }
 async function opportunityDetail(id, err, w, editing) {
   const o = await api('GET', '/opportunities/' + id), op = await opts(), known = await api('GET', '/gcs/known');

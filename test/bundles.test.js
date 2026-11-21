@@ -157,3 +157,14 @@ test('Started: a job with several GCs becomes one Started proposal for each GC, 
   // it is not offered for bundling again, and running the split again changes nothing
   assert.ok(!(await call('GET', '/api/opportunities/bundles', null, est)).body.groups.some((g) => g.leads.some((l) => [x, y, three.id].includes(l.id)))); assert.equal(await bn.splitStartedBundles(), 0); assert.deepEqual(await bn.splitByGc(null, x), []);
 });
+
+test('a GC invitation joined to the wrong lead is taken off it, and its email is read again as a lead of its own', async () => {
+  const id = await lead('Abercrombie - Mall at Millenia', 'Sachse Construction', { city: 'Orlando', address: '4200 Conroy Road, Space #C-196' });
+  const inv = [{ gc: 'Sachse Construction', threadId: 'ts1' }, { gc: 'Powerhouse Retail Services, LLC', contactName: 'Nemanja', threadId: 'tp1', link: 'https://app.buildingconnected.com/x' }];
+  await q(`UPDATE opportunities SET invitations=$2, additional_gcs='Powerhouse Retail Services, LLC' WHERE id=$1`, [id, JSON.stringify(inv)]); await q(`INSERT INTO bid_threads(thread_id, history_id) VALUES ('tp1','h'),('ts1','h') ON CONFLICT DO NOTHING`);
+  assert.equal((await call('POST', `/api/opportunities/${id}/invitations/remove`, { gc: 'Sachse Construction' }, est)).status, 400);   // the main GC
+  assert.equal((await call('POST', `/api/opportunities/${id}/invitations/remove`, { gc: 'Nobody' }, est)).status, 400);
+  const r = await call('POST', `/api/opportunities/${id}/invitations/remove`, { gc: 'powerhouse retail services' }, est); assert.equal(r.status, 200, JSON.stringify(r.body)); assert.deepEqual([r.body.gc, r.body.reread], ['Powerhouse Retail Services, LLC', true]);
+  const o = await get(id); assert.deepEqual([o.gcs, o.additionalGcs], [['Sachse Construction'], null]); assert.ok(o.notes.some((n) => /took Powerhouse Retail Services, LLC's invitation off this lead: it is a different job/.test(n.body)));
+  assert.deepEqual((await q(`SELECT thread_id FROM bid_threads WHERE thread_id IN ('tp1','ts1') ORDER BY 1`)).map((x) => x.thread_id), ['ts1']);   // only that email is read again
+});

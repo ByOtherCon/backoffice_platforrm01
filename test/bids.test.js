@@ -268,3 +268,22 @@ test('work taken on after its bid date is left alone by the clean-up, and Decide
   const early = (await q(`INSERT INTO opportunities(name,gc_name,city,due_date,status,accepted_date,source_key) VALUES ('Accepted in time','GC','Orlando',$1,'Accepted',$2,'late-2') RETURNING id`, [shift(today, -6), shift(today, -9)]))[0].id;
   await bidsSweep(); assert.equal((await q('SELECT status FROM opportunities WHERE id=$1', [early]))[0].status, 'Decided Not To Submit');
 });
+
+test('a busy mailbox: every page of the BuildingConnected search is read, not only the 50 newest; the owner can look back 30 days', async () => {
+  const seenQ = [];
+  // 70 BuildingConnected threads: Gmail answers 50, then the other 20 on a second page
+  const many = Array.from({ length: 70 }, (_, i) => ({ id: `pg${i}`, historyId: 'x1' }));
+  bd.setGoogleFetch(async (url, init) => { const x = new URL(url);
+    if (x.pathname.endsWith('/threads')) { const q2 = x.searchParams.get('q') || ''; seenQ.push(`${q2} ${x.searchParams.get('pageToken') || ''}`.trim());
+      if (q2.startsWith('from:buildingconnected.com')) return { ok: true, status: 200, json: async () => (x.searchParams.get('pageToken') === 'p2' ? { threads: many.slice(50) } : { threads: many.slice(0, 50), nextPageToken: 'p2' }) };
+      return { ok: true, status: 200, json: async () => ({}) }; }
+    const m = x.pathname.match(/threads\/(pg\d+)$/); if (m) return { ok: true, status: 200, json: async () => ({ id: m[1], messages: [{ id: 'm' + m[1], internalDate: '1793000000000', payload: { mimeType: 'text/plain', headers: [{ name: 'From', value: 'team@buildingconnected.com' }, { name: 'Subject', value: 'General Memo' }], body: { data: b64('A memo, not an invitation.') } } }] }) };
+    return googleStandIn(url, init); });
+  await call('POST', '/api/bids/refresh', {}, est); await waitIdle();
+  assert.ok(seenQ.includes('from:buildingconnected.com newer_than:14d p2'), 'the second page was asked for');
+  assert.equal((await call('GET', '/api/bids/status', null, est)).body.last.threads, 70);   // all 70 read, the 20 older ones too
+  assert.equal((await q(`SELECT count(*)::int AS n FROM bid_threads WHERE thread_id LIKE 'pg%'`))[0].n, 70);
+  seenQ.length = 0; assert.equal((await call('POST', '/api/bids/refresh', { days: 30 }, owner)).status, 200); await waitIdle();
+  assert.ok(seenQ.some((x) => x.startsWith('from:buildingconnected.com newer_than:30d')) && !seenQ.some((x) => x.includes('newer_than:14d')));
+  bd.setGoogleFetch(googleStandIn);
+});

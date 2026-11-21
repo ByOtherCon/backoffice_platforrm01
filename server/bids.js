@@ -87,16 +87,27 @@ export function emailText(thread) {
 }
 export async function bidSettings() { return { label: '', ...((await q(`SELECT value FROM app_settings WHERE key='bids'`))[0]?.value ?? {}) }; }
 export async function saveBidSettings(b) { const label = text(b.label, 'Gmail label', { max: 100, required: false }); if (/["\\]/.test(label)) throw bad('A Gmail label cannot contain quotes.'); await q(`INSERT INTO app_settings(key,value) VALUES ('bids',$1) ON CONFLICT (key) DO UPDATE SET value=$1, updated_at=now()`, [{ label }]); }
-// Search by SENDER, not by label (labels return nothing). Newest first, up to 50 threads per search; if nothing at all turns up, look back 30 days once.
+// Search by SENDER, not by label (labels return nothing). Newest first, following Gmail's pages: a busy mailbox gets well over 50
+// BuildingConnected emails in two weeks (memos and addenda included), and a page of 50 alone would leave the older invitations unread.
+// A refresh looks back 14 days (30 if nothing at all turns up); the owner can ask for a longer look back after the feed was off.
 export const GATHER_QUERIES = (days, label) => [`from:buildingconnected.com newer_than:${days}d`, `"invitation to bid" newer_than:${days}d`, `"invited to bid" newer_than:${days}d`, ...(label ? [`label:"${label}" newer_than:${days}d`] : [])];
-async function gather(c) {
+const PER_RUN = 120;   // threads read by the AI in one refresh; anything beyond waits for the next one
+async function gather(c, lookBack = 14) {
   const { label } = await bidSettings(); const seen = new Map(); let widened = false;
-  for (const days of [14, 30]) {
-    for (const query of GATHER_QUERIES(days, label)) { const r = await c.request('threads', { q: query, maxResults: '50' }); for (const t of r.threads || []) if (!seen.has(t.id)) seen.set(t.id, t.historyId || ''); }
+  for (const days of lookBack > 14 ? [lookBack] : [14, 30]) {
+    for (const [i, query] of GATHER_QUERIES(days, label).entries()) {
+      let page = null;
+      for (let n = 0; n < (i === 0 ? 10 : 2); n++) {   // the BuildingConnected search follows up to 10 pages (500 threads); the others 2
+        const r = await c.request('threads', { q: query, maxResults: '50', ...(page ? { pageToken: page } : {}) });
+        for (const t of r.threads || []) if (!seen.has(t.id)) seen.set(t.id, t.historyId || '');
+        page = r.nextPageToken || null; if (!page) break;
+      }
+    }
     if (seen.size) break; widened = true;
   }
   const done = new Map((await q('SELECT thread_id, history_id FROM bid_threads')).map((r) => [r.thread_id, r.history_id]));
-  return { all: seen.size, widened, todo: [...seen].filter(([id, h]) => done.get(id) !== h).slice(0, 60).map(([id, historyId]) => ({ id, historyId })) };
+  const todo = [...seen].filter(([id, h]) => done.get(id) !== h);
+  return { all: seen.size, widened, waiting: Math.max(0, todo.length - PER_RUN), todo: todo.slice(0, PER_RUN).map(([id, historyId]) => ({ id, historyId })) };
 }
 
 // ------------------------------------------------------------------ pulling the job details out of the emails
@@ -211,14 +222,14 @@ export async function sweepDeclines(rl) {
 // ------------------------------------------------------------------ one refresh, start to finish
 let running = null;
 export const isRunning = () => !!running;
-export async function runRefresh({ trigger = 'Manual', userId = null } = {}) {
+export async function runRefresh({ trigger = 'Manual', userId = null, days = 14 } = {}) {
   if (running) throw new HttpError(409, 'A refresh is already running. Give it a minute.');
   const [stale] = await q(`SELECT id FROM bid_refresh_runs WHERE status='Running' AND started_at > now() - interval '15 minutes' LIMIT 1`); if (stale) throw new HttpError(409, 'A refresh is already running. Give it a minute.');
   const [run] = await q('INSERT INTO bid_refresh_runs(trigger, started_by) VALUES ($1,$2) RETURNING id', [trigger, userId]);
   running = (async () => {
     let c, added = 0, updated = 0, threads = 0, skipped = 0;
     try {
-      c = await gmailClient(); const g = await gather(c); threads = g.todo.length;
+      c = await gmailClient(); const g = await gather(c, days); threads = g.todo.length;
       for (let i = 0; i < g.todo.length; i += 4) {
         const batch = g.todo.slice(i, i + 4); const loaded = [];
         for (const t of batch) loaded.push({ id: t.id, text: emailText(await c.request(`threads/${t.id}`, { format: 'full' })) });

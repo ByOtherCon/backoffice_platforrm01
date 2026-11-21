@@ -261,6 +261,7 @@ route('GET', '/api/calendar/bids.ics', async ({ req, res }) => {
   res.writeHead(200, { 'content-type': 'text/calendar; charset=utf-8', 'content-disposition': 'inline; filename="byother-bids.ics"', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' }); res.end(text); return 'sent';
 });
 route('POST', '/api/opportunities/find-several', async ({ user, body }) => { estWrite(user); return es.findSeveral(body || {}); });
+route('POST', '/api/opportunities/:id/invitations/remove', async ({ user, params, body }) => bn.removeInvitation(estWrite(user), uuid(params.id), body || {}));
 route('POST', '/api/opportunities/bundle', async ({ user, body }) => { const u = estWrite(user); if (!Array.isArray(body.otherIds)) throw bad('Choose the leads to join.'); return bn.mergeInto(u, uuid(body.primaryId), body.otherIds.map(uuid), { folderPerGc: body.folderPerGc === undefined ? undefined : !!body.folderPerGc }); });
 route('POST', '/api/opportunities/:id/unbundle', async ({ user, params }) => bn.unmerge(estWrite(user), uuid(params.id)));
 route('GET', '/api/opportunities/:id', async ({ user, params }) => { estRead(user); const d = await es.get(uuid(params.id)); return d.projectId && auth.MANAGE.includes(user.role) ? { ...d, projectDocs: await es.projectDocsForLead(d.projectId) } : d; });
@@ -381,11 +382,11 @@ route('POST', '/api/takeoff/:id/verify', async ({ user, params }) => { estWrite(
 route('POST', '/api/takeoff/:id/apply', async ({ user, params }) => tk.applyRun(estWrite(user), uuid(params.id)));
 // Bid inbox feed: Gmail connection (owner only), refresh (estimators and up), settings and city tiers
 route('GET', '/api/bids/status', async ({ user }) => { estRead(user); return bd.refreshStatus(); });
-route('POST', '/api/bids/refresh', async ({ user }) => {
-  estWrite(user);
+route('POST', '/api/bids/refresh', async ({ user, body }) => {
+  estWrite(user); const days = [30, 60].includes(Number(body?.days)) ? Number(body.days) : 14;   // a longer look back, after the feed was off
   if (!(await bd.refreshStatus()).connected) throw new HttpError(409, 'Gmail is not connected yet. The owner connects it in Admin.');
   if (!ai.aiConnected()) throw new HttpError(503, 'AI reading is not connected yet, so emails cannot be read. Add the Anthropic API key on the server.');
-  const r = await bd.runRefresh({ trigger: 'Manual', userId: user.id }); return { id: r.id };
+  const r = await bd.runRefresh({ trigger: 'Manual', userId: user.id, days }); return { id: r.id };
 });
 route('PUT', '/api/bids/settings', async ({ user, body }) => { auth.requireRole(user, auth.APPROVERS); await bd.saveBidSettings(body); return { ok: true }; });
 route('GET', '/api/gmail/connect', async ({ user }) => { auth.requireRole(user, auth.SUPER); return { url: bd.connectUrl(user) }; });

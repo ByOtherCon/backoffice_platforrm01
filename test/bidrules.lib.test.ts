@@ -56,3 +56,21 @@ test('the same job is recognised when the address is written differently: a plac
   assert.equal(R.sameJob(j('Starbucks', 'Orlando', 'Florida Mall'), j('Starbucks', 'Orlando', 'Mall at Millenia')), false);   // the same brand in two malls is two jobs
   assert.equal(R.sameJob(j('Starbucks', 'Orlando', 'Mall at Millenia, Orlando'), j('Starbucks', 'Orlando', 'Millenia Mall')), true);   // a place name alone never makes two names one job
 });
+
+test('two stores at the same mall are two jobs: a name that only says where it is (a GC code and the mall) never joins a lead for a named store', () => {
+  const j = (name: string, city: string | null, address: string | null) => ({ name, city, address });
+  const rm = j('OPP-138227 - RM3543_Mall at Millenia - Orlando, FL', 'Orlando', '4200 Conroy Road, Orlando, FL 32839');
+  assert.equal(R.sameJob(rm, j('Abercrombie - Mall at Millenia - Orlando FL', 'Orlando', '4200 Conroy Road, Space #C-196, Orlando, FL 32839')), false);
+  assert.equal(R.sameJob(rm, j('Abercrombie - Mall at Millenia', 'Orlando', 'Mall at Millenia')), false);
+  assert.equal(R.sameJob(j('A&F Kids - Mall at Millenia', 'Orlando', '4200 Conroy Road'), j('Abercrombie - Mall at Millenia', 'Orlando', '4200 Conroy Road')), false);
+  assert.equal(R.sameJob(j('Wingstop - St Cloud', 'St Cloud', '1200 13th St'), j('Panda Express - St Cloud', 'St Cloud', '1200 13th St')), false);   // a strip center: only the city in common
+  assert.equal(R.sameJob(j('Old Navy - Plaza at Citrus Park', 'Tampa', '12851 Citrus Plaza Drive'), j('Ulta - Plaza at Citrus Park', 'Tampa', '12851 Citrus Plaza Drive')), false);
+  // the same store, worded differently, is still one job
+  assert.equal(R.sameJob(j('Abercrombie - Mall at Millenia', 'Orlando', '4200 Conroy Road'), j('Abercrombie & Fitch - Millenia Mall, Orlando FL', 'Orlando', '4200 Conroy Road, Space #196')), true);
+  assert.equal(R.sameJob(j('Sunglass Hut - Lutz', 'Lutz', '2382 Grand Cypress Drive'), j('Sunglass Hut Lutz Premium Outlets', 'Lutz', '2382 Grand Cypress Dr')), true);
+  assert.equal(R.sameJob(rm, j('OPP-138227 - RM3543_Mall at Millenia - Orlando, FL', 'Orlando', '4200 Conroy Road')), true);   // the very same invitation again
+  assert.deepEqual(R.tenantWords('OPP-138227 - RM3543_Mall at Millenia - Orlando, FL', 'Orlando'), []);
+  assert.deepEqual(R.tenantWords('Old Navy 5904 Refresh - Tampa, FL - Plaza at Citrus Park', 'Tampa'), ['old', 'navy', 'refresh']);
+  assert.deepEqual(R.tenantWords('Sunglass Hut Lutz Premium Outlets', 'Lutz'), ['sunglass', 'hut']);
+  assert.deepEqual(R.tenantWords('Aritzia at Disney Springs', 'Lake Buena Vista'), ['aritzia']);
+});

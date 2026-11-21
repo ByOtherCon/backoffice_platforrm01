@@ -46,6 +46,22 @@ function addressParts(value: string | null) {
   for (const [s, l] of [['dr', 'drive'], ['rd', 'road'], ['st', 'street'], ['ave', 'avenue'], ['blvd', 'boulevard'], ['ln', 'lane'], ['pkwy', 'parkway'], ['hwy', 'highway'], ['trl', 'trail'], ['ct', 'court'], ['n', 'north'], ['s', 'south'], ['e', 'east'], ['w', 'west']]) street = street.replace(new RegExp('\\b' + s + '\\b', 'g'), l);
   return { street: norm(street), unit: norm(unit), place: si === 0 ? [] : (parts[0] || '').split(/[^a-z0-9]+/).filter((w) => w.length > 1 && !GENERIC_PLACE.includes(w)) };   // place: "mall at millenia", when the address starts with a name
 }
+// The words of a project name that say WHICH job it is (the store, the brand), not WHERE it is. Left out: the place ("Mall at Millenia",
+// "Millenia Mall", "Plaza at Citrus Park", "Lutz Premium Outlets": a place word, the word just before it, and everything after "at"),
+// the city, the GC's own codes ("OPP-138227", "RM3543") and filler. Two stores at the same mall share every place word, so only these words
+// can tell them apart.
+const ANCHOR = ['mall', 'plaza', 'center', 'centre', 'shops', 'shoppes', 'shopping', 'outlets', 'outlet', 'premium', 'square', 'village', 'commons', 'galleria', 'promenade'];
+const FILLER = ['opp', 'rm', 'bid', 'invite', 'invitation', 'rfp', 'tenant', 'improvement', 'ti', 'store', 'space', 'suite', 'unit'];
+export function tenantWords(name: string, ...cities: (string | null | undefined)[]): string[] {
+  const cityW = new Set(cities.flatMap((c) => String(c || '').toLowerCase().split(/[^a-z0-9]+/)).filter(Boolean)), out = new Set<string>();
+  for (const seg of String(name || '').toLowerCase().split(/[-\u2013\u2014_,()|/:;]+/)) {
+    const t = seg.split(/[^a-z0-9]+/).filter(Boolean), place = new Set<number>(), at = t.indexOf('at');
+    if (at >= 0) for (let i = at; i < t.length; i++) place.add(i);
+    t.forEach((w, i) => { if (ANCHOR.includes(w)) { place.add(i); if (i > 0 && !ANCHOR.includes(t[i - 1])) place.add(i - 1); } });
+    t.forEach((w, i) => { if (!place.has(i) && w.length > 1 && !/\d/.test(w) && !STOP.includes(w) && !FILLER.includes(w) && !GENERIC_PLACE.includes(w) && !cityW.has(w)) out.add(w); });
+  }
+  return [...out];
+}
 // "#C-196" and "#196" are the same space; "983" and "120" are not.
 const unitNo = (u: string) => u.replace(/[^0-9]/g, '');
 const sameUnit = (a: string, b: string) => a === b || (!!unitNo(a) && unitNo(a) === unitNo(b) && (a === unitNo(a) || b === unitNo(b)));
@@ -60,7 +76,9 @@ export function sameJob(a: { name: string; city: string | null; address: string 
   if (!aa.street && !ba.street && aa.place.length && ba.place.length && !aa.place.some((w) => ba.place.includes(w))) return false;   // two different malls, no street on either   // two different addresses are two jobs, whatever they are called
   if (norm(a.name) === norm(b.name)) return true;
   const wa = words(a.name), wb = words(b.name), common = wa.filter((t) => wb.includes(t)).length;
-  if (aa.street && aa.street === ba.street) return common >= 1;
+  // the names have to share a word that says which job it is: at one street (a mall, a plaza) every store shares the place and the city
+  const ta = tenantWords(a.name, a.city, b.city), tb = tenantWords(b.name, a.city, b.city), which = ta.filter((t) => tb.includes(t)).length;
+  if (aa.street && aa.street === ba.street) return which >= 1;
   // no address to compare (one or both missing): the project names have to say the same thing, every meaningful word of the shorter one
-  return common >= 1 && common === Math.min(wa.length, wb.length);
+  return which >= 1 && common >= 1 && common === Math.min(wa.length, wb.length);
 }

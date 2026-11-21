@@ -163,6 +163,17 @@ export async function estimateChatView(oppId, canWrite) {
     const ids = await api('POST', `/opportunities/${oppId}/estimate-chat`, startNew ? { text: t, newChat: true, attachments: files } : { text: t, chatId: data.chatId, attachments: files });
     startNew = false; box.value = ''; pending = []; drawChips(); C.state.estChatId = ids.chatId; data = await api('GET', `/opportunities/${oppId}/estimate-chat?chat=${ids.chatId}`); draw(true); poll();
   });
+  // Trades to estimate: bubbles to tap on or off. Saved on the lead at once (the lead's "Trades being considered"); the AI estimates only these.
+  let chosen = new Set(data.chosenTrades || []); const tradesBox = h('div');
+  function tradesCard() { drawTrades(); return tradesBox; }
+  function drawTrades() {
+    const save = guard(err, async (next) => { const r = await api('PUT', `/opportunities/${oppId}/estimate-chat/trades`, { tradeIds: [...next] }); chosen = new Set(r.chosen); drawTrades(); });
+    tradesBox.replaceChildren(h('div', { class: 'card', style: 'margin:.6rem 0' }, h('div', { class: 'row spread', style: 'flex-wrap:wrap;gap:.3rem' }, h('label', { style: 'margin:0' }, 'Trades To Estimate'),
+      h('span', { class: 'muted', style: 'font-size:13px' }, chosen.size ? `The AI estimates only these ${chosen.size}.` : 'None chosen: the AI will ask which trades to include.')),
+      h('div', { class: 'trade-bubbles' }, (data.tradeList || []).map((t) => h('button', { type: 'button', class: 'trade-bubble' + (chosen.has(t.id) ? ' on' : ''), disabled: canWrite ? null : true, 'aria-pressed': chosen.has(t.id) ? 'true' : 'false',
+        onclick: () => { const next = new Set(chosen); if (next.has(t.id)) next.delete(t.id); else next.add(t.id); save(next); } }, chosen.has(t.id) ? '✓ ' + t.name : '+ ' + t.name)),
+        canWrite && chosen.size ? h('button', { type: 'button', class: 'linklike', style: 'font-size:13px', onclick: () => save(new Set()) }, 'Clear') : '')));
+  }
   // after Create Final Proposal: the card shows the files, and the side card the latest proposal
   async function afterFinal() { data = await load(); draw(false); drawSide(); loadLatest(); }
   send.onclick = submit; box.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); } };
@@ -178,7 +189,7 @@ export async function estimateChatView(oppId, canWrite) {
     data.aiConnected ? '' : h('p', { class: 'err' }, 'AI is not connected yet. The owner adds the Anthropic API key on the server; then this works.'),
     sheetLine(data.sheet),
     h('p', { class: 'muted', style: 'font-size:13px;margin:.4rem 0 0' }, `AI: Claude Opus 5.5, ${data.effort || 'high'} effort · Following: ${data.instructions.label}${data.instructions.updatedAt ? ' · updated ' + when(data.instructions.updatedAt) + (data.instructions.updatedBy ? ' by ' + data.instructions.updatedBy : '') : ''}.`),
-    side, list, err,
+    tradesCard(), side, list, err,
     chips, h('div', { class: 'chat-compose' }, attach, box, send), h('p', { class: 'muted', style: 'font-size:12px;margin:.3rem 0 0' }, 'Enter sends, Shift+Enter starts a new line. Attach a PlanSwift takeoff, photos, a proposal to check, or revised plans. Every proposal shows as a preview first; the Word and PDF are made when you press Create Final Proposal. The first answer on a full plan set can take a few minutes.'))]);
 }
 

@@ -13,6 +13,9 @@ import * as SP from './sharepoint.js';
 import * as folders from './folders.js';
 import { uploadAiFile } from './ai.js';
 
+// What to do about a PDF the AI service could not read: a very large plan set has to be split; anything else re-saved.
+export const BIG_PDF = 30 * 1024 * 1024;
+export const fixFor = (name, size) => (Number(size) > BIG_PDF ? `the AI service could not read it in one piece (${Math.round(Number(size) / 1048576)} MB). Split it into smaller PDFs, for example the architectural sheets and the MEP sheets separately or about 50 sheets each, and upload those.` : 'the AI service could not read this PDF. Open it, save it again as a PDF (Print to PDF), and upload the new copy.');
 const MAX_PDF = 480 * 1024 * 1024;          // the AI service takes files up to 500 MB
 const isPdfName = (n) => /\.pdf$/i.test(n) && !/(^|\/)(__MACOSX\/|\._)/.test(n) && !path.basename(n).startsWith('.');
 const tmpDir = async () => { const d = path.join(UPLOAD_DIR, '.plans-tmp'); await fs.promises.mkdir(d, { recursive: true }); return d; };
@@ -72,8 +75,8 @@ export async function zipExtract(zipPath, entry, dest) {
 // The plans files on the lead, without opening them: [{ key, name, size, where, zip }]. `key` is stable for the same file.
 export async function planSources(opportunityId) {
   const [o] = await q('SELECT id, sp_item_id FROM opportunities WHERE id=$1', [opportunityId]); if (!o) throw new HttpError(404, 'Opportunity not found.');
-  const rows = await q(`SELECT id, name, size, storage_key, sp_url, created_at, COALESCE((meta->>'revision')::boolean, false) AS revision FROM opportunity_files WHERE opportunity_id=$1 AND kind='Plans' AND sp_removed_at IS NULL ORDER BY created_at`, [opportunityId]);
-  const out = [], seen = new Set();
+  const rows = await q(`SELECT id, name, size, storage_key, sp_url, sp_item_id, created_at, COALESCE((meta->>'revision')::boolean, false) AS revision FROM opportunity_files WHERE opportunity_id=$1 AND kind='Plans' AND sp_removed_at IS NULL ORDER BY created_at`, [opportunityId]);
+  const out = [], seen = new Set(), seenIds = new Set(), sizes = new Map();
   let spFiles = null; const sp = async () => { if (spFiles) return spFiles; spFiles = [];
     if (folders.enabled() && o.sp_item_id) { try { const dl = (await SP.listFolder(o.sp_item_id)).find((k) => k.folder && k.name === '01. DL'); if (dl) spFiles = await SP.findFiles(dl.id, (n) => /\.(pdf|zip)$/i.test(n), 3); } catch { spFiles = []; } }
     return spFiles; };
@@ -81,11 +84,13 @@ export async function planSources(opportunityId) {
     const zip = /\.zip$/i.test(r.name); if (!zip && !/\.pdf$/i.test(r.name)) continue;
     const mark = { revision: !!r.revision, at: r.created_at };   // a revised set the estimator added to compare against the earlier plans
     if (r.storage_key) out.push({ key: 'file:' + r.id, name: r.name, size: Number(r.size) || 0, where: 'app', zip, local: path.join(UPLOAD_DIR, path.basename(r.storage_key)), ...mark });
-    else { const hit = (await sp()).find((f) => f.name.toLowerCase() === r.name.toLowerCase()); if (hit) out.push({ key: 'sp:' + hit.id, name: r.name, size: Number(r.size) || 0, where: 'SharePoint', zip, spId: hit.id, ...mark }); else out.push({ key: 'file:' + r.id, name: r.name, size: Number(r.size) || 0, where: 'SharePoint', zip, missing: true, ...mark }); }
-    seen.add(r.name.toLowerCase());
+    else { const all = await sp(), hit = all.find((f) => r.sp_item_id && f.id === r.sp_item_id) || all.find((f) => f.name.toLowerCase() === r.name.toLowerCase()); if (hit) out.push({ key: 'sp:' + hit.id, name: r.name, size: Number(r.size) || 0, where: 'SharePoint', zip, spId: hit.id, ...mark }); else out.push({ key: 'file:' + r.id, name: r.name, size: Number(r.size) || 0, where: 'SharePoint', zip, missing: true, ...mark }); }
+    seen.add(r.name.toLowerCase()); if (r.sp_item_id) seenIds.add(r.sp_item_id); sizes.set(r.name.toLowerCase(), Number(r.size) || 0);
   }
   // plans dropped straight into the SharePoint folder (never uploaded through the app)
-  for (const f of await sp()) if (!seen.has(f.name.toLowerCase())) { seen.add(f.name.toLowerCase()); out.push({ key: 'sp:' + f.id, name: f.name, size: 0, where: 'SharePoint', zip: /\.zip$/i.test(f.name), spId: f.id }); }
+  // ...but not SharePoint's own second copy of a file the lead already has ("Plans 1.pdf" next to "Plans.pdf", same size)
+  const copyOf = (f) => { const base = f.name.replace(/(?: \d+| \(\d+\))(\.[^.]+)$/, '$1').toLowerCase(); return base !== f.name.toLowerCase() && seen.has(base) && (!f.size || !sizes.get(base) || Number(f.size) === sizes.get(base)); };
+  for (const f of await sp()) if (!seen.has(f.name.toLowerCase()) && !seenIds.has(f.id) && !copyOf(f)) { seen.add(f.name.toLowerCase()); out.push({ key: 'sp:' + f.id, name: f.name, size: 0, where: 'SharePoint', zip: /\.zip$/i.test(f.name), spId: f.id }); }
   return out;
 }
 
@@ -94,7 +99,9 @@ export async function planSources(opportunityId) {
 export async function preparePlans(opportunityId, onStep = () => {}) {
   const sources = await planSources(opportunityId), docs = [], problems = [], have = new Set();
   const known = new Map((await q('SELECT source_key, docs FROM plan_sources WHERE opportunity_id=$1', [opportunityId])).map((r) => [r.source_key, r.docs]));
-  const add = async (list, s) => { for (const d of list) { if (have.has(d.sha256)) continue; const [f] = await q('SELECT file_id FROM ai_files WHERE sha256=$1', [d.sha256]); if (!f) return false; have.add(d.sha256); docs.push({ ...d, fileId: f.file_id, revision: !!s?.revision, at: s?.at ?? null }); } return true; };
+  const add = async (list, s) => { for (const d of list) { if (have.has(d.sha256)) continue; const [f] = await q('SELECT file_id, unreadable FROM ai_files WHERE sha256=$1', [d.sha256]); if (!f) return false; have.add(d.sha256);
+    if (f.unreadable) { problems.push(`${d.name} was left out: ${fixFor(d.name, d.size)}`); continue; }   // known bad: never sent again
+    docs.push({ ...d, fileId: f.file_id, revision: !!s?.revision, at: s?.at ?? null }); } return true; };
   const sendPdf = async (file, name) => {
     if (!(await startsWithPdf(file))) { problems.push(`${name} is not a readable PDF.`); return null; }
     const { size } = await fs.promises.stat(file); if (size > MAX_PDF) { problems.push(`${name} is too large for the AI to read (${Math.round(size / 1048576)} MB).`); return null; }

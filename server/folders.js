@@ -134,8 +134,10 @@ export async function pushOpportunityFile(oppId, { kind, filename, bytes, mime, 
 // Same, for a big file already on disk (plans). Returns the SharePoint item or null.
 export async function pushOpportunityFilePath(oppId, { kind, filename, filePath, size, mime }) {
   if (!enabled()) return null;
-  try { const dir = await ensureOpportunityFolder(oppId); const sub = await SP.ensureFolder(dir.id, SUBFOLDER[kind] || SUBFOLDER.Other); const up = await SP.uploadFromPath(sub.id, filename, filePath, size, mime);
-    if (mirrored(kind)) for (const x of await extraFolders(oppId)) { try { const xs = await SP.ensureFolder(x.sp_item_id, SUBFOLDER[kind] || SUBFOLDER.Other); await SP.uploadFromPath(xs.id, filename, filePath, size, mime); } catch (e) { await note(oppId, `Not copied to the ${x.gc_name} folder: ${oneLine(e)}`).catch(() => {}); } }
+  // the same file (same name and size) already in the folder is used as it is: SharePoint would otherwise save a second copy as "name 1.pdf"
+  const put = async (folderId) => { const same = (await SP.listFolder(folderId)).find((k) => !k.folder && k.name.toLowerCase() === String(filename).toLowerCase() && Number(k.size) === Number(size)); return same ? { id: same.id, name: same.name, webUrl: same.webUrl, existed: true } : SP.uploadFromPath(folderId, filename, filePath, size, mime); };
+  try { const dir = await ensureOpportunityFolder(oppId); const sub = await SP.ensureFolder(dir.id, SUBFOLDER[kind] || SUBFOLDER.Other); const up = await put(sub.id);
+    if (mirrored(kind)) for (const x of await extraFolders(oppId)) { try { const xs = await SP.ensureFolder(x.sp_item_id, SUBFOLDER[kind] || SUBFOLDER.Other); await put(xs.id); } catch (e) { await note(oppId, `Not copied to the ${x.gc_name} folder: ${oneLine(e)}`).catch(() => {}); } }
     return up; }
   catch (e) { await note(oppId, `Saved in the app, but not copied to SharePoint: ${oneLine(e)}`).catch(() => {}); return null; }
 }

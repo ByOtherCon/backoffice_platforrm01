@@ -19,7 +19,7 @@ const { todayEastern, shift } = await import('../src/lib/estimating.ts');
 const today = todayEastern();
 
 // ---- a stand-in for the AI service: it keeps every request, takes file uploads, and answers a conversation with whatever `script` holds next
-let uploads = [], requests = [], script = [], fileSeq = 0;
+let uploads = [], requests = [], script = [], fileSeq = 0; const unreadable = new Set(), counted = [];
 const sse = (events) => events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join('');
 const startMsg = (usage = { input_tokens: 120, cache_creation_input_tokens: 9000, cache_read_input_tokens: 0, output_tokens: 1 }) => ({ type: 'message_start', message: { id: 'msg_1', type: 'message', role: 'assistant', model: 'claude-opus-5-5', content: [], usage } });
 const endMsg = (reason, out = 50) => [{ type: 'message_delta', delta: { stop_reason: reason }, usage: { output_tokens: out } }, { type: 'message_stop' }];
@@ -30,6 +30,8 @@ const toolAnswer = (input, lead = 'Saving it now.') => { const j = JSON.stringif
     { type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'toolu_' + (++fileSeq), name: 'preview_proposal', input: {} } }, { type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: j.slice(0, half) } }, { type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: j.slice(half) } }, { type: 'content_block_stop', index: 1 }, ...endMsg('tool_use')]); };
 const service = async (url, init = {}) => {
   if (String(url).endsWith('/v1/files')) { const f = init.body.get('file'); uploads.push({ name: f.name, size: f.size, head: Buffer.from(await f.arrayBuffer()).subarray(0, 5).toString() }); return { ok: true, status: 200, json: async () => ({ id: 'file_' + uploads.length }) }; }
+  if (String(url).endsWith('/v1/messages/count_tokens')) { const b = JSON.parse(init.body), fid = b.messages[0].content[0]?.source?.file_id; counted.push(fid);
+    return unreadable.has(fid) ? { ok: false, status: 400, json: async () => ({ error: { message: 'Could not process PDF' } }) } : { ok: true, status: 200, json: async () => ({ input_tokens: 1200 }) }; }
   const body = JSON.parse(init.body); requests.push({ body, headers: init.headers }); const next = script.shift();
   if (!next) return { ok: true, status: 200, text: async () => textAnswer('(nothing scripted)') };
   if (next.status) return { ok: false, status: next.status, json: async () => ({ error: { message: next.message } }) };
@@ -318,4 +320,37 @@ test('a job pitched to several GCs: the AI is told each GC gets its own proposal
   assert.match(await made.file('word/document.xml').async('string'), /Moss &amp; Associates/);
   const o = (await call('GET', `/api/opportunities/${oid}`, null, est)).body; assert.ok(o.notes.some((n) => /Proposal version \d+ for Moss & Associates made with the AI estimator/.test(n.body)));
   const v = (await call('GET', `/api/opportunities/${oid}/proposal-files`, null, est)).body; assert.ok(!/Moss/.test(v.latestPdf.name));   // the lead's own (main GC) list does not change
+});
+
+test('trades to estimate: bubbles on the chat page, saved as the lead\'s trades being considered; the AI is told with every message, and asks when there are none', async () => {
+  let c = await chat(); const demo = c.tradeList.find((t) => t.name === 'Demolition'), fr = c.tradeList.find((t) => t.name === 'Framing & Drywall');
+  assert.equal((await call('PUT', `/api/opportunities/${oid}/estimate-chat/trades`, { tradeIds: [demo.id] }, pm)).status, 403);
+  assert.deepEqual((await call('PUT', `/api/opportunities/${oid}/estimate-chat/trades`, { tradeIds: [demo.id, fr.id] }, est)).body.chosen, [demo.id, fr.id]);
+  assert.deepEqual((await call('GET', `/api/opportunities/${oid}`, null, est)).body.consideredTrades.map((t) => t.name), ['Demolition', 'Framing & Drywall']);
+  script = [textAnswer('Demolition and framing only.')]; await say('Go.');
+  assert.match(requests.at(-1).body.messages.at(-1).content.at(-1).text, /\[Trades to estimate: Demolition, Framing & Drywall\. Only these: no scope, price or preview for any other trade\.\]/);
+  await call('PUT', `/api/opportunities/${oid}/estimate-chat/trades`, { tradeIds: [] }, est); script = [textAnswer('Which trades?')]; await say('And now?');
+  assert.match(requests.at(-1).body.messages.at(-1).content.at(-1).text, /No trades are chosen to estimate\. Ask the estimator which trades to include/);
+  assert.ok((await call('GET', `/api/opportunities/${oid}`, null, est)).body.notes.some((n) => /Trades considered: Demolition, Framing & Drywall → — \(set in the estimating chat by Juliana\)/.test(n.body)));
+  c = await chat(); assert.deepEqual(c.chosenTrades, []);
+});
+
+test('a PDF the AI service cannot read ("Could not process PDF") is found, left out with a note to the estimator, and never sent again; the answer still comes', async () => {
+  const [{ id: lead }] = await q(`INSERT INTO opportunities(name,gc_name,city,status,source_key) VALUES ('Broken PDF Job','GC','Orlando','Accepted','broken1') RETURNING id`);
+  for (const [b, n] of [[pdf('good sheet'), 'A-1.0 Good.pdf'], [pdf('locked sheet'), 'A-2.0 Locked.pdf']]) assert.equal((await call('POST', `/api/opportunities/${lead}/plans`, b, est, n)).status, 200);
+  const sayOn = async (text, extra = {}) => { const r = await call('POST', `/api/opportunities/${lead}/estimate-chat`, { text, ...extra }, est); assert.equal(r.status, 200, JSON.stringify(r.body)); await settle(); };
+  const n = uploads.length; script = [{ status: 400, message: 'messages.0.content.1.pdf.source: Could not process PDF' }, textAnswer('Here is the scope from the good sheet.')];
+  unreadable.add(`file_${n + 2}`);   // the second file uploaded is the one that cannot be read
+  await sayOn('Read the plans.');
+  const ok = requests.at(-1).body.messages[0].content; assert.deepEqual(ok.filter((b) => b.type === 'document').map((b) => b.title), ['A-1.0 Good.pdf']);
+  assert.ok(ok.some((b) => b.type === 'text' && b.text === '[A-2.0 Locked.pdf: left out, the AI service could not read this file.]'));
+  const c = (await call('GET', `/api/opportunities/${lead}/estimate-chat`, null, est)).body, last = c.messages.at(-1);
+  assert.equal(last.status, 'done'); assert.match(last.text, /^_A-2\.0 Locked\.pdf was left out of this answer: the AI service could not read this PDF\. Open it, save it again as a PDF/); assert.match(plans.fixFor('Combined.pdf', 122 * 1048576), /could not read it in one piece \(122 MB\)\. Split it into smaller PDFs/);   // a very large set is to be split, not re-saved assert.match(last.text, /Here is the scope from the good sheet\./);
+  // a new conversation: it is not sent again, and the AI is told why
+  script = [textAnswer('Fresh.')]; await sayOn('Start again.', { newChat: true });
+  const first = requests.at(-1).body.messages[0].content; assert.deepEqual(first.filter((b) => b.type === 'document').map((b) => b.title), ['A-1.0 Good.pdf']);
+  assert.match(first.at(-1).text, /A-2\.0 Locked\.pdf was left out: the AI service could not read this PDF/);
+  // an error that is not about a file is shown as before
+  script = [{ status: 400, message: 'max_tokens is too large' }]; await sayOn('Once more.');
+  assert.match((await call('GET', `/api/opportunities/${lead}/estimate-chat`, null, est)).body.messages.at(-1).error, /max_tokens is too large/);
 });

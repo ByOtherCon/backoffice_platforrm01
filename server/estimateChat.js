@@ -16,8 +16,8 @@ import PDFDocument from 'pdfkit';
 import JSZip from 'jszip';
 import { q, tx } from './db.js';
 import { bad, text, HttpError } from './http.js';
-import { streamClaude, aiConnected, chatModel, uploadAiFile, ESTIMATE_EFFORT } from './ai.js';
-import { planSources, preparePlans, forgetPlans } from './plans.js';
+import { streamClaude, aiConnected, chatModel, uploadAiFile, countTokens, ESTIMATE_EFFORT } from './ai.js';
+import { planSources, preparePlans, forgetPlans, fixFor } from './plans.js';
 import { proposalSpec, proposalDocx, proposalPdf, priceText, defaultTemplate, checkTemplate } from './proposalDoc.js';
 import { saveFile, checkFile, sha256 as shaOf, UPLOAD_DIR } from './documents.js';
 import { matchTrades } from './estimating.js';
@@ -75,6 +75,7 @@ const APP_RULES = `You are the estimating assistant inside the by Other Desk Pla
 
 How to work here:
 - The byOther estimating instructions below are the estimating sheet: the scope rules and the pricing guide with byOther's rates. Price from the sheet. When an item is not in the sheet, do not make up a rate quietly: price it from the closest rate in the sheet or ask the estimator, and list it under Needs Update (below).
+- Estimate only the trades the estimator chose; each message says which they are. Write scope, price and preview only those trades. If the plans clearly show work in another of byOther's trades, say so in one line at the end and do not price it. When no trades are chosen, ask which trades to include before going through the plans in detail.
 - Write scope the way "How byOther proposals are written" (after the instructions) says. Where the instructions ask for a keynote code on every bullet, full manufacturer and model specs, or the plans' own wording, follow the writing rules instead: short task lines, and specs or sheet call-outs only for important items that are on a detail or a schedule. Too much detail makes a proposal read like a machine wrote it.
 - Show how each trade is priced, in the conversation, as a table: each line with its quantity and unit (SF, LF, EA, days), the rate, the amount, and where it came from (the sheet line, a PlanSwift quantity, a measurement from the plans, or the estimator). Then the trade total, rounded up to the next $100. Prices are whole dollars; never use cents in a price.
 - Quantities: PlanSwift takeoff data the estimator attaches comes first, over anything read off the plans. A quantity you measured from the plans is marked as estimated.
@@ -159,6 +160,7 @@ export async function getChat(user, opportunityId, chatId = null) {
   const drafts = cur ? await q('SELECT id, seq, message_id, input, created_at, final_version, final_files, final_at FROM estimate_drafts WHERE chat_id=$1 ORDER BY seq', [cur.id]) : [];
   const waiting = await q('SELECT id, name, purpose, size FROM estimate_attachments WHERE opportunity_id=$1 AND message_id IS NULL AND created_by=$2 ORDER BY created_at', [opportunityId, user.id]);
   return { opportunity: { id: o.id, name: o.name, gc: o.gc_name, proposalId: o.proposal_id }, aiConnected: aiConnected(), model: chatModel(), effort: ESTIMATE_EFFORT, chatId: cur?.id ?? null,
+    tradeList: await q('SELECT id, name FROM trades WHERE NOT archived ORDER BY sort, name'), chosenTrades: (await chosenTrades(opportunityId)).map((t) => t.id),
     sheet: await estimatingSheet().then((x) => ({ connected: x.connected, folderUrl: x.folderUrl ?? null, files: x.files, problems: x.problems })).catch(() => null),
     drafts: drafts.map((d) => draftView(o, d)), attachments: waiting.map((a) => ({ id: a.id, name: a.name, purpose: a.purpose, size: Number(a.size) })), instructions: { label: ins.label, updatedAt: ins.updatedAt, updatedBy: ins.updatedBy, custom: ins.custom }, template: await templateInfo(),
     chats: chats.map((c) => ({ id: c.id, startedAt: c.created_at, messages: c.n })), plans, proposals: proposals.map((p) => ({ id: p.id, name: p.name, version: p.version, at: p.created_at })),
@@ -190,13 +192,49 @@ export async function postMessage(user, opportunityId, b = {}) {
   return ids;
 }
 
+const chosenTrades = async (id) => q('SELECT t.id, t.name FROM opportunity_considered_trades c JOIN trades t ON t.id=c.trade_id WHERE c.opportunity_id=$1 ORDER BY t.sort, t.name', [id]);
+// The trades to estimate, said with every message (the estimator can change them at any time on the chat page)
+const tradesLine = (list) => (list.length ? `[Trades to estimate: ${list.map((t) => t.name).join(', ')}. Only these: no scope, price or preview for any other trade.]` : '[No trades are chosen to estimate. Ask the estimator which trades to include before going through the plans in detail.]');
+// The estimator taps trades on or off on the chat page; the same list is the lead's "Trades being considered".
+export async function setChatTrades(user, opportunityId, ids) {
+  await oppFor(opportunityId); const want = [...new Set((Array.isArray(ids) ? ids : []).map(String))];
+  const ok = want.length ? (await q('SELECT id FROM trades WHERE id = ANY($1::uuid[]) AND NOT archived', [want])).map((r) => r.id) : [];
+  if (ok.length !== want.length) throw bad('One of those trades is not on the trade list.');
+  return tx(async (t) => {
+    const before = (await t('SELECT t.name FROM opportunity_considered_trades c JOIN trades t ON t.id=c.trade_id WHERE c.opportunity_id=$1 ORDER BY t.sort, t.name', [opportunityId])).map((x) => x.name);
+    await t('DELETE FROM opportunity_considered_trades WHERE opportunity_id=$1', [opportunityId]);
+    for (const id of ok) await t('INSERT INTO opportunity_considered_trades(opportunity_id,trade_id) VALUES ($1,$2)', [opportunityId, id]);
+    const after = (await t('SELECT t.id, t.name FROM opportunity_considered_trades c JOIN trades t ON t.id=c.trade_id WHERE c.opportunity_id=$1 ORDER BY t.sort, t.name', [opportunityId]));
+    if (before.join('|') !== after.map((x) => x.name).join('|')) await t(`INSERT INTO opportunity_notes(opportunity_id,user_id,kind,body) VALUES ($1,$2,'System',$3)`, [opportunityId, user.id, `Trades considered: ${before.join(', ') || '—'} → ${after.map((x) => x.name).join(', ') || '—'} (set in the estimating chat by ${who(user)}).`]);
+    return { chosen: after.map((x) => x.id) };
+  });
+}
 const leadFacts = async (o) => {
-  const trades = (await q('SELECT t.name FROM opportunity_considered_trades c JOIN trades t ON t.id=c.trade_id WHERE c.opportunity_id=$1 ORDER BY t.sort, t.name', [o.id])).map((x) => x.name);
   const gcs = [o.gc_name, ...(Array.isArray(o.invitations) ? o.invitations.map((i) => i.gc) : [])].filter((g, i, a) => g && a.findIndex((x) => String(x).toLowerCase() === String(g).toLowerCase()) === i);
   return ['[The lead on file in the app]', `Project: ${o.name}`, gcs.length > 1 ? `GCs: ${gcs.join('; ')}. This job is pitched to all of them. Each GC gets its own proposal file and the price can differ. Write each proposal for one GC: the one the estimator names, or the first when they name none. Put that GC's name in createdFor exactly as it is written here; the files are then saved in that GC's folder.` : `GC: ${gcs.join('; ')}`, `Project address: ${[o.address, o.city, 'FL', o.zip].filter(Boolean).join(', ')}`,
     o.due_date ? `Bid due: ${o.due_date}` : null, o.project_type ? `Project type: ${o.project_type === 'Office / Medical / Other' ? 'Medical / Office' : o.project_type}` : null, o.proposal_id ? `Proposal number: ${o.proposal_id}` : null,
-    trades.length ? `Trades the estimator is considering: ${trades.join(', ')}` : null, `Today: ${todayEastern()}`].filter(Boolean).join('\n');
+    `Today: ${todayEastern()}`].filter(Boolean).join('\n');
 };
+
+// ------------------------------------------------------------------ a file the AI service cannot read
+// "Could not process PDF": one file (a plan sheet or an attachment) is damaged, locked or saved in a way the service cannot open. Each file
+// in the request is checked on its own with a free token count, the bad one is marked and left out of this and every later request, and
+// the estimator is told which file it was.
+const fileBlocks = (msgs) => { const out = new Map(); for (const m of msgs) if (Array.isArray(m.content)) for (const b of m.content) if (['document', 'image'].includes(b?.type) && b.source?.type === 'file' && !out.has(b.source.file_id)) out.set(b.source.file_id, b); return out; };
+async function findUnreadable(system, msgs) {
+  const bad = [];
+  for (const [fileId, b] of fileBlocks(msgs)) {
+    const { cache_control, ...blk } = b, r = await countTokens({ system: 'Check.', messages: [{ role: 'user', content: [blk, { type: 'text', text: 'Read this file.' }] }] });
+    if (!r.ok && r.status === 400) { const [f] = await q('SELECT size FROM ai_files WHERE file_id=$1', [fileId]); bad.push({ fileId, name: b.title || 'a picture', size: f?.size ?? 0, why: r.message }); }
+  }
+  for (const x of bad) await q('UPDATE ai_files SET unreadable=$2 WHERE file_id=$1', [x.fileId, String(x.why || 'Could not process the file').slice(0, 300)]);
+  return bad;
+}
+// Every file block the service could not read is replaced by a line saying it was left out (in what is sent; the saved conversation is unchanged).
+async function scrub(msgs) {
+  const ids = new Set((await q('SELECT file_id FROM ai_files WHERE unreadable IS NOT NULL')).map((r) => r.file_id)); if (!ids.size) return msgs;
+  return msgs.map((m) => (Array.isArray(m.content) && m.content.some((b) => ids.has(b?.source?.file_id)) ? { ...m, content: m.content.map((b) => (ids.has(b?.source?.file_id) ? { type: 'text', text: `[${b.title || 'A picture'}: left out, the AI service could not read this file.]` } : b)) } : m));
+}
 
 // Produces one answer: gets the plans to the AI service, sends the conversation, makes a preview when the AI hands one over, and stores the result.
 export async function runTurn(user, o, { chatId, userMessageId, assistantMessageId }) {
@@ -217,7 +255,7 @@ export async function runTurn(user, o, { chatId, userMessageId, assistantMessage
     for (const a of atts) { note(`Reading ${a.name}…`); const blk = await attachmentBlock(a); parts.push(blk); attText.push(`${PURPOSE[a.purpose].label}: ${a.name}`); }
     const told = await q(`UPDATE estimate_drafts SET final_told=true WHERE chat_id=$1 AND final_version > 0 AND NOT final_told RETURNING seq, final_version, final_files`, [chatId]);
     const revised = fresh.filter((d) => d.revision), purposes = new Set(atts.map((a) => a.purpose));
-    const pre = [first ? await leadFacts(o) : null,
+    const pre = [first ? await leadFacts(o) : null, tradesLine(await chosenTrades(o.id)),
       first && prep.docs.length ? `[Plan files attached: ${prep.docs.map(label).join('; ')}]` : null,
       fresh.length && !first ? `[New plan files were added to the lead and are attached: ${fresh.map(label).join('; ')}]` : null,
       first && prep.docs.some((d) => d.revision) ? '[Files marked revised plans are a newer set. When the estimator asks, compare them with the earlier set sheet by sheet and list what changed.]' : null,
@@ -232,8 +270,9 @@ export async function runTurn(user, o, { chatId, userMessageId, assistantMessage
     await q('UPDATE estimate_messages SET blocks=$2 WHERE id=$1', [userMessageId, JSON.stringify(parts)]);
     if (fresh.length) await q('UPDATE estimate_chats SET docs=$2 WHERE id=$1', [chatId, JSON.stringify([...(chat.docs || []), ...fresh.map((d) => ({ sha256: d.sha256, name: d.name }))])]);
 
-    const msgs = []; for (const m of history) { if (m.role === 'user') msgs.push({ role: 'user', content: m.blocks }); else msgs.push(...m.blocks); }
-    msgs.push({ role: 'user', content: parts });
+    let msgs = []; for (const m of history) { if (m.role === 'user') msgs.push({ role: 'user', content: m.blocks }); else msgs.push(...m.blocks); }
+    msgs.push({ role: 'user', content: parts }); msgs = await scrub(msgs);
+    let checked = false;
     const system = await systemPrompt(sheet), turn = []; let texts = [];
     note(prep.docs.length ? 'Reading the plans…' : 'Thinking…');
     for (let step = 0; step < 6; step++) {
@@ -243,7 +282,16 @@ export async function runTurn(user, o, { chatId, userMessageId, assistantMessage
       if (firstDocs) { const i = firstDocs.content.map((c) => c.type).lastIndexOf('document'); firstDocs.content[i].cache_control = { type: 'ephemeral' }; }
       const tail = out[out.length - 1]; if (Array.isArray(tail.content) && tail.content.length) { const lastBlock = tail.content[tail.content.length - 1]; if (!lastBlock.cache_control && ['text', 'tool_result', 'document'].includes(lastBlock.type)) lastBlock.cache_control = { type: 'ephemeral' }; }
       const before = texts.join('\n\n'); let live = '';
-      const r = await streamClaude({ userId: user.id, kind: 'estimate', label: o.name, system, messages: out, tools: [PREVIEW_TOOL], onThinking: () => { if (!live) note([before, 'Working it through…'].filter(Boolean).join('\n\n')); }, onText: (t) => { live += t; shown = [before, live].filter(Boolean).join('\n\n'); show(); } });
+      let r;
+      try { r = await streamClaude({ userId: user.id, kind: 'estimate', label: o.name, system, messages: out, tools: [PREVIEW_TOOL], onThinking: () => { if (!live) note([before, 'Working it through…'].filter(Boolean).join('\n\n')); }, onText: (t) => { live += t; shown = [before, live].filter(Boolean).join('\n\n'); show(); } }); }
+      catch (e) {
+        // one file the service cannot open: find it, leave it out, say so, and try again once
+        if (checked || e?.api?.status !== 400 || !/pdf|document|image|file/i.test(e.api.message || '')) throw e;
+        checked = true; note([before, 'One of the files could not be read by the AI service. Finding which one…'].filter(Boolean).join('\n\n'));
+        const bad = await findUnreadable(system, [...msgs, ...turn]); if (!bad.length) throw e;
+        texts.unshift(bad.map((b) => `_${b.name} was left out of this answer: ${fixFor(b.name, b.size)}_`).join('\n\n'));
+        msgs = await scrub(msgs); turn.splice(0, turn.length, ...(await scrub(turn))); step--; continue;
+      }
       const said = r.content.filter((c) => c.type === 'text').map((c) => c.text).join('').trim(); if (said) texts.push(said);
       turn.push({ role: 'assistant', content: r.content });
       if (r.stopReason === 'tool_use') {
@@ -416,6 +464,8 @@ export async function removeAttachment(user, id) {
 async function attachmentBlock(a) {
   const file = path.join(UPLOAD_DIR, path.basename(a.storage_key)), ext = path.extname(a.name).toLowerCase(), label = `${PURPOSE[a.purpose].label}: ${a.name}`;
   if (TEXT_KINDS.includes(ext)) { const t = await attachmentTextOf(await fs.promises.readFile(file), ext); return { type: 'text', text: `[${label}]\n\`\`\`\n${t}\n\`\`\`` }; }
+  const [bad] = await q('SELECT 1 FROM ai_files WHERE sha256=$1 AND unreadable IS NOT NULL', [a.sha256]);
+  if (bad) return { type: 'text', text: `[${label}: left out, the AI service could not read this file.]` };
   let fileId = a.ai_file_id;
   if (!fileId) { const [known] = await q('SELECT file_id FROM ai_files WHERE sha256=$1', [a.sha256]); fileId = known?.file_id;
     if (!fileId) { fileId = await uploadAiFile(file, a.name, a.mime); await q('INSERT INTO ai_files(sha256,file_id,name,size) VALUES ($1,$2,$3,$4) ON CONFLICT (sha256) DO UPDATE SET file_id=$2', [a.sha256, fileId, a.name.slice(0, 200), Number(a.size)]); }

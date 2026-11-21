@@ -445,3 +445,17 @@ test('the estimating sheet is whatever is in ByOther / Estimating Sheet: shown b
   nodes.get(f.id).bytes = await book(9.99); sys = await ec.systemPrompt(await ec.estimatingSheet({ fresh: true })); assert.match(sys, /\t1\.4\n/);   // same date: the copy already read is used
   drop(f.id); await ec.estimatingSheet({ fresh: true });
 });
+
+test('plans: SharePoint\'s own second copy of a plan file ("name 1.pdf", same size) is not listed twice, and an upload never makes one', async () => {
+  const plans = await import('../server/plans.js');
+  const id = await mk({ name: 'Bunnell Plans Job', gc: 'Plans GC', addr: await addrOk('9 Plan St', 'Bunnell', '32110') }); await call('POST', `/api/opportunities/${id}/status`, { status: 'Accepted' }, est);
+  const o = await opp(id), dl = find('ByOther', YEAR, 'Plans GC', `${o.proposalId}_Bunnell Plans Job_Bunnell`, '01. DL'); assert.ok(dl);
+  const body = Buffer.from('%PDF-1.4 combined set'), mine = add(dl.id, '01 CK Bunnell, FL- Combined- OTB.pdf', false, { size: body.length, bytes: body });
+  // the estimator's upload of the same file: linked to the one already there, not copied as "… 1.pdf"
+  const r = await call('POST', `/api/opportunities/${id}/plans`, body, est, '01 CK Bunnell, FL- Combined- OTB.pdf'); assert.equal(r.status, 200); await new Promise((res) => setTimeout(res, 300));
+  assert.deepEqual(kids(dl.id).map((n) => n.name), ['01 CK Bunnell, FL- Combined- OTB.pdf']);
+  assert.equal((await q('SELECT sp_item_id FROM opportunity_files WHERE id=$1', [r.body.fileId]))[0].sp_item_id, mine.id);
+  // a copy SharePoint made earlier is left alone in the folder but listed once
+  add(dl.id, '01 CK Bunnell, FL- Combined- OTB 1.pdf', false, { size: body.length, bytes: body }); add(dl.id, 'A-2.0 Other Sheet.pdf', false, { size: 9, bytes: Buffer.from('%PDF-1.4 ') });
+  assert.deepEqual((await plans.planSources(id)).map((p) => p.name), ['01 CK Bunnell, FL- Combined- OTB.pdf', 'A-2.0 Other Sheet.pdf']);
+});

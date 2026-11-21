@@ -73,7 +73,7 @@ export async function streamClaude({ userId, kind, label = null, system, message
   const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }; const blocks = []; let stop = null, served = model;
   try {
     const res = await send();
-    if (!res.ok) { const why = await said(res); throw new HttpError(res.status === 429 || res.status === 529 ? 503 : 502, res.status === 429 || res.status === 529 ? `The AI service is busy right now (${res.status}). Wait a minute and send it again.` : `The AI service refused the request (${res.status}${why ? ': ' + why : ''}).`); }
+    if (!res.ok) { const why = await said(res), e = new HttpError(res.status === 429 || res.status === 529 ? 503 : 502, res.status === 429 || res.status === 529 ? `The AI service is busy right now (${res.status}). Wait a minute and send it again.` : `The AI service refused the request (${res.status}${why ? ': ' + why : ''}).`); e.api = { status: res.status, message: why }; throw e; }
     const take = (ev) => {
       if (ev.type === 'message_start') { const g = ev.message?.usage || {}; usage.input = g.input_tokens ?? 0; usage.cacheRead = g.cache_read_input_tokens ?? 0; usage.cacheWrite = g.cache_creation_input_tokens ?? 0; usage.output = g.output_tokens ?? 0; served = ev.message?.model || served; }
       else if (ev.type === 'content_block_start') { blocks[ev.index] = { ...ev.content_block }; if (ev.content_block?.type === 'tool_use') blocks[ev.index]._json = ''; if (ev.content_block?.type === 'thinking') onThinking(); }
@@ -94,6 +94,13 @@ export async function streamClaude({ userId, kind, label = null, system, message
     await q('INSERT INTO ai_usage(user_id,kind,label,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)', [userId, kind, label ? String(label).slice(0, 200) : null, served, (usage.input + usage.cacheWrite) || null, usage.output || null, usage.cacheRead || null, usage.cacheWrite || null]).catch(() => {}); }
   const content = blocks.filter(Boolean).map((b) => { const { _invalid, ...rest } = b; return rest; });
   return { content, invalidTools: blocks.filter((b) => b?._invalid).map((b) => b.id), stopReason: stop, usage, model: served };
+}
+
+// Counts the tokens of a request without running it (no charge). Used to find which file the AI service cannot read.
+export async function countTokens({ system, messages }) {
+  const res = await fetchImpl('https://api.anthropic.com/v1/messages/count_tokens', { method: 'POST', signal: AbortSignal.timeout(180000), headers: { ...baseHeaders(), 'content-type': 'application/json' }, body: JSON.stringify({ model: chatModel(), system, messages }) });
+  if (res.ok) return { ok: true, tokens: (await res.json().catch(() => ({})))?.input_tokens ?? null };
+  return { ok: false, status: res.status, message: await said(res) };
 }
 
 const RECEIPT_TOOL = { name: 'record_receipt', description: 'Record what is printed on a purchase receipt or supplier invoice.', input_schema: { type: 'object', additionalProperties: false,

@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import crypto from 'node:crypto';
+import os from 'node:os';
 import { pipeline } from 'node:stream/promises';
 import { q } from './db.js';
 import { HttpError } from './http.js';
@@ -12,11 +13,17 @@ import { UPLOAD_DIR } from './documents.js';
 import * as SP from './sharepoint.js';
 import * as folders from './folders.js';
 import { uploadAiFile } from './ai.js';
+import { PDFDocument } from 'pdf-lib';
 
 // What to do about a PDF the AI service could not read: a very large plan set has to be split; anything else re-saved.
 export const BIG_PDF = 30 * 1024 * 1024;
 export const fixFor = (name, size) => (Number(size) > BIG_PDF ? `the AI service could not read it in one piece (${Math.round(Number(size) / 1048576)} MB). Split it into smaller PDFs, for example the architectural sheets and the MEP sheets separately or about 50 sheets each, and upload those.` : 'the AI service could not read this PDF. Open it, save it again as a PDF (Print to PDF), and upload the new copy.');
-const MAX_PDF = 480 * 1024 * 1024;          // the AI service takes files up to 500 MB
+const MAX_PDF = 480 * 1024 * 1024;
+// A plan set the AI service cannot take in one piece is sent as parts: a PDF over 30 MB or over 100 pages is cut into parts of up to 40
+// pages, and a part still over 30 MB is cut again (down to single pages). The AI reads up to 600 pages in one conversation turn.
+export let roomToSplit = (size) => { const c = typeof process.constrainedMemory === 'function' ? Number(process.constrainedMemory()) : 0, limit = c > 0 && c < os.totalmem() ? c : os.totalmem(); return process.memoryUsage().rss + size * 3.2 < limit * 0.85; };
+export const setRoomToSplit = (f) => { roomToSplit = f; };   // tests
+export const SPLIT_PAGES = 100, PART_PAGES = 40, MAX_TURN_PAGES = 580;          // the AI service takes files up to 500 MB
 const isPdfName = (n) => /\.pdf$/i.test(n) && !/(^|\/)(__MACOSX\/|\._)/.test(n) && !path.basename(n).startsWith('.');
 const tmpDir = async () => { const d = path.join(UPLOAD_DIR, '.plans-tmp'); await fs.promises.mkdir(d, { recursive: true }); return d; };
 const tmpFile = async (ext) => path.join(await tmpDir(), crypto.randomBytes(10).toString('hex') + ext);
@@ -99,7 +106,9 @@ export async function planSources(opportunityId) {
 export async function preparePlans(opportunityId, onStep = () => {}) {
   const sources = await planSources(opportunityId), docs = [], problems = [], have = new Set();
   const known = new Map((await q('SELECT source_key, docs FROM plan_sources WHERE opportunity_id=$1', [opportunityId])).map((r) => [r.source_key, r.docs]));
-  const add = async (list, s) => { for (const d of list) { if (have.has(d.sha256)) continue; const [f] = await q('SELECT file_id, unreadable FROM ai_files WHERE sha256=$1', [d.sha256]); if (!f) return false; have.add(d.sha256);
+  // a large set worked out before parts existed is worked out again (once), so it is sent as parts
+  const stale = (list) => list.some((d) => !d.part && !d.pages && Number(d.size) > BIG_PDF);
+  const add = async (list, s) => { if (stale(list)) return false; for (const d of list) { if (have.has(d.sha256)) continue; const [f] = await q('SELECT file_id, unreadable FROM ai_files WHERE sha256=$1', [d.sha256]); if (!f) return false; have.add(d.sha256);
     if (f.unreadable) { problems.push(`${d.name} was left out: ${fixFor(d.name, d.size)}`); continue; }   // known bad: never sent again
     docs.push({ ...d, fileId: f.file_id, revision: !!s?.revision, at: s?.at ?? null }); } return true; };
   const sendPdf = async (file, name) => {
@@ -108,6 +117,27 @@ export async function preparePlans(opportunityId, onStep = () => {}) {
     const sha256 = await sha256File(file), [f] = await q('SELECT file_id FROM ai_files WHERE sha256=$1', [sha256]);
     if (!f) { onStep(`Sending ${name} to the AI…`); const fileId = await uploadAiFile(file, name); await q('INSERT INTO ai_files(sha256,file_id,name,size) VALUES ($1,$2,$3,$4) ON CONFLICT (sha256) DO UPDATE SET file_id=$2', [sha256, fileId, name.slice(0, 200), size]); }
     return { sha256, name: name.slice(0, 200), size };
+  };
+  // One plan PDF as the AI gets it: whole when it is small, otherwise in parts named "<name> (pages 1-40 of 120).pdf".
+  const sendPlan = async (file, name) => {
+    if (!(await startsWithPdf(file))) { problems.push(`${name} is not a readable PDF.`); return []; }
+    const { size } = await fs.promises.stat(file); let src = null, pages = null;
+    // splitting holds the file in memory about three times over: on a server without that much room it is not tried (it would crash it)
+    if (size > BIG_PDF && !roomToSplit(size)) { problems.push(`${name} (${Math.round(size / 1048576)} MB) is too large for this server to split for the AI. Split it into smaller PDFs, for example the architectural sheets and the MEP sheets separately or about 50 sheets each, and upload those.`); return []; }
+    try { src = await PDFDocument.load(await fs.promises.readFile(file), { updateMetadata: false, throwOnInvalidObject: false }); pages = src.getPageCount(); }
+    catch { src = null; pages = null; }   // a locked or unusual PDF is sent as it is; if the AI service cannot read it the estimator is told
+    if (!src || (size <= BIG_PDF && pages <= SPLIT_PAGES)) { const d = await sendPdf(file, name); return d ? [{ ...d, pages }] : []; }
+    onStep(`${name} is large (${Math.round(size / 1048576)} MB, ${pages} pages): splitting it into parts for the AI…`);
+    const stem = name.replace(/\.pdf$/i, ''), out = [];
+    const part = async (from, to) => {   // pages from..to (0-based, inclusive)
+      const doc = await PDFDocument.create(); for (const pg of await doc.copyPages(src, Array.from({ length: to - from + 1 }, (_, k) => from + k))) doc.addPage(pg);
+      const bytes = Buffer.from(await doc.save({ useObjectStreams: true }));
+      if (bytes.length > BIG_PDF && to > from) { const mid = Math.floor((from + to) / 2); await part(from, mid); await part(mid + 1, to); return; }
+      const tmp = await tmpFile('.pdf'), label = `${stem} (pages ${from + 1}-${to + 1} of ${pages}).pdf`;
+      try { await fs.promises.writeFile(tmp, bytes, { mode: 0o600 }); const d = await sendPdf(tmp, label); if (d) out.push({ ...d, pages: to - from + 1, part: true }); } finally { await rm(tmp); }
+    };
+    for (let p = 0; p < pages; p += PART_PAGES) await part(p, Math.min(p + PART_PAGES, pages) - 1);
+    return out;
   };
   for (const s of sources) {
     if (known.has(s.key) && await add(known.get(s.key), s)) continue;   // already worked out and still at the AI service
@@ -119,14 +149,18 @@ export async function preparePlans(opportunityId, onStep = () => {}) {
       const found = [];
       if (s.zip) {
         const entries = await zipPdfEntries(file); if (!entries.length) problems.push(`${s.name} has no PDF plans inside it.`);
-        for (const e of entries) { const out = await tmpFile('.pdf'); try { await zipExtract(file, e, out); const d = await sendPdf(out, path.basename(e.name)); if (d) found.push(d); } finally { await rm(out); } }
-      } else { const d = await sendPdf(file, s.name); if (d) found.push(d); }
+        for (const e of entries) { const out = await tmpFile('.pdf'); try { await zipExtract(file, e, out); found.push(...(await sendPlan(out, path.basename(e.name)))); } finally { await rm(out); } }
+      } else found.push(...(await sendPlan(file, s.name)));
       await q(`INSERT INTO plan_sources(opportunity_id,source_key,docs) VALUES ($1,$2,$3) ON CONFLICT (opportunity_id,source_key) DO UPDATE SET docs=$3`, [opportunityId, s.key, JSON.stringify(found)]);
       await add(found, s);
     } catch (e) { problems.push(`${s.name}: ${e instanceof HttpError ? e.message : 'could not be read.'}`); }
     finally { if (temp) await rm(temp); }
   }
-  return { docs, problems, sources: sources.length };
+  // the AI reads up to 600 pages at a time: past that, the rest is left out and the estimator is told
+  let total = 0; const keep = [], over = [];
+  for (const d of docs) { const n = Number(d.pages) || 0; if (total + n > MAX_TURN_PAGES) over.push(d); else { keep.push(d); total += n; } }
+  if (over.length) problems.push(`The plans add up to more pages than the AI can read at once (about ${MAX_TURN_PAGES}). Left out: ${over.map((d) => d.name).join(', ')}. Take sheets the estimate does not need (specs, civil, structural) out of the plans on this lead, or upload only the sheets for the trades being estimated.`);
+  return { docs: keep, problems, sources: sources.length };
 }
 // When the AI service says a plan file is gone (deleted or expired there), forget where the lead's files were so they are sent again.
 export async function forgetPlans(opportunityId) {

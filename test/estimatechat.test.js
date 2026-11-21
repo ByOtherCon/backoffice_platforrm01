@@ -354,3 +354,31 @@ test('a PDF the AI service cannot read ("Could not process PDF") is found, left 
   script = [{ status: 400, message: 'max_tokens is too large' }]; await sayOn('Once more.');
   assert.match((await call('GET', `/api/opportunities/${lead}/estimate-chat`, null, est)).body.messages.at(-1).error, /max_tokens is too large/);
 });
+
+test('a large plan set is split into parts the AI can read (up to 40 pages each); past about 580 pages in all, the rest is left out and the estimator is told', async () => {
+  const { PDFDocument } = await import('pdf-lib');
+  const book = async (n, label = 'Sheet') => { const d = await PDFDocument.create(); for (let i = 0; i < n; i++) d.addPage([612, 792]).drawText(`${label} ${i + 1}`, { x: 50, y: 700 }); return Buffer.from(await d.save()); };
+  const [{ id: lead }] = await q(`INSERT INTO opportunities(name,gc_name,city,status,source_key) VALUES ('Big Set Job','GC','Bunnell','Accepted','bigset1') RETURNING id`);
+  assert.equal((await call('POST', `/api/opportunities/${lead}/plans`, await book(120), est, '01 CK Bunnell, FL- Combined- OTB.pdf')).status, 200);
+  assert.equal((await call('POST', `/api/opportunities/${lead}/plans`, await book(12, 'Small'), est, 'A-9.0 Small.pdf')).status, 200);
+  const n = uploads.length; let r = await plans.preparePlans(lead);
+  assert.deepEqual(r.docs.map((d) => [d.name, d.pages]), [['01 CK Bunnell, FL- Combined- OTB (pages 1-40 of 120).pdf', 40], ['01 CK Bunnell, FL- Combined- OTB (pages 41-80 of 120).pdf', 40], ['01 CK Bunnell, FL- Combined- OTB (pages 81-120 of 120).pdf', 40], ['A-9.0 Small.pdf', 12]]);
+  assert.equal(uploads.length, n + 4); assert.ok(uploads.slice(n).every((u) => u.head === '%PDF-')); assert.deepEqual(r.problems, []);
+  r = await plans.preparePlans(lead); assert.equal(uploads.length, n + 4); assert.equal(r.docs.length, 4);   // worked out once: nothing is split or sent again
+  // the parts go to the AI as separate files
+  const say2 = async (text) => { const x = await call('POST', `/api/opportunities/${lead}/estimate-chat`, { text }, est); assert.equal(x.status, 200); await settle(); };
+  script = [textAnswer('Read all four.')]; await say2('Read the plans.');
+  assert.deepEqual(requests.at(-1).body.messages[0].content.filter((b) => b.type === 'document').map((b) => b.title.replace(/ \(revised.*$/, '')), r.docs.map((d) => d.name));
+  // more pages than one turn can hold: the rest is named and left out
+  assert.equal((await call('POST', `/api/opportunities/${lead}/plans`, await book(500, 'Spec page'), est, 'Specs Book.pdf')).status, 200);
+  r = await plans.preparePlans(lead); const pages = r.docs.reduce((t, d) => t + d.pages, 0); assert.ok(pages <= 580, String(pages));
+  assert.match(r.problems.join(' '), /The plans add up to more pages than the AI can read at once \(about 580\)\. Left out: Specs Book \(pages 441-480 of 500\)\.pdf, Specs Book \(pages 481-500 of 500\)\.pdf\./);
+});
+
+test('a server without the memory to split a very large set does not try: the estimator is told to split it', async () => {
+  const [{ id: lead }] = await q(`INSERT INTO opportunities(name,gc_name,city,status,source_key) VALUES ('Huge Set Job','GC','Bunnell','Accepted','hugeset1') RETURNING id`);
+  const big = Buffer.concat([pdf('huge'), Buffer.alloc(31 * 1024 * 1024, 32)]); assert.equal((await call('POST', `/api/opportunities/${lead}/plans`, big, est, 'Huge Set.pdf')).status, 200);
+  const real = plans.roomToSplit; plans.setRoomToSplit(() => false); const n = uploads.length;
+  try { const r = await plans.preparePlans(lead); assert.deepEqual(r.docs, []); assert.equal(uploads.length, n); assert.match(r.problems[0], /^Huge Set\.pdf \(31 MB\) is too large for this server to split for the AI\. Split it into smaller PDFs/); }
+  finally { plans.setRoomToSplit(real); }
+});

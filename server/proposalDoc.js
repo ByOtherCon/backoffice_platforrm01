@@ -5,6 +5,9 @@
 //  - The PDF is drawn to look the same (the logo and company block are read out of the template, same layout and colours, a
 //    Calibri-compatible font), because the server has no Word to print with.
 // Nothing is estimated or reworded here: the content comes in ready, and a missing price prints as "$_____".
+// Each trade is its own row of the table: the trade name (bold, underlined), its scope lines on up to three bullet levels (the template's
+// own bullets), sub-headings inside a trade, the price at the top of the Total column, and the "*any item not explicitly listed" line.
+// Prices are whole dollars, always rounded up; cents are never printed.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,26 +17,48 @@ import JSZip from 'jszip';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const defaultTemplate = () => fs.readFileSync(path.join(HERE, 'estimator', 'proposal-template.docx'));
 const FONT = (f) => path.join(HERE, 'estimator', 'fonts', f);
-export const priceText = (n) => (n === null || n === undefined || n === '' || !Number.isFinite(Number(n)) ? '$_____' : '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+// Whole dollars, rounded up (4,900.01 is $4,901). Cents are never printed.
+export const wholeUp = (n) => Math.ceil(Math.round(Number(n) * 100) / 100);
+export const priceText = (n) => (n === null || n === undefined || n === '' || !Number.isFinite(Number(n)) ? '$_____' : '$' + wholeUp(n).toLocaleString('en-US'));
 const str = (v, n = 4000) => String(v ?? '').replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '').replace(/\s+/g, ' ').trim().slice(0, n);
 
 // Tidies what the conversation hands over into the one shape both writers use. Throws a plain sentence when something needed is missing.
+// A scope line: { text, level } where level 1 to 3 is the bullet level and 0 a plain line with no bullet, or { text, heading: true } for a
+// sub-heading inside the trade (bold and underlined, like the trade name). A plain string is a first-level bullet.
+const bulletless = (x) => str(x, 1500).replace(/^[•▪■□○o\-*]\s+/, '');
+function scopeLines(t) {
+  const out = (Array.isArray(t?.notes) ? t.notes : []).map((x) => ({ text: str(x, 1500), level: 0 })).filter((x) => x.text).slice(0, 20);
+  for (const x of (Array.isArray(t?.items) ? t.items : []).slice(0, 300)) {
+    if (typeof x === 'string') { const v = bulletless(x); if (v) out.push({ text: v, level: 1 }); continue; }
+    const v = bulletless(x?.text); if (!v) continue;
+    if (x?.heading) out.push({ text: v.toUpperCase(), heading: true });
+    else { const lv = Number(x?.level ?? 1); out.push({ text: v, level: Number.isFinite(lv) ? Math.min(3, Math.max(0, Math.round(lv))) : 1 }); }
+  }
+  return out;
+}
+const num = (v) => (v === null || v === undefined || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
+// How a trade's price was worked out (shown to the estimator, kept with the proposal, never printed on it).
+const methodOf = (m) => (m && typeof m === 'object' ? { basis: str(m.basis, 1500), lines: (Array.isArray(m.lines) ? m.lines : []).slice(0, 60).map((l) => ({ description: str(l?.description, 300), quantity: num(l?.quantity), unit: str(l?.unit, 20), rate: num(l?.rate), amount: num(l?.amount), source: str(l?.source, 200) })).filter((l) => l.description) } : null);
 export function proposalSpec(input, defaults = {}) {
   const trades = (Array.isArray(input?.trades) ? input.trades : []).slice(0, 20).map((t) => {
-    const items = (Array.isArray(t?.items) ? t.items : []).map((x) => str(x, 1500).replace(/^[•▪\-*]\s*/, '')).filter(Boolean).slice(0, 150), notes = (Array.isArray(t?.notes) ? t.notes : []).map((x) => str(x, 1500)).filter(Boolean).slice(0, 20);
-    const total = t?.total === null || t?.total === undefined || t?.total === '' ? null : Number(t.total);
-    return { title: str(t?.name, 80).toUpperCase(), items, notes, total: Number.isFinite(total) && total >= 0 ? Math.round(total * 100) / 100 : null };
-  }).filter((t) => t.title && (t.items.length || t.notes.length));
+    const lines = scopeLines(t), total = num(t?.total);
+    return { title: str(t?.name, 80).toUpperCase(), lines, items: lines.filter((l) => !l.heading && l.level).map((l) => l.text), total: total !== null && total >= 0 ? wholeUp(total) : null, method: methodOf(t?.methodology) };
+  }).filter((t) => t.title && t.lines.length);
   if (!trades.length) throw new Error('The proposal needs at least one trade with scope items.');
   const flagged = (Array.isArray(input?.flagged) ? input.flagged : []).map((f) => ({ item: str(f?.item, 400), note: str(f?.reference ?? f?.note, 800) })).filter((f) => f.item).slice(0, 80);
+  // items the estimating sheet does not cover: priced another way and listed for the sheet to be updated
+  const needsUpdate = (Array.isArray(input?.needsUpdate) ? input.needsUpdate : []).map((n) => ({ trade: str(n?.trade, 80), item: str(n?.item, 400), note: str(n?.note, 800) })).filter((n) => n.item).slice(0, 80);
+  const rv = input?.revision && typeof input.revision === 'object' && input.revision.isRevision ? { changes: (Array.isArray(input.revision.changes) ? input.revision.changes : []).map((c) => str(c, 600)).filter(Boolean).slice(0, 80) } : null;
   const project = str(input?.projectName, 200) || str(defaults.projectName, 200), gc = str(input?.createdFor, 200) || str(defaults.createdFor, 200);
   if (!project) throw new Error('The proposal needs the project name.');
   const title = (s) => s.charAt(0) + s.slice(1).toLowerCase();
   return { date: str(input?.date, 40) || defaults.date || new Date().toLocaleDateString('en-US', { timeZone: 'America/New_York', month: 'long', day: 'numeric', year: 'numeric' }),
     createdFor: gc, projectName: project, location: str(input?.projectAddress, 300) || str(defaults.projectAddress, 300), proposalId: str(defaults.proposalId, 40), permitSet: str(input?.permitSet, 300),
-    scope: trades.map((t) => title(t.title)).join('/'), trades, flagged, grandTotal: !!input?.showGrandTotal };
+    scope: trades.map((t) => title(t.title)).join('/'), trades, flagged, needsUpdate, revision: rv, revisionNo: Number.isInteger(defaults.revisionNo) ? defaults.revisionNo : null, grandTotal: !!input?.showGrandTotal };
 }
-const sumOf = (spec) => (spec.trades.every((t) => t.total !== null) ? Math.round(spec.trades.reduce((n, t) => n + t.total * 100, 0)) / 100 : null);
+const sumOf = (spec) => (spec.trades.every((t) => t.total !== null) ? spec.trades.reduce((n, t) => n + t.total, 0) : null);
+// the Scope line: the trades, and the revision number when this is a revision
+const scopeText = (spec) => spec.scope + (spec.revisionNo ? ` – Revision ${spec.revisionNo}` : '');
 const forLine = (spec) => `${spec.createdFor ? spec.createdFor + ': ' : ''}${spec.projectName}${spec.location ? ' – ' + spec.location : ''}`;
 
 // ------------------------------------------------------------------ reading the template
@@ -62,6 +87,19 @@ function templateParts(xml) {
   if (!titleP || !bulletP) throw MISSING('the trade name and bullet lines in its table'); if (!priceP) throw MISSING('the "$" in the Total column');
   return { head, table, forP, scopeP, rows, proto, cells, titleP, bulletP, noteP, blankP, priceP, c2 };
 }
+// The bullet levels of the template's bullet list (its numbering): the indent of each level, and the mark it draws (square, circle, dot).
+async function bulletLevels(zip, bulletP) {
+  const id = (bulletP.match(/<w:numId w:val="(\d+)"/) || [])[1], numbering = await zip.file('word/numbering.xml')?.async('string');
+  const fallback = [1, 2, 3].map((k) => ({ ind: null, left: 720 * k, hanging: 360, mark: 'square' }));
+  if (!id || !numbering) return fallback;
+  const abs = (numbering.match(new RegExp(`<w:num w:numId="${id}"[^>]*>[\\s\\S]*?<w:abstractNumId w:val="(\\d+)"`)) || [])[1]; if (abs === undefined) return fallback;
+  const def = (numbering.match(new RegExp(`<w:abstractNum\\b[^>]*w:abstractNumId="${abs}"[^>]*>[\\s\\S]*?</w:abstractNum>`)) || [])[0]; if (!def) return fallback;
+  return [0, 1, 2].map((k) => { const l = (def.match(new RegExp(`<w:lvl w:ilvl="${k}"[^>]*>[\\s\\S]*?</w:lvl>`)) || [])[0]; if (!l) return fallback[k];
+    const ind = (l.match(/<w:ind\b[^>]*\/>/) || [])[0] || null, left = Number((ind?.match(/w:left="(\d+)"/) || [])[1] ?? 720 * (k + 1)), hanging = Number((ind?.match(/w:hanging="(\d+)"/) || [])[1] ?? 360);
+    const t = (l.match(/<w:lvlText w:val="([^"]*)"/) || [])[1] ?? '', font = (l.match(/w:ascii="([^"]*)"/) || [])[1] ?? '';
+    const mark = /^o$/i.test(t) ? 'circle' : /symbol/i.test(font) || t === '\uf0b7' || t === '•' ? 'dot' : 'square';
+    return { ind, left, hanging, mark }; });
+}
 // Checks a file is a usable template (for when the owner loads a new one). Returns what it found.
 export async function checkTemplate(bytes) {
   let zip; try { zip = await JSZip.loadAsync(bytes); } catch { throw new Error('That is not a Word (.docx) file.'); }
@@ -82,12 +120,17 @@ export async function proposalDocx(spec, templateBytes = defaultTemplate()) {
   const label = runs.slice(0, cut);
   const numRun = runs.slice(Math.max(firstBracket, 0)).find((r) => /[A-Za-z0-9]/.test(textOf(r)) && !textOf(r).includes('[')) ?? runs[firstBracket] ?? runs.at(-1), tradeRun = [...runs].reverse().find((r) => textOf(r).trim());
   const open = p.scopeP.match(/^<w:p\b[^>]*>/)[0], pPr = (p.scopeP.match(/<w:pPr>[\s\S]*?<\/w:pPr>/) || [''])[0];
-  const scopeNew = `${open}${pPr}${label.join('')}${label.length && !/\s$/.test(textOf(label.at(-1))) ? mkRun(rPrOf(label.at(-1)), ' ') : ''}${spec.proposalId ? mkRun(rPrOf(numRun), `[${spec.proposalId}] `) : ''}${mkRun(rPrOf(tradeRun), spec.scope)}</w:p>`;
+  const scopeNew = `${open}${pPr}${label.join('')}${label.length && !/\s$/.test(textOf(label.at(-1))) ? mkRun(rPrOf(label.at(-1)), ' ') : ''}${spec.proposalId ? mkRun(rPrOf(numRun), `[${spec.proposalId}] `) : ''}${mkRun(rPrOf(tradeRun), scopeText(spec))}</w:p>`;
   // one table row per trade, copied from the template's own trade row
   const cellOpen = (c) => c.match(/^<w:tc\b[^>]*>/)[0] + ((c.match(/<w:tcPr>[\s\S]*?<\/w:tcPr>/) || [''])[0]), rowOpen = p.proto.match(/^<w:tr\b[^>]*>/)[0] + ((p.proto.match(/<w:trPr>[\s\S]*?<\/w:trPr>/) || [''])[0]);
-  const plainP = p.blankP ?? p.bulletP.replace(/<w:numPr>[\s\S]*?<\/w:numPr>/, ''), bulletRPr = rPrOf(firstTextRun(p.bulletP)), mid = p.cells.slice(1, -1).join('');
-  const rowFor = (title, notes, items, price, withNote) => `${rowOpen}${cellOpen(p.cells[0])}${withText(p.titleP, title)}${notes.map((n) => withText(plainP, n, bulletRPr)).join('')}${items.map((x) => withText(p.bulletP, x)).join('')}${withNote && p.blankP ? p.blankP : ''}${withNote && p.noteP ? p.noteP : ''}</w:tc>${mid}${cellOpen(p.cells.at(-1))}${p.c2.map((q) => (q === p.priceP ? withText(q, price) : q)).join('')}</w:tc></w:tr>`;
-  const body = spec.trades.map((t) => rowFor(t.title, t.notes, t.items, priceText(t.total), true)).join('') + (spec.grandTotal ? rowFor('TOTAL', [], [], priceText(sumOf(spec)), false) : '');
+  const plainP = (p.blankP ?? p.bulletP).replace(/<w:numPr>[\s\S]*?<\/w:numPr>/, '').replace(/<w:ind\b[^>]*\/>/, '<w:ind w:left="0" w:right="0"/>'), bulletRPr = rPrOf(firstTextRun(p.bulletP)), mid = p.cells.slice(1, -1).join('');
+  // the bullet paragraph at levels 1 to 3: the same paragraph with the level and that level's indent from the template's own list
+  const levels = await bulletLevels(zip, p.bulletP), blank = p.blankP ?? withText(plainP, '');
+  const atLevel = (lv) => { let x = p.bulletP.replace(/<w:ilvl w:val="\d+"\s*\/>/, `<w:ilvl w:val="${lv - 1}"/>`); const ind = levels[lv - 1]?.ind; if (ind) x = x.replace(/(<w:pPr>[\s\S]*?)<w:ind\b[^>]*\/>/, (m0, a) => a + ind); return x; };
+  const BULLET = [null, atLevel(1), atLevel(2), atLevel(3)];
+  const lineXml = (l, k) => (l.heading ? `${k ? blank : ''}${withText(p.titleP, l.text)}` : l.level ? withText(BULLET[l.level], l.text) : withText(plainP, l.text, bulletRPr));
+  const rowFor = (title, lines, price, withNote) => `${rowOpen}${cellOpen(p.cells[0])}${withText(p.titleP, title)}${lines.map(lineXml).join('')}${withNote && p.blankP ? p.blankP : ''}${withNote && p.noteP ? p.noteP : ''}</w:tc>${mid}${cellOpen(p.cells.at(-1))}${p.c2.map((q) => (q === p.priceP ? withText(q, price) : q)).join('')}</w:tc></w:tr>`;
+  const body = spec.trades.map((t) => rowFor(t.title, t.lines, priceText(t.total), true)).join('') + (spec.grandTotal ? rowFor('TOTAL', [], priceText(sumOf(spec)), false) : '');
   const table = p.table.replace(p.proto, () => body);
   xml = xml.replace(p.table, () => table).replace(p.forP, () => forNew).replace(p.scopeP, () => scopeNew);
   zip.file('word/document.xml', xml, { createFolders: false });
@@ -113,9 +156,10 @@ async function templateLook(templateBytes) {
     if (plain) company.push({ text: plain, bold: /<w:b\s*\/>|<w:b w:val="1"/.test(rPrOf(firstTextRun(q))) }); if (link && textOf(link[0]).trim()) company.push({ text: textOf(link[0]).trim(), link: true }); }
   let footer = ''; for (const name of Object.keys(zip.files).filter((n) => /^word\/footer\d*\.xml$/.test(n))) { const t = textOf(await zip.file(name).async('string')).trim(); if (t) { footer = t; break; } }
   const headRow = p.rows[0].match(CELL) || [];
-  return { logo, company, footer, disclaimer: p.noteP ? textOf(p.noteP).trim() : '', th: [textOf(headRow[0] || '').trim() || 'Description/Scope', textOf(headRow.at(-1) || '').trim() || 'Total'], fill: (p.rows[0].match(/w:fill="([0-9A-Fa-f]{6})"/) || [])[1] || '44546A' };
+  return { logo, company, footer, levels: await bulletLevels(zip, p.bulletP), disclaimer: p.noteP ? textOf(p.noteP).trim() : '', th: [textOf(headRow[0] || '').trim() || 'Description/Scope', textOf(headRow.at(-1) || '').trim() || 'Total'], fill: (p.rows[0].match(/w:fill="([0-9A-Fa-f]{6})"/) || [])[1] || '44546A' };
 }
-export async function proposalPdf(spec, templateBytes = defaultTemplate()) {
+// { preview: true } marks every page PREVIEW (the copy shown before the final files are made).
+export async function proposalPdf(spec, templateBytes = defaultTemplate(), { preview = false } = {}) {
   const look = await templateLook(templateBytes);
   return new Promise((resolve, reject) => {
     const M = 72, W = 612 - 2 * M, TW = 485.75, DESC = 382.25, TOT = TW - DESC, PADX = 5.4, BOTTOM = 792 - M, GRAY = '#5A5A5A', LINE = '#BFBFBF';
@@ -124,7 +168,8 @@ export async function proposalPdf(spec, templateBytes = defaultTemplate()) {
     doc.registerFont('r', FONT('Carlito-Regular.ttf')); doc.registerFont('b', FONT('Carlito-Bold.ttf')); doc.registerFont('i', FONT('Carlito-Italic.ttf'));
     let y = M;
     // every page: the date at the top right and the company name at the bottom, as in the template's header and footer
-    const frame = () => { doc.font('r').fontSize(11).fillColor('#000').text(spec.date, M, 36, { width: W, align: 'right', lineBreak: false }); if (look.footer) doc.font('r').fontSize(12).fillColor('#000').text(look.footer, M, 792 - 36 - 28, { lineBreak: false }); };
+    const frame = () => { if (preview) { doc.save(); doc.rotate(-35, { origin: [306, 396] }); doc.font('b').fontSize(120).fillColor('#000').fillOpacity(0.07).text('PREVIEW', 0, 330, { width: 612, align: 'center', lineBreak: false }); doc.restore(); doc.fillOpacity(1); }
+      doc.font('r').fontSize(11).fillColor('#000').text(spec.date, M, 36, { width: W, align: 'right', lineBreak: false }); if (look.footer) doc.font('r').fontSize(12).fillColor('#000').text(look.footer, M, 792 - 36 - 28, { lineBreak: false }); };
     const newPage = () => { doc.addPage(); frame(); y = M; };
     const hOf = (t, w, font, size) => { doc.font(font).fontSize(size); return doc.heightOfString(t, { width: w, lineGap: 0 }); };
     // Small capitals the way Word draws them: capitals at full size, everything else as smaller capitals, on one baseline. Wraps by word.
@@ -142,27 +187,29 @@ export async function proposalPdf(spec, templateBytes = defaultTemplate()) {
     for (const c of look.company) { if (c.link) { doc.font('r').fontSize(12).fillColor('#0563C1').text(c.text, M, y, { lineBreak: false, underline: true }); y += 15; } else { doc.font(c.bold ? 'b' : 'r').fontSize(14).fillColor(GRAY).text(c.text, M, y, { width: W }); y += hOf(c.text, W, c.bold ? 'b' : 'r', 14) + 0.5; } }
     y += 17; smallCaps([{ text: 'Created For', font: 'r', size: 14, underline: true }, { text: ':', font: 'r', size: 14 }], M, W);
     smallCaps([{ text: forLine(spec), font: 'b', size: 14 }], M, W); y += 17;
-    smallCaps([{ text: 'Scope', font: 'r', size: 14, underline: true }, { text: ': ', font: 'r', size: 14 }, ...(spec.proposalId ? [{ text: `[${spec.proposalId}] `, font: 'r', size: 12 }] : []), { text: spec.scope, font: 'b', size: 14 }], M, W);
+    smallCaps([{ text: 'Scope', font: 'r', size: 14, underline: true }, { text: ': ', font: 'r', size: 14 }, ...(spec.proposalId ? [{ text: `[${spec.proposalId}] `, font: 'r', size: 12 }] : []), { text: scopeText(spec), font: 'b', size: 14 }], M, W);
     // the table
     const box = (x, top, w, hgt, fill) => { if (fill) doc.rect(x, top, w, hgt).fill('#' + fill); doc.lineWidth(0.5).strokeColor(LINE).rect(x, top, w, hgt).stroke(); };
     if (y + 21.1 + 60 > BOTTOM) newPage();
     box(M, y, DESC, 21.1, look.fill); box(M + DESC, y, TOT, 21.1, look.fill);
     doc.font('r').fontSize(14).fillColor('#D0CECE').text(look.th[0], M, y + 2.5, { width: DESC, align: 'center', lineBreak: false }).text(look.th[1], M + DESC, y + 2.5, { width: TOT, align: 'center', lineBreak: false }); y += 21.1;
-    const row = (title, notes, items, price, note) => {
+    const lv = look.levels, LINE_H = (size) => size * 1.22;
+    const mark = (kind, x, yy, size) => { const c = yy + size * 0.58; if (kind === 'circle') doc.lineWidth(0.6).strokeColor('#000').circle(x + 2, c, 2).stroke(); else if (kind === 'dot') doc.circle(x + 2, c, 1.8).fill('#000'); else doc.rect(x + 0.4, c - 1.6, 3.2, 3.2).fill('#000'); };
+    const row = (title, lines, price, note) => {
       if (y + 50 > BOTTOM) newPage();
       let top = y, first = true;
       const close = () => { const hgt = Math.max(y - top, 56.65); box(M, top, DESC, hgt); box(M + DESC, top, TOT, hgt); if (first) { doc.font('b').fontSize(12).fillColor('#000').text(price, M + DESC, top + 15.5, { width: TOT, align: 'center', lineBreak: false }); first = false; } y = top + hgt; };
-      const put = (s, font, size, indent, bullet, justify) => { const w = DESC - 2 * PADX - indent, hh = hOf(s, w, font, size);
+      const put = (s, font, size, indent, bullet, opts = {}) => { const w = DESC - 2 * PADX - indent, hh = hOf(s, w, font, size);
         if (y + hh > BOTTOM) { close(); newPage(); top = y; }
-        if (bullet) doc.rect(M + PADX + indent - 16, y + size * 0.42, 3.2, 3.2).fill('#000');
-        doc.font(font).fontSize(size).fillColor('#000').text(s, M + PADX + indent, y, { width: w, lineGap: 0, align: justify && hh > size * 1.5 ? 'justify' : 'left' }); y += hh; };
-      doc.font('b').fontSize(12).fillColor('#000').text(title, M + PADX, y, { width: DESC - 2 * PADX, underline: true }); y += hOf(title, DESC - 2 * PADX, 'b', 12);
-      for (const n of notes) put(n, 'r', 12, 0, false, false); for (const x of items) put(x, 'r', 12, 36, true, true);
-      if (note && look.disclaimer) { y += 13.5; put(look.disclaimer, 'i', 11, 0, false, false); }
+        if (bullet) mark(bullet.mark, M + PADX + indent - bullet.hanging / 20, y, size);
+        doc.font(font).fontSize(size).fillColor('#000').text(s, M + PADX + indent, y, { width: w, lineGap: 0, underline: !!opts.underline }); y += hh; };
+      put(title, 'b', 12, 0, null, { underline: true });
+      lines.forEach((l, k) => { if (l.heading) { if (k) y += LINE_H(12); if (y + 3 * LINE_H(12) > BOTTOM) { close(); newPage(); top = y; } put(l.text, 'b', 12, 0, null, { underline: true }); } else if (!l.level) put(l.text, 'r', 12, 0, null); else { const b = lv[l.level - 1]; put(l.text, 'r', 12, b.left / 20, b); } });
+      if (note && look.disclaimer) { y += 13.5; put(look.disclaimer, 'i', 11, 0, null); }
       close();
     };
-    for (const t of spec.trades) row(t.title, t.notes, t.items, priceText(t.total), true);
-    if (spec.grandTotal) row('TOTAL', [], [], priceText(sumOf(spec)), false);
+    for (const t of spec.trades) row(t.title, t.lines, priceText(t.total), true);
+    if (spec.grandTotal) row('TOTAL', [], priceText(sumOf(spec)), false);
     doc.end();
   });
 }

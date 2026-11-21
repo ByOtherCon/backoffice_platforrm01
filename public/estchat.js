@@ -1,5 +1,8 @@
-// Estimate With AI: the conversation between an estimator and the AI on one lead. It reads the lead's plans, follows byOther's own
-// estimating instructions, and saves each proposal it writes as a new version on the lead. Text is inserted with textContent only.
+// Estimate With AI: the conversation between an estimator and the AI (Claude Opus 5.5, high effort) on one lead. It reads the lead's
+// plans and any file attached here (PlanSwift takeoff, photos, documents, a proposal to check, revised plans), follows byOther's own
+// estimating instructions, and shows each proposal as a PREVIEW first: the pricing method of each trade, flagged items, items the
+// estimating sheet does not cover, and a Create Final Proposal button that saves the Word and PDF as a new version on the lead.
+// Text is inserted with textContent only.
 import { h, notice, guard, modal } from '/ui.js';
 let C;
 export const init = (c) => { C = c; };
@@ -46,7 +49,47 @@ export function markdown(src) {
 // ---------------------------------------------------------------- the conversation
 const mb = (n) => (n ? ` (${(n / 1048576).toFixed(n > 10485760 ? 0 : 1)} MB)` : '');
 const when = (d) => new Date(d).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-const STARTERS = ['Read the plans and draft the proposal with a section for each trade in our scope.', 'What is in our scope for demolition? List it by keynote.', 'List everything that should be flagged before we send a proposal.'];
+const STARTERS = ['Read the plans and draft the proposal with a section for each trade in our scope, priced from the estimating sheet.', 'What is in our scope for demolition?', 'List everything that should be flagged before we send a proposal.'];
+const LABEL = { takeoff: 'PlanSwift Takeoff', reference: 'Photo Or Document', proposal: 'Proposal To Check' };
+const KINDS = { takeoff: ['PlanSwift Takeoff (Excel, CSV or PDF)', '.xlsx,.csv,.pdf,.txt'], reference: ['Photos Or Documents', '.png,.jpg,.jpeg,.pdf,.docx,.xlsx,.csv,.txt'], proposal: ['A Proposal To Check', '.docx,.pdf'], revised: ['Revised Plans (Compare With The Current Set)', '.pdf,.zip'] };
+// prices on a proposal: whole dollars, rounded up; rates in the pricing method can have cents
+const usd0 = (n) => (n === null || n === undefined ? '$_____' : '$' + Math.ceil(Math.round(Number(n) * 100) / 100).toLocaleString('en-US'));
+const rate = (n) => '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: Number(n) % 1 ? 2 : 0, maximumFractionDigits: 2 });
+const qty = (n) => Number(n).toLocaleString('en-US', { maximumFractionDigits: 2 });
+
+// A preview the AI made: what each trade costs and how it was worked out, what is flagged, what the estimating sheet does not cover,
+// and the buttons: open the PDF marked PREVIEW, the Needs Update report, and Create Final Proposal.
+function previewCard(d, canWrite, onFinal, err) {
+  if (!d) return '';
+  if (d.broken) return h('div', { class: 'err' }, `Preview ${d.seq} could not be read. Ask for the preview again.`);
+  const method = (m) => (m && (m.basis || m.lines.length) ? h('details', {}, h('summary', { style: 'cursor:pointer' }, m.lines.length ? `How it was priced (${m.lines.length} line${m.lines.length === 1 ? '' : 's'})` : 'How it was priced'),
+    m.basis ? h('p', { class: 'muted', style: 'margin:.3rem 0' }, m.basis) : '',
+    m.lines.length ? h('div', { class: 'scroll' }, h('table', { class: 'nostack' }, h('thead', {}, h('tr', {}, ['Line', 'Qty', 'Unit', 'Rate', 'Amount', 'From'].map((x) => h('th', {}, x)))),
+      h('tbody', {}, m.lines.map((l) => h('tr', {}, h('td', { style: 'white-space:normal' }, l.description), h('td', { class: 'n' }, l.quantity === null ? '' : qty(l.quantity)), h('td', {}, l.unit || ''),
+        h('td', { class: 'n' }, l.rate === null ? '' : rate(l.rate)), h('td', { class: 'n' }, l.amount === null ? '' : rate(l.amount)), h('td', { style: 'white-space:normal' }, l.source || '')))))) : '') : h('span', { class: 'muted' }, 'No pricing method given.'));
+  const list = (items, f) => h('ul', { style: 'margin:.3rem 0 0 1.1rem' }, items.map((x) => h('li', {}, ...f(x))));
+  const final = d.final;
+  return h('div', { class: 'chat-preview' },
+    h('div', { class: 'row spread', style: 'flex-wrap:wrap;gap:.4rem' }, h('strong', {}, `Preview ${d.seq}`, d.revision ? ' · Revision' : '', d.createdFor ? ` · for ${d.createdFor}` : ''),
+      h('span', { class: 'pill ' + (final ? 'Approved' : 'Pending') }, final ? `Final made: version ${final.version}` : 'Not final yet')),
+    d.basedOn ? h('p', { class: 'muted', style: 'margin:.3rem 0 0' }, `Checked against and filled in from ${d.basedOn}.`) : '',
+    d.revision && d.revision.changes.length ? h('details', { style: 'margin-top:.4rem' }, h('summary', { style: 'cursor:pointer' }, `Changes in this revision (${d.revision.changes.length})`), list(d.revision.changes, (c) => [c])) : '',
+    h('div', { class: 'scroll', style: 'margin-top:.5rem' }, h('table', { class: 'nostack' }, h('thead', {}, h('tr', {}, h('th', {}, 'Trade'), h('th', {}, 'How It Was Priced'), h('th', { class: 'n' }, 'Price'))),
+      h('tbody', {}, d.trades.map((t) => h('tr', {}, h('td', { style: 'white-space:normal;font-weight:600' }, t.name), h('td', { style: 'white-space:normal;min-width:16rem' }, method(t.method)), h('td', { class: 'n', style: 'font-weight:700' }, usd0(t.total)))),
+        h('tr', {}, h('td', { colspan: '2', class: 'muted' }, 'All trades (not printed on the proposal)'), h('td', { class: 'n', style: 'font-weight:700' }, d.total === null ? '—' : usd0(d.total)))))),
+    d.flagged.length ? h('details', { style: 'margin-top:.4rem' }, h('summary', { style: 'cursor:pointer' }, `Flagged for review before sending (${d.flagged.length})`), list(d.flagged, (f) => [h('strong', {}, f.item), f.note ? ` – ${f.note}` : ''])) : '',
+    d.needsUpdate.length ? h('details', { open: true, style: 'margin-top:.4rem' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, `Needs Update: ${d.needsUpdate.length} item${d.needsUpdate.length === 1 ? '' : 's'} not in the estimating sheet`),
+      list(d.needsUpdate, (u) => [u.trade ? h('strong', {}, u.trade + ': ') : '', u.item, u.note ? h('span', { class: 'muted' }, ` – ${u.note}`) : ''])) : h('p', { class: 'muted', style: 'margin:.4rem 0 0' }, 'Needs Update: none. Everything was found in the estimating sheet.'),
+    h('div', { class: 'row', style: 'gap:.5rem;flex-wrap:wrap;margin-top:.6rem' },
+      h('a', { class: 'chat-file', href: `/api/estimate-drafts/${d.id}/preview.pdf`, target: '_blank', rel: 'noopener' }, h('strong', {}, 'Open Preview'), ' (PDF)'),
+      d.needsUpdate.length ? h('a', { class: 'chat-file', href: `/api/estimate-drafts/${d.id}/needs-update.pdf`, target: '_blank', rel: 'noopener' }, h('strong', {}, 'Needs Update Report'), ' (PDF)') : '',
+      final ? (final.files || []).map((f) => h('a', { class: 'chat-file', href: `/api/opportunity-files/${f.id}`, target: '_blank', rel: 'noopener' }, h('strong', {}, f.kind || 'File'), ' ', f.name))
+        : canWrite ? h('button', { class: 'primary', type: 'button', onclick: guard(err, async (e) => {
+          if (!confirm(`Make the final Word and PDF from Preview ${d.seq}?\n\nThey are saved on the lead as the next version${d.revision ? ' (a revision; the original stays)' : ''} and copied to the Proposal folder in SharePoint.`)) return;
+          e.target.disabled = true; e.target.textContent = 'Making The Files…';
+          try { const r = await C.api('POST', `/estimate-drafts/${d.id}/final`); notice(err, `Version ${r.version}${r.revision ? ` (Revision ${r.revision})` : ''} is saved: ${r.files.map((f) => f.name).join(' and ')}.`, 'ok'); await onFinal(); }
+          finally { e.target.disabled = false; e.target.textContent = 'Create Final Proposal'; } }) }, 'Create Final Proposal') : ''));
+}
 
 export async function estimateChatView(oppId, canWrite) {
   let data = await api('GET', `/opportunities/${oppId}/estimate-chat${C.state.estChatId ? '?chat=' + C.state.estChatId : ''}`), timer = 0, alive = true, latest = {};
@@ -56,9 +99,13 @@ export async function estimateChatView(oppId, canWrite) {
   const toBottom = () => window.scrollTo({ top: document.documentElement.scrollHeight });
   const fileChip = (f) => h('a', { class: 'chat-file', href: `/api/opportunity-files/${f.id}`, target: '_blank', rel: 'noopener' }, h('strong', {}, f.kind || (/\.pdf$/i.test(f.name) ? 'PDF' : 'Word')), ' ', f.name);
   const bubble = (m) => {
-    if (m.role === 'user') return h('div', { class: 'chat-msg me' }, h('div', { class: 'chat-who' }, `${m.who || 'You'} · ${when(m.at)}`), h('div', { class: 'chat-bubble' }, m.text.split('\n').flatMap((t, k) => (k ? [h('br'), t] : [t]))));
+    if (m.role === 'user') { const att = (m.files || []).filter((f) => f.attachment);
+      return h('div', { class: 'chat-msg me' }, h('div', { class: 'chat-who' }, `${m.who || 'You'} · ${when(m.at)}`), h('div', { class: 'chat-bubble' }, m.text.split('\n').flatMap((t, k) => (k ? [h('br'), t] : [t])),
+        att.length ? h('div', { class: 'chat-files' }, att.map((f) => h('a', { class: 'chat-file', href: `/api/estimate-attachments/${f.attachment}`, target: '_blank', rel: 'noopener' }, h('strong', {}, LABEL[f.purpose] || 'File'), ' ', f.name))) : '')); }
+    const previews = (m.files || []).filter((f) => f.preview), other = (m.files || []).filter((f) => !f.preview);
     const body = h('div', { class: 'chat-bubble' }, m.text ? markdown(m.text) : '', m.status === 'working' ? h('div', { class: 'chat-dots' }, h('i'), h('i'), h('i')) : '',
-      m.status === 'error' ? h('div', { class: 'err' }, m.error || 'This answer failed. Send your message again.') : '', (m.files || []).length ? h('div', { class: 'chat-files' }, m.files.map(fileChip)) : '');
+      m.status === 'error' ? h('div', { class: 'err' }, m.error || 'This answer failed. Send your message again.') : '', other.length ? h('div', { class: 'chat-files' }, other.map(fileChip)) : '',
+      previews.map((f) => previewCard((data.drafts || []).find((d) => d.id === f.preview), canWrite, afterFinal, err)));
     return h('div', { class: 'chat-msg ai' }, h('div', { class: 'chat-who' }, `AI Estimator · ${when(m.at)}`), body);
   };
   const drawSide = () => {
@@ -74,7 +121,7 @@ export async function estimateChatView(oppId, canWrite) {
       h('a', { href: '/api/estimating/proposal-template/file', target: '_blank', rel: 'noopener' }, 'Download'),
       sup ? [' ', tplUp, h('button', { class: 'small', type: 'button', onclick: () => tplUp.click() }, 'Load A New Template'), tp.custom ? [' ', h('button', { class: 'small', type: 'button', onclick: guard(err, async () => { if (!confirm('Go back to the original proposal template?')) return; await api('DELETE', '/estimating/proposal-template'); data = await load(); drawSide(); }) }, 'Back To The Original')] : ''] : '')) : '';
     side.replaceChildren(h('div', { class: 'card chat-side' },
-      h('div', { class: 'row spread' }, h('label', { style: 'margin:0' }, 'Plans the AI reads'), canWrite ? h('span', {}, up, h('button', { class: 'small', type: 'button', onclick: () => up.click() }, data.plans.length ? 'Add Plans' : 'Upload Plans')) : ''), plans,
+      h('div', { class: 'row spread' }, h('label', { style: 'margin:0' }, 'Plans the AI reads'), canWrite ? h('span', {}, up, h('button', { class: 'small', type: 'button', onclick: () => up.click() }, data.plans.length ? 'Add Plans' : 'Upload Plans'), data.plans.length ? [' ', h('button', { class: 'small', type: 'button', title: 'Drop in a new set of plans: the AI compares it with the current set and lists the changes. The original proposal is kept; a revised one is saved as a revision.', onclick: () => pickFile('revised') }, 'Add Revised Plans')] : '') : ''), plans,
       latest.latestPdf || latest.latestWord || latest.proposalFolderUrl || (latest.gcs || []).length ? h('div', { style: 'margin-top:.7rem' }, h('label', {}, 'Latest proposal'),
         [['PDF', latest.latestPdf], ['Word', latest.latestWord]].filter((x) => x[1]).map(([l, f]) => h('div', { class: 'chat-plan' }, h('strong', {}, l), ' ', h('a', { href: f.href, target: '_blank', rel: 'noopener' }, f.name), h('span', { class: 'muted' }, f.at ? ` · ${when(f.at)}` : ''))),
         latest.proposalFolderUrl ? h('div', { class: 'chat-plan' }, h('a', { href: latest.proposalFolderUrl, target: '_blank', rel: 'noopener' }, 'Open The Proposal Folder In SharePoint')) : '',
@@ -82,7 +129,7 @@ export async function estimateChatView(oppId, canWrite) {
   };
   const draw = (stick) => {
     list.replaceChildren(...(data.messages.length ? data.messages.map(bubble) : [h('div', { class: 'chat-empty' }, h('h2', {}, 'Estimate this job with the AI'),
-      h('p', { class: 'muted' }, 'It reads the plans on this lead and follows the byOther estimating instructions. Ask it anything, price a trade together, and ask for the proposal when you are ready: each one is saved to the lead as a new version, and this conversation stays with the lead.'),
+      h('p', { class: 'muted' }, 'It reads the plans on this lead and follows the byOther estimating sheet. Ask it anything, attach a PlanSwift takeoff or photos, or a proposal for it to check. Each proposal shows as a preview with the pricing method of every trade; press Create Final Proposal to save the Word and PDF on the lead as a new version. This conversation stays with the lead.'),
       canWrite ? h('div', { class: 'chat-starters' }, STARTERS.map((s) => h('button', { type: 'button', class: 'small', onclick: () => { box.value = s; box.focus(); } }, s))) : '')]));
     send.disabled = !canWrite || data.working || !data.aiConnected ? true : null; send.textContent = data.working ? 'Answering…' : 'Send';
     if (stick) toBottom();
@@ -91,25 +138,59 @@ export async function estimateChatView(oppId, canWrite) {
   const poll = () => { clearTimeout(timer); if (!alive || location.hash !== here) { alive = false; return; } timer = setTimeout(async () => { try { const stick = nearBottom(); const was = data.working; data = await load(); draw(stick); if (was && !data.working) { drawSide(); loadLatest(); } } catch { /* try again */ } if (data.working) poll(); }, 1300); };
   // the latest proposal (PDF and Word) wherever it was saved, and the library folder; read on opening and again after each answer
   const loadLatest = async () => { try { latest = await api('GET', `/opportunities/${oppId}/proposal-files`); if (alive) drawSide(); } catch { /* the side card shows without it */ } };
-  let startNew = false;
+  let startNew = false, pending = data.attachments || [];
+  const chips = h('div', { class: 'chat-files', style: 'margin:.4rem 0 0' });
+  const drawChips = () => chips.replaceChildren(...pending.map((a) => h('span', { class: 'chat-file' }, h('strong', {}, LABEL[a.purpose] || 'File'), ' ', a.name, ' ',
+    h('button', { type: 'button', class: 'linklike', title: 'Take this file off the message', onclick: guard(err, async () => { await api('DELETE', `/estimate-attachments/${a.id}`); pending = pending.filter((x) => x.id !== a.id); drawChips(); }) }, '✕'))));
+  // Attach: a PlanSwift takeoff, photos or documents, a proposal to check (sent with the next message), or revised plans (saved on the lead)
+  const PROMPT = { takeoff: 'Here is the PlanSwift takeoff. Use these quantities for pricing.', proposal: 'Check this proposal against the plans and our estimating sheet, and tell me the discrepancies.', revised: 'I added revised plans. Compare them with the earlier set and list what changed.' };
+  function pickFile(k) {
+    const f = h('input', { type: 'file', multiple: k === 'reference' ? true : null, accept: KINDS[k][1], style: 'display:none', onchange: guard(err, async () => {
+      const files = [...f.files]; f.remove(); if (!files.length) return;
+      for (const file of files) { notice(err, `Uploading ${file.name}…`, 'ok');
+        if (k === 'revised') await C.uploadFile(`/opportunities/${oppId}/plans?revision=1`, file);
+        else { pending.push(await C.uploadFile(`/opportunities/${oppId}/estimate-chat/attachments?purpose=${k}`, file)); drawChips(); } }
+      if (PROMPT[k] && !box.value.trim()) box.value = PROMPT[k];
+      if (k === 'revised') { data = await load(); drawSide(); }
+      notice(err, k === 'revised' ? 'The revised plans are saved on the lead and in the 01. DL folder. Send your message and the AI compares them with the earlier set.' : `Attached. ${files.length === 1 ? 'It goes' : 'They go'} with your next message.`, 'ok'); box.focus(); }) });
+    document.body.append(f); f.click(); setTimeout(() => f.remove(), 120000);
+  }
+  const attach = h('select', { class: 'chat-attach', disabled: canWrite ? null : true, title: 'Attach a file to your next message', onchange: (e) => { const k = e.target.value; e.target.value = ''; if (k) pickFile(k); } },
+    h('option', { value: '' }, 'Attach…'), Object.entries(KINDS).map(([k, [l]]) => h('option', { value: k }, l)));
   const submit = guard(err, async () => {
-    const t = box.value.trim(); if (!t || data.working) return; notice(err, '');
-    const ids = await api('POST', `/opportunities/${oppId}/estimate-chat`, startNew ? { text: t, newChat: true } : { text: t, chatId: data.chatId });
-    startNew = false; box.value = ''; C.state.estChatId = ids.chatId; data = await api('GET', `/opportunities/${oppId}/estimate-chat?chat=${ids.chatId}`); draw(true); poll();
+    const t = box.value.trim(); if ((!t && !pending.length) || data.working) return; notice(err, '');
+    const files = pending.map((a) => a.id);
+    const ids = await api('POST', `/opportunities/${oppId}/estimate-chat`, startNew ? { text: t, newChat: true, attachments: files } : { text: t, chatId: data.chatId, attachments: files });
+    startNew = false; box.value = ''; pending = []; drawChips(); C.state.estChatId = ids.chatId; data = await api('GET', `/opportunities/${oppId}/estimate-chat?chat=${ids.chatId}`); draw(true); poll();
   });
+  // after Create Final Proposal: the card shows the files, and the side card the latest proposal
+  async function afterFinal() { data = await load(); draw(false); drawSide(); loadLatest(); }
   send.onclick = submit; box.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); } };
   // a new conversation starts with the next message; the one on screen stays saved on the lead
   const newChat = () => { if (data.messages.length && !confirm('Start a new conversation? This one stays saved on the lead and you can come back to it.')) return; startNew = true; data = { ...data, messages: [], working: false }; draw(false); box.focus(); };
   const pick = data.chats.length > 1 ? h('select', { onchange: (e) => { C.state.estChatId = e.target.value; C.render(); } }, data.chats.map((c, k) => h('option', { value: c.id }, `${k === 0 ? 'Latest conversation' : 'Conversation'} · started ${when(c.startedAt)} · ${c.messages} messages`))) : ''; if (pick) pick.value = data.chatId;
   const instr = h('button', { class: 'small', type: 'button', onclick: () => instructionsModal().catch((e) => notice(err, e.message)) }, 'Estimating Instructions');
-  drawSide(); draw(false); loadLatest(); if (data.working) poll(); setTimeout(() => { if (data.messages.length) toBottom(); }, 50);
+  const needs = h('button', { class: 'small', type: 'button', title: 'Items the AI could not find in the estimating sheet, from every job', onclick: () => needsUpdateModal().catch((e) => notice(err, e.message)) }, 'Needs Update List');
+  drawSide(); draw(false); drawChips(); loadLatest(); if (data.working) poll(); setTimeout(() => { if (data.messages.length) toBottom(); }, 50);
   return C.shell('estimating', [h('div', { class: 'chat-page' },
     h('div', { class: 'row spread', style: 'flex-wrap:wrap;gap:.5rem' }, h('div', {}, h('a', { href: '#/estimating/' + oppId }, '← Back to the lead'), h('h1', { style: 'margin:.2rem 0 0' }, 'Estimate With AI'), h('p', { class: 'sub', style: 'margin:0' }, [data.opportunity.proposalId, data.opportunity.name, data.opportunity.gc].filter(Boolean).join(' · '))),
-      h('div', { class: 'row', style: 'gap:.4rem;flex-wrap:wrap' }, pick, canWrite ? h('button', { class: 'small', type: 'button', onclick: newChat }, 'New Conversation') : '', instr)),
+      h('div', { class: 'row', style: 'gap:.4rem;flex-wrap:wrap' }, pick, canWrite ? h('button', { class: 'small', type: 'button', onclick: newChat }, 'New Conversation') : '', instr, needs)),
     data.aiConnected ? '' : h('p', { class: 'err' }, 'AI is not connected yet. The owner adds the Anthropic API key on the server; then this works.'),
-    h('p', { class: 'muted', style: 'font-size:13px;margin:.4rem 0 0' }, `Following: ${data.instructions.label}${data.instructions.updatedAt ? ' · updated ' + when(data.instructions.updatedAt) + (data.instructions.updatedBy ? ' by ' + data.instructions.updatedBy : '') : ''}.`),
+    h('p', { class: 'muted', style: 'font-size:13px;margin:.4rem 0 0' }, `AI: Claude Opus 5.5, ${data.effort || 'high'} effort · Following: ${data.instructions.label}${data.instructions.updatedAt ? ' · updated ' + when(data.instructions.updatedAt) + (data.instructions.updatedBy ? ' by ' + data.instructions.updatedBy : '') : ''}.`),
     side, list, err,
-    h('div', { class: 'chat-compose' }, box, send), h('p', { class: 'muted', style: 'font-size:12px;margin:.3rem 0 0' }, 'Enter sends, Shift+Enter starts a new line. The first answer on a full plan set can take a few minutes. Check quantities and prices yourself before sending a proposal.'))]);
+    chips, h('div', { class: 'chat-compose' }, attach, box, send), h('p', { class: 'muted', style: 'font-size:12px;margin:.3rem 0 0' }, 'Enter sends, Shift+Enter starts a new line. Attach a PlanSwift takeoff, photos, a proposal to check, or revised plans. Every proposal shows as a preview first; the Word and PDF are made when you press Create Final Proposal. The first answer on a full plan set can take a few minutes.'))]);
+}
+
+// Every item the AI could not find in the estimating sheet, from every job, until the owner marks it updated in the sheet.
+async function needsUpdateModal() {
+  const sup = C.state.user?.role === 'Super Admin', msg = h('div'), body = h('div');
+  const draw = async () => { const rows = await api('GET', '/estimating/needs-update');
+    body.replaceChildren(rows.length ? h('div', { class: 'scroll' }, h('table', { class: 'nostack' }, h('thead', {}, h('tr', {}, ['Trade', 'Item', 'How It Was Priced', 'Job', 'Times', ''].map((x) => h('th', {}, x)))),
+      h('tbody', {}, rows.map((r) => h('tr', {}, h('td', {}, r.trade || '—'), h('td', { style: 'white-space:normal;font-weight:600' }, r.item), h('td', { style: 'white-space:normal' }, r.note || '—'), h('td', { style: 'white-space:normal' }, r.job || '—'), h('td', { class: 'n' }, String(r.seen)),
+        h('td', {}, sup ? h('button', { class: 'small', type: 'button', title: 'The estimating sheet now covers this item', onclick: guard(msg, async () => { await api('POST', `/estimating/needs-update/${r.id}/done`); await draw(); }) }, 'Updated') : '')))))) : h('p', { class: 'muted' }, 'Nothing is waiting. Every item the AI priced was in the estimating sheet.')); };
+  await draw();
+  const bg = modal('Estimating Sheet: Needs Update', h('div', {}, h('p', { class: 'muted' }, 'Items the AI could not find in the estimating sheet, with how it priced them this time. Add them to the sheet, load the new sheet in Estimating Instructions, then mark them Updated.', sup ? '' : ' Only the owner marks items updated.'),
+    body, msg, h('div', { class: 'row', style: 'margin-top:.8rem;justify-content:flex-end;gap:.5rem' }, h('a', { class: 'chat-file', href: '/api/estimating/needs-update/report.pdf', target: '_blank', rel: 'noopener' }, h('strong', {}, 'Download Report'), ' (PDF)'), h('button', { type: 'button', onclick: () => bg.remove() }, 'Close'))));
 }
 
 // The instructions the AI follows. Everyone can read them. The app cannot see the estimating file kept in Claude chats, so when that file

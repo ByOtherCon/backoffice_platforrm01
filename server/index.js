@@ -322,7 +322,7 @@ route('DELETE', '/api/quickbooks', async ({ user }) => { auth.requireRole(user, 
 route('GET', '/api/sharepoint/status', async ({ req, user }) => { auth.requireRole(user, [...auth.MANAGE, 'Estimator']); return q1(req, 'test') === '1' && auth.SUPER.includes(user.role) ? sharepoint.status() : { configured: sharepoint.configured() }; });
 route('POST', '/api/opportunities/:id/status', async ({ user, params, body }) => es.transition(estWrite(user), uuid(params.id), body));
 route('POST', '/api/opportunities/:id/notes', async ({ user, params, body }) => { await es.addUserNote(estWrite(user), uuid(params.id), body.body); return { ok: true }; });
-route('POST', '/api/opportunities/:id/plans', async ({ req, user, params }) => es.uploadPlans(estWrite(user), uuid(params.id), req, fname(req)), { raw: true });
+route('POST', '/api/opportunities/:id/plans', async ({ req, user, params }) => es.uploadPlans(estWrite(user), uuid(params.id), req, fname(req), { revision: q1(req, 'revision') === '1' }), { raw: true });
 route('POST', '/api/opportunities/:id/files', async ({ req, user, params }) => es.uploadFile(estWrite(user), uuid(params.id), await readRaw(req), fname(req), q1(req, 'kind') || 'Proposal', q1(req, 'gc') || null), { raw: true });
 route('POST', '/api/opportunities/:id/proposals/remove', async ({ user, params, body }) => es.removeProposal(estWrite(user), uuid(params.id), body || {}));
 route('DELETE', '/api/opportunities/:id/files/:fid', async ({ user, params }) => { await es.deleteFile(estWrite(user), uuid(params.id), uuid(params.fid)); return { ok: true }; });
@@ -365,7 +365,17 @@ route('POST', '/api/opportunities/:id/takeoff', async ({ req, user, params }) =>
 route('GET', '/api/opportunities/:id/takeoff', async ({ user, params }) => { estRead(user); return tk.getTakeoff(uuid(params.id)); });
 // Estimating with AI: the conversation on a lead. Sending a message returns at once; the answer is written in the background and read by asking again.
 route('GET', '/api/opportunities/:id/estimate-chat', async ({ req, user, params }) => { const c = q1(req, 'chat'); return ec.getChat(estRead(user), uuid(params.id), c ? uuid(c) : null); });
-route('POST', '/api/opportunities/:id/estimate-chat', async ({ user, params, body }) => ec.postMessage(estWrite(user), uuid(params.id), { text: body.text, chatId: body.chatId ? uuid(body.chatId) : null, newChat: !!body.newChat }));
+route('POST', '/api/opportunities/:id/estimate-chat', async ({ user, params, body }) => ec.postMessage(estWrite(user), uuid(params.id), { text: body.text, chatId: body.chatId ? uuid(body.chatId) : null, newChat: !!body.newChat, attachments: Array.isArray(body.attachments) ? body.attachments.map(uuid) : [] }));
+// files attached to the estimating chat (PlanSwift takeoffs, photos, documents, a proposal to check), previews, the final files, and the Needs Update list
+route('POST', '/api/opportunities/:id/estimate-chat/attachments', async ({ req, user, params }) => ec.uploadAttachment(estWrite(user), uuid(params.id), q1(req, 'purpose'), fname(req), await readRaw(req, 30 * 1024 * 1024)), { raw: true });
+route('DELETE', '/api/estimate-attachments/:id', async ({ user, params }) => ec.removeAttachment(estWrite(user), uuid(params.id)));
+route('GET', '/api/estimate-attachments/:id', async ({ res, user, params }) => { estRead(user); const f = await ec.attachmentFile(uuid(params.id)); res.writeHead(200, fileHead(f)); fs.createReadStream(f.file).on('error', () => res.destroy()).pipe(res); return 'sent'; });
+route('GET', '/api/estimate-drafts/:id/preview.pdf', async ({ res, user, params }) => { estRead(user); const f = await ec.draftPdf(uuid(params.id)); res.writeHead(200, fileHead({ mime: 'application/pdf', name: f.name })); res.end(f.bytes); return 'sent'; });
+route('GET', '/api/estimate-drafts/:id/needs-update.pdf', async ({ res, user, params }) => { estRead(user); const f = await ec.draftNeedsUpdatePdf(uuid(params.id)); res.writeHead(200, fileHead({ mime: 'application/pdf', name: f.name })); res.end(f.bytes); return 'sent'; });
+route('POST', '/api/estimate-drafts/:id/final', async ({ user, params }) => ec.finalFromDraft(estWrite(user), uuid(params.id)));
+route('GET', '/api/estimating/needs-update', async ({ user }) => { estRead(user); return ec.needsUpdateList(); });
+route('GET', '/api/estimating/needs-update/report.pdf', async ({ res, user }) => { estRead(user); const f = await ec.needsUpdateReport(); res.writeHead(200, fileHead({ mime: 'application/pdf', name: f.name })); res.end(f.bytes); return 'sent'; });
+route('POST', '/api/estimating/needs-update/:id/done', async ({ user, params }) => { auth.requireRole(user, auth.SUPER); return ec.markUpdated(user, uuid(params.id)); });
 route('GET', '/api/opportunity-files/:fid/prices', async ({ user, params }) => { estRead(user); return ec.proposalPrices(uuid(params.fid)); });
 route('GET', '/api/estimating/instructions', async ({ user }) => { estRead(user); return ec.getInstructions(); });
 route('PUT', '/api/estimating/instructions', async ({ user, body }) => { auth.requireRole(user, auth.SUPER); return ec.saveInstructions(user, body); });

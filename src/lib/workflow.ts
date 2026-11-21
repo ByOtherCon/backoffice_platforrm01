@@ -44,10 +44,18 @@ export const PROPOSAL_FILTERS = ['Active', 'Reviewing', 'Accepted', 'Started', '
 // The old "result" column, kept in step for reports.
 export const resultFor = (s: string) => (s === 'Awarded' ? 'Awarded' : s === 'Not Awarded' ? 'Lost' : s === 'Declined' || s === 'Decided Not To Submit' ? 'No Bid' : 'Pending');
 
-// New leads decline N days after their bid date; Reviewing leads M days after; leads with no date never expire.
-export type Rules = { declineNewDays: number; declineReviewingDays: number };
-export const DEFAULT_RULES: Rules = { declineNewDays: 2, declineReviewingDays: 2 };
-export const declineAfterDays = (status: string, rules: Rules = DEFAULT_RULES): number | null => (status === 'New' ? rules.declineNewDays : status === 'Reviewing' ? rules.declineReviewingDays : null);
+// The clean-up rules, all of them in one place, each with its number and an on/off switch (Admin, Company, Lead clean-up rules).
+//  pastDue:  a New lead is declined declineNewDays after its bid due date; a Reviewing lead declineReviewingDays after.
+//  idle:     a New lead nobody took up is declined idleWorkingDays working days (Mon to Fri) after it arrived or was brought back.
+//  weekEnd:  a New lead of tier weekEndMinTier or higher is declined when the week it arrived in is over (it always gets 3 working days).
+//  expire:   Accepted or Started work with nothing submitted shows "Lead is expiring" expiringDays after the bid due date, and becomes
+//            Decided Not To Submit expireDays after it.
+// Never touched by any rule: a lead with no bid due date (date rules), a lead brought back or taken on by hand after its bid date, anything
+// submitted, awarded or not awarded.
+export type Rules = { declineNewDays: number; declineReviewingDays: number; pastDueOn?: boolean; idleOn?: boolean; idleWorkingDays?: number; weekEndOn?: boolean; weekEndMinTier?: number; expireOn?: boolean; expiringDays?: number; expireDays?: number };
+export const DEFAULT_RULES: Required<Rules> = { declineNewDays: 2, declineReviewingDays: 2, pastDueOn: true, idleOn: true, idleWorkingDays: 7, weekEndOn: true, weekEndMinTier: 3, expireOn: true, expiringDays: 3, expireDays: 5 };
+export const fullRules = (r: Rules = DEFAULT_RULES): Required<Rules> => ({ ...DEFAULT_RULES, ...Object.fromEntries(Object.entries(r).filter(([, v]) => v !== undefined && v !== null)) } as Required<Rules>);
+export const declineAfterDays = (status: string, rules: Rules = DEFAULT_RULES): number | null => (fullRules(rules).pastDueOn === false ? null : status === 'New' ? rules.declineNewDays : status === 'Reviewing' ? rules.declineReviewingDays : null);
 // A lead someone adds by hand after its bid date has passed is not declined for that date (the keep flag is set only for those leads).
 export function autoDeclineDue(status: string, due: string | null, today = todayEastern(), rules: Rules = DEFAULT_RULES, keepPastDue = false): boolean {
   const d = declineAfterDays(status, rules); if (d === null || !due) return false;
@@ -59,17 +67,19 @@ export function autoDeclineDue(status: string, due: string | null, today = today
 // ---- lists that stay clean on their own
 // New opportunities nobody took up: 7 working days after they appeared, or (Tier 3 and 4 only) when the week they arrived in is over.
 export const NEW_LEAD_WORKING_DAYS = 7;
-export function newLeadExpiry(createdDate: string, tier: number, today = todayEastern()): string | null {
-  if (businessDays(createdDate, today) >= NEW_LEAD_WORKING_DAYS) return `No action within ${NEW_LEAD_WORKING_DAYS} working days of the lead arriving (arrived ${createdDate}).`;
+export function newLeadExpiry(createdDate: string, tier: number, today = todayEastern(), rules: Rules = DEFAULT_RULES): string | null {
+  const r = fullRules(rules);
+  if (r.idleOn && businessDays(createdDate, today) >= r.idleWorkingDays) return `No action within ${r.idleWorkingDays} working days of the lead arriving (arrived ${createdDate}).`;
   // Tier 3 and 4: until the end of the week they arrived in, but never less than three working days. A lead that comes in on a Thursday, Friday or the weekend
   // gets the following week as well, so it is never declined before anyone has had a chance to look at it.
-  if (tier >= 3) { const lastWeek = weekOf(addBusinessDays(createdDate, 2)); if (lastWeek < weekOf(today)) return `Tier ${tier} lead not taken up by the end of its week (arrived ${createdDate}, that week ended ${shift(lastWeek, 6)}).`; }
+  if (r.weekEndOn && tier >= r.weekEndMinTier) { const lastWeek = weekOf(addBusinessDays(createdDate, 2)); if (lastWeek < weekOf(today)) return `Tier ${tier} lead not taken up by the end of its week (arrived ${createdDate}, that week ended ${shift(lastWeek, 6)}).`; }
   return null;
 }
 // Accepted or Started work with no submission: a red "expiring" note 3 days after the bid due date, and Decided Not To Submit 2 days later.
-export function workExpiry(status: string, due: string | null, submitted: boolean, today = todayEastern(), keepPastDue = false): 'expiring' | 'expired' | null {
+export function workExpiry(status: string, due: string | null, submitted: boolean, today = todayEastern(), keepPastDue = false, rules: Rules = DEFAULT_RULES): 'expiring' | 'expired' | null {
+  const r = fullRules(rules); if (!r.expireOn) return null;
   if (!due || submitted || keepPastDue || !['Accepted', 'Started'].includes(status)) return null;   // keepPastDue: a person put it there after the bid date, on purpose
-  return today >= shift(due, 5) ? 'expired' : today >= shift(due, 3) ? 'expiring' : null;
+  return today >= shift(due, r.expireDays) ? 'expired' : today >= shift(due, r.expiringDays) ? 'expiring' : null;
 }
 // Row colour: green when submitted, yellow when started with time left, red on or after the due date without a submission.
 export function rowTone(status: string, due: string | null, submitted: boolean, today = todayEastern()): 'green' | 'yellow' | 'red' | '' {

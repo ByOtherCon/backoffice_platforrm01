@@ -168,3 +168,13 @@ test('a GC invitation joined to the wrong lead is taken off it, and its email is
   const o = await get(id); assert.deepEqual([o.gcs, o.additionalGcs], [['Sachse Construction'], null]); assert.ok(o.notes.some((n) => /took Powerhouse Retail Services, LLC's invitation off this lead: it is a different job/.test(n.body)));
   assert.deepEqual((await q(`SELECT thread_id FROM bid_threads WHERE thread_id IN ('tp1','ts1') ORDER BY 1`)).map((x) => x.thread_id), ['ts1']);   // only that email is read again
 });
+
+test('the client is the store: a GC\'s name in the client field is replaced once; a split proposal keeps the store as client; other leads at the same address are listed', async () => {
+  const bn = await import('../server/bundles.js');
+  const a = await lead('Abercrombie - Mall at Millenia - Orlando FL', 'Client Fix GC', { city: 'Orlando', address: '4200 Conroy Road, Space #C-196' }), b = await lead('A&F Kids - Mall at Millenia', 'Other Mall GC', { city: 'Orlando', address: '4200 Conroy Rd, Space #D-210' }), c = await lead('Ulta Beauty', 'Ulta GC', { city: 'Orlando', address: '4200 Conroy Road' });
+  await q(`UPDATE opportunities SET client_name=gc_name WHERE id = ANY($1::uuid[])`, [[a, b, c]]); await q(`UPDATE opportunities SET client_name='Ulta Beauty Inc' WHERE id=$1`, [c]);
+  await q(`DELETE FROM app_settings WHERE key='client_fix_v1'`); assert.ok((await bn.fixClientNames()) >= 2); assert.equal(await bn.fixClientNames(), 0);   // once
+  assert.deepEqual([(await get(a)).client, (await get(b)).client, (await get(c)).client], ['Abercrombie & Fitch', 'Abercrombie & Fitch', 'Ulta Beauty Inc']);
+  assert.ok((await get(a)).notes.some((n) => /Client changed from Client Fix GC \(a GC\) to Abercrombie & Fitch/.test(n.body)));
+  const same = (await get(a)).sameSite.map((x) => x.id); assert.ok(same.includes(b) && same.includes(c)); assert.ok(!same.includes(a));
+});

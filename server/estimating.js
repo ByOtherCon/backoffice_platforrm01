@@ -25,10 +25,7 @@ const who = (u) => u?.name || u?.email || 'the system';
 // ------------------------------------------------------------------ notes: every system change and every typed note share one timeline
 export const addNote = (t, id, user, kind, body) => t('INSERT INTO opportunity_notes(opportunity_id,user_id,kind,body) VALUES ($1,$2,$3,$4)', [id, user?.id ?? null, kind, body]);
 const sys = (t, id, user, body) => addNote(t, id, user, 'System', body);
-export async function rules() {
-  const [s] = await q(`SELECT value FROM app_settings WHERE key='estimating'`); const v = s?.value ?? {};
-  return { declineNewDays: Number(v.declineNewDays ?? W.DEFAULT_RULES.declineNewDays), declineReviewingDays: Number(v.declineReviewingDays ?? W.DEFAULT_RULES.declineReviewingDays) };
-}
+export async function rules() { const { cleanupRules } = await import('./bids.js'); return cleanupRules(); }
 export async function options() {
   return { statuses: W.STATUSES, sources: W.SOURCES, projectTypes: W.PROJECT_TYPES, methods: W.METHODS, declineReasons: W.DECLINE_REASONS, dntsReasons: W.DNTS_REASONS, notAwardedReasons: W.NOT_AWARDED_REASONS,
     proposalFilters: W.PROPOSAL_FILTERS, rules: await rules(), aiConnected: aiConnected(), sharepoint: folders.enabled(),
@@ -39,6 +36,7 @@ export async function options() {
 export async function loadAll(where = '', params = []) {
   const rows = await q(`SELECT o.*, u.name AS estimator FROM opportunities o LEFT JOIN app_users u ON u.id=o.estimator_id ${where ? where + ' AND' : 'WHERE'} o.merged_into IS NULL ORDER BY o.due_date NULLS LAST, o.name`, params);
   const ids = rows.map((r) => r.id); if (!ids.length) return [];
+  const rl = await rules();
   const [prices, subs, comms, considered, files, cases] = await Promise.all([
     q('SELECT ot.opportunity_id, ot.trade_id, t.name, ot.amount FROM opportunity_trades ot JOIN trades t ON t.id=ot.trade_id WHERE ot.opportunity_id = ANY($1::uuid[]) ORDER BY t.sort, t.name', [ids]),
     q('SELECT * FROM submissions WHERE opportunity_id = ANY($1::uuid[]) AND voided_at IS NULL ORDER BY version', [ids]),
@@ -65,7 +63,7 @@ export async function loadAll(where = '', params = []) {
       consideredTrades: considered.filter((c) => c.opportunity_id === r.id).map((c) => ({ tradeId: c.trade_id, name: c.name })),
       files: files.filter((f) => f.opportunity_id === r.id).map((f) => ({ id: f.id, kind: f.kind, name: f.name, mime: f.mime, size: f.size, local: f.local, spUrl: f.sp_url, at: f.created_at, version: f.version, used: !!f.submission_id, removed: !!f.removed })),
       tradePrices: tp, total: r2(tp.reduce((n, p) => n + Math.round(p.amount * 100), 0) / 100), submissions: ss, communications: cs, lastSubmission: last,
-      countdown: E.countdown(r.due_date, !!last, today), week: E.groupFor(r.due_date, today), expiry: W.workExpiry(r.status, r.due_date, !!last, today, r.keep_past_due), tone: W.rowTone(r.status, r.due_date, !!last, today), followup, calendarDate: last ? last.date : r.due_date };
+      countdown: E.countdown(r.due_date, !!last, today), week: E.groupFor(r.due_date, today), expiry: W.workExpiry(r.status, r.due_date, !!last, today, r.keep_past_due, rl), tone: W.rowTone(r.status, r.due_date, !!last, today), followup, calendarDate: last ? last.date : r.due_date };
   });
 }
 const isWorking = (o) => ['Accepted', 'Started'].includes(o.status);
@@ -73,7 +71,11 @@ export async function list({ tab, search, showAll, filter, scope, userId } = {})
   const rl = await rules(); await sweepDeclines(rl);
   const today = E.todayEastern(); let all = await loadAll();
   const term = String(search || '').toLowerCase();
-  if (term) all = all.filter((o) => [o.name, o.client, o.gc, o.city, o.proposalId, o.address, o.additionalGcs, o.contact].some((v) => String(v || '').toLowerCase().includes(term)));
+  // a search looks at everything said about a lead: every GC it came from, their contacts, the client, the place, the numbers, the estimator
+  const hay = (o) => [o.name, o.client, o.gc, o.city, o.zip, o.proposalId, o.address, o.additionalGcs, o.contact, o.email, o.estimator, o.statusLabel, ...(o.invitations || []).flatMap((x) => [x.gc, x.contactName, x.email])].map((v) => String(v || '').toLowerCase()).join(' | ');
+  if (term) all = all.filter((o) => term.split(/\s+/).filter(Boolean).every((w) => hay(o).includes(w)));
+  // the search box on any tab: every lead that matches, whatever its status, the open ones first
+  if (tab === 'search') { const rank = (o) => (['New', 'Reviewing', 'Accepted', 'Started', 'Submitted'].includes(o.status) ? 0 : 1); const rows = term ? [...all].sort((a, b) => rank(a) - rank(b) || String(b.due || '').localeCompare(String(a.due || ''))).slice(0, 200) : []; return { stats: {}, rows, count: rows.length }; }
   // The working figures are for one person ("mine") or the whole company ("all"); New and Reviewing counts are always company-wide.
   const mine = scope === 'mine' && userId ? all.filter((o) => o.estimatorId === userId) : all;
   const month = today.slice(0, 7), fu = mine.filter((o) => o.followup);
@@ -102,7 +104,10 @@ export async function get(id) {
   const notes = await q(`SELECT n.id, n.kind, n.body, n.created_at AS at, u.name AS who FROM opportunity_notes n LEFT JOIN app_users u ON u.id=n.user_id WHERE n.opportunity_id=$1 ORDER BY n.created_at DESC, n.id`, [id]);
   const bundled = (await q('SELECT id, gc_name AS gc, due_date AS due FROM opportunities WHERE merged_into=$1 ORDER BY gc_name', [id])).map((x) => ({ id: x.id, gc: x.gc, due: x.due }));
   const siblings = o.splitGroup ? (await q(`SELECT id, gc_name AS gc, proposal_id AS "proposalId", status FROM opportunities WHERE split_group=$1 AND id<>$2 AND merged_into IS NULL ORDER BY proposal_id`, [o.splitGroup, id])).map((x) => ({ ...x, statusLabel: W.statusName(x.status) })) : [];
-  return { ...o, bundled, siblings, notes, folderPlan: E.folderPlan({ proposalId: o.proposalId, name: o.name, city: o.city, gc: o.gc, year: Number((o.acceptedDate || E.todayEastern()).slice(0, 4)) }) };
+  // other leads at the same street in the same city: the same job filed under another name, or another store at the same mall
+  const sk = R.streetKey(o.address), sameSite = sk ? (await q(`SELECT id, name, gc_name AS gc, proposal_id AS "proposalId", status, address, city, client_name AS client FROM opportunities WHERE merged_into IS NULL AND id<>$1 AND (split_group IS NULL OR split_group IS DISTINCT FROM $2::uuid) AND address IS NOT NULL ORDER BY created_at DESC LIMIT 2000`, [id, o.splitGroup ?? null]))
+    .filter((x) => R.cityKey(x.city) === R.cityKey(o.city) && R.streetKey(x.address) === sk).slice(0, 12).map((x) => ({ id: x.id, name: x.name, gc: x.gc, proposalId: x.proposalId, client: x.client, address: x.address, statusLabel: W.statusName(x.status) })) : [];
+  return { ...o, bundled, siblings, sameSite, notes, folderPlan: E.folderPlan({ proposalId: o.proposalId, name: o.name, city: o.city, gc: o.gc, year: Number((o.acceptedDate || E.todayEastern()).slice(0, 4)) }) };
 }
 // GCs we already work with, with the details last used for each, so the form can fill itself in.
 export async function knownGcs() {
@@ -173,7 +178,7 @@ async function readForm(b, old, user, creating) {
   if (b.dueTime !== undefined) { if (b.dueTime && !/^([01]\d|2[0-3]):[0-5]\d$/.test(b.dueTime)) throw bad('Due time looks like 17:00.'); put('due_time', b.dueTime || null); }
   if (b.plannedStart !== undefined) put('planned_start', dateStr(b.plannedStart, 'Planned start date'));
   if (b.estimatorId !== undefined || creating) {
-    if (!b.estimatorId) { if (creating) throw bad('Choose the estimator.'); put('estimator_id', null); }
+    if (!b.estimatorId) { if (creating) throw bad('Choose the estimator.'); if (!old?.estimator_id && EST_ROLES.includes(user.role)) put('estimator_id', user.id); }   // never cleared: left empty on a lead with none, the person saving it becomes its estimator
     else put('estimator_id', b.estimatorId);
   }
   // required together: the invitation link goes with Building Connected, and only with it
@@ -302,6 +307,7 @@ export async function transition(user, id, b = {}) {
     if (!W.canMove(from, to)) throw new HttpError(409, `${W.statusName(from)} cannot move to ${W.statusName(to)}.${from === 'Declined' ? ' Reopen it to New first.' : ''}`);
     if (to === 'Submitted' && ['Accepted', 'Started'].includes(from)) throw bad('Upload the proposal PDF and record the submission. That moves it to Submitted.');
     const set = { status: to, result: W.resultFor(to) }; let detail = '';
+    if (!o.estimator_id && EST_ROLES.includes(user.role)) { set.estimator_id = user.id; detail += ` ${who(user)} is the estimator (the person who first moved it).`; }   // a lead always has an estimator once someone works on it
     if (to === 'Accepted' || to === 'Reviewing' || to === 'Started') { set.declined_reason = null; set.auto_declined = false; }
     // Put on the working lists by hand after its bid date had already passed: that is on purpose, so the clean-up does not move it again.
     if (['Reviewing', 'Accepted', 'Started'].includes(to) && o.due_date && o.due_date < today) set.keep_past_due = true;
@@ -581,6 +587,9 @@ export async function insights() {
 export async function saveSettings(b) {
   const [cur] = await q(`SELECT value FROM app_settings WHERE key='estimating'`); const v = { ...(cur?.value ?? {}) };
   if (b.targetMargin !== undefined) { const n = Number(b.targetMargin); if (!(n >= 0 && n < 100)) throw bad('Target margin is a percent between 0 and 99.'); v.targetMargin = n; }
-  for (const k of ['declineNewDays', 'declineReviewingDays']) if (b[k] !== undefined) { const n = Number(b[k]); if (!Number.isInteger(n) || n < 0 || n > 30) throw bad('Decline days is a whole number from 0 to 30.'); v[k] = n; }
+  const LIMIT = { declineNewDays: [0, 30, 'New: days after the bid date'], declineReviewingDays: [0, 30, 'Reviewing: days after the bid date'], idleWorkingDays: [1, 60, 'Working days with no action'], weekEndMinTier: [1, 4, 'Lowest tier for the end-of-week rule'], expiringDays: [0, 30, 'Days to "Lead is expiring"'], expireDays: [1, 60, 'Days to Decided Not To Submit'] };
+  for (const [k, [lo, hi, label]] of Object.entries(LIMIT)) if (b[k] !== undefined) { const n = Number(b[k]); if (!Number.isInteger(n) || n < lo || n > hi) throw bad(`${label} is a whole number from ${lo} to ${hi}.`); v[k] = n; }
+  for (const k of ['pastDueOn', 'idleOn', 'weekEndOn', 'expireOn']) if (b[k] !== undefined) v[k] = !!b[k];
+  if ((v.expiringDays ?? W.DEFAULT_RULES.expiringDays) > (v.expireDays ?? W.DEFAULT_RULES.expireDays)) throw bad('"Lead is expiring" has to come before Decided Not To Submit.');
   await q(`INSERT INTO app_settings(key,value) VALUES ('estimating',$1) ON CONFLICT (key) DO UPDATE SET value=$1, updated_at=now()`, [v]);
 }

@@ -197,7 +197,8 @@ export async function splitByGc(user, id) {
       const letter = [...LETTERS].find((l) => !taken.has(`${base}-${l}`)); if (!letter) break; const pid = `${base}-${letter}`; taken.add(pid);
       const [g] = await t('SELECT id FROM gcs WHERE lower(name)=lower($1)', [gc]);
       // the same job as the lead, under this GC
-      const row = { ...main, gc_name: gc, gc_id: g?.id ?? null, contact_name: inv.contactName || null, contact_email: inv.email || null, contact_phone: inv.phone || null, invitation_link: /^https:\/\//.test(inv.link || '') ? inv.link : null,
+      const client = !main.client_name || gcs.some((x) => R.gcKey(x) === R.gcKey(main.client_name)) ? R.clientFromName(main.name, main.city) || main.client_name : main.client_name;
+      const row = { ...main, client_name: client, gc_name: gc, gc_id: g?.id ?? null, contact_name: inv.contactName || null, contact_email: inv.email || null, contact_phone: inv.phone || null, invitation_link: /^https:\/\//.test(inv.link || '') ? inv.link : null,
         gmail_thread_id: inv.threadId || null, invitations: JSON.stringify([inv]), additional_gcs: null, proposal_id: pid, status: 'Started', progress: 'In Progress', result: 'Pending', merged_into: null, split_group: group,
         sp_item_id: f?.sp_item_id ?? null, sp_path: f?.sp_path ?? null, folder_url: f?.folder_url ?? null, sp_error: null, folder_per_gc: false, gc_street: old?.gc_street ?? null, gc_city: old?.gc_city ?? null, gc_state: old?.gc_state ?? null, gc_zip: old?.gc_zip ?? null, gc_address_verified: old?.gc_address_verified ?? false,
         source_key: old?.source_key ?? `split:${id}:${key}` };
@@ -247,4 +248,24 @@ export async function removeInvitation(user, id, b) {
     return { ok: true, gc: inv.gc, reread: !!inv.threadId };
   });
   return out;
+}
+
+// ------------------------------------------------------------------ the client is the store, not a GC
+// Leads from email used to carry the GC's name as the client, and a job split by GC copied that name onto every GC's proposal. Where the
+// client is the name of a GC (this lead's, one of its invitations', one of the job's other proposals', or any GC on the list), it is
+// replaced by the client the project name points to ("Abercrombie - Mall at Millenia" gives "Abercrombie & Fitch"). Runs once at start.
+export async function fixClientNames() {
+  const [done] = await q(`SELECT 1 FROM app_settings WHERE key='client_fix_v1'`); if (done) return 0;
+  const gcs = new Set((await q('SELECT name FROM gcs')).map((g) => R.gcKey(g.name))), rows = await q(`SELECT id, name, city, client_name, gc_name, invitations, split_group FROM opportunities WHERE client_name IS NOT NULL`);
+  const groupGcs = new Map(); for (const r of rows) if (r.split_group) (groupGcs.get(r.split_group) ?? groupGcs.set(r.split_group, new Set()).get(r.split_group)).add(R.gcKey(r.gc_name));
+  let n = 0;
+  for (const r of rows) {
+    const k = R.gcKey(r.client_name); if (!k) continue;
+    const isGc = k === R.gcKey(r.gc_name) || gcList(r).some((g) => R.gcKey(g) === k) || gcs.has(k) || (r.split_group && groupGcs.get(r.split_group)?.has(k));
+    if (!isGc) continue; const c = R.clientFromName(r.name, r.city); if (!c || R.gcKey(c) === k) continue;
+    await q('UPDATE opportunities SET client_name=$2 WHERE id=$1', [r.id, c]);
+    await q(`INSERT INTO opportunity_notes(opportunity_id,kind,body) VALUES ($1,'System',$2)`, [r.id, `Client changed from ${r.client_name} (a GC) to ${c}: the client is the store the work is for, not the GC.`]); n++;
+  }
+  await q(`INSERT INTO app_settings(key,value) VALUES ('client_fix_v1',$1) ON CONFLICT (key) DO NOTHING`, [{ fixed: n, at: new Date().toISOString() }]);
+  return n;
 }

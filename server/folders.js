@@ -3,6 +3,7 @@
 // When a proposal is awarded its P becomes a C (C11011_…), and the project's documents carry that code.
 // Every function here is safe to call when SharePoint is not set up (it does nothing) and never lets a SharePoint problem break the caller.
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import { q } from './db.js';
 import { HttpError } from './http.js';
@@ -286,13 +287,40 @@ export async function syncOpportunity(id, { force = false } = {}) {
         } catch (e) { failed.push(`Plans for ${x.gc_name}: ${oneLine(e)}`); }
       }
     }
+    // Files Windows saved under a short "8.3" name (BYOTHE-1.PDF) when the full path was too long: often a Word file with .PDF on it, which
+    // SharePoint then cannot open. The real kind is read from the file itself and it is given a proper proposal name.
+    let renamedShort = [];
+    try { renamedShort = await repairShortNames(id, lead, dir, extras); } catch (e) { failed.push(`Short file names: ${oneLine(e)}`); }
+    if (renamedShort.length) await note(id, `Files saved by Windows under a short name were given their proper name and type: ${renamedShort.join('; ')}. This happens when the full path on the PC is too long for Word; keep proposal names short when saving into the folder.`);
     if (removed.length) await note(id, `Deleted from the SharePoint folder by hand, so no longer listed on the lead and not copied back: ${removed.slice(0, 12).join(', ')}${removed.length > 12 ? ` and ${removed.length - 12} more` : ''}.`);
     if (done.length) await note(id, `Copied to the SharePoint folder as a backup: ${done.slice(0, 12).join(', ')}${done.length > 12 ? ` and ${done.length - 12} more` : ''}.`);
     if (fixed.length) await note(id, `Files in the SharePoint folder that had lost their ending (.pdf, .docx) were given their full name: ${fixed.slice(0, 12).join(', ')}.`);
     if (shortened.length) await note(id, `Proposal files were given a shorter name so Word can open and save them from File Explorer (the GC and the project are already in the folder path): ${shortened.slice(0, 12).join(', ')}.`);
     if (failed.length) await note(id, `Not copied to SharePoint: ${failed.slice(0, 5).join('; ')}`);
-    return { enabled: true, linked: true, pushed: done.length, fixed: fixed.length, shortened: shortened.length, plansCopied, removed: removed.length, failed, folderUrl: dir.webUrl };
+    return { enabled: true, linked: true, pushed: done.length, fixed: fixed.length, shortened: shortened.length, plansCopied, removed: removed.length, renamedShort: renamedShort.length, failed, folderUrl: dir.webUrl };
   } finally { syncing.delete(id); }
+}
+
+const SHORT = /^[A-Z0-9_$&#!@%'()-]{1,8}[~-]\d{1,3}\.[A-Z0-9]{1,4}$/;   // BYOTHE~1.PDF, BYOTHE-1.PDF: Windows' short form of a long name
+async function repairShortNames(id, lead, dir, extras) {
+  const out = [], { UPLOAD_DIR } = await import('./documents.js');
+  for (const [folderId, who] of [[dir.id, lead], ...extras.map((x) => [x.sp_item_id, { ...lead, gc_name: x.gc_name, sp_path: x.sp_path }])]) {
+    let kids = []; try { kids = await SP.listPath(folderId, SUBFOLDER.Proposal); } catch { continue; }
+    const names = new Set(kids.map((k) => k.name.toLowerCase()));
+    for (const k of kids.filter((x) => !x.folder && SHORT.test(x.name)).slice(0, 10)) {
+      const tmp = path.join(UPLOAD_DIR, `.short-${crypto.randomBytes(6).toString('hex')}`);
+      try {
+        await fs.promises.mkdir(UPLOAD_DIR, { recursive: true }); await SP.downloadToFile(k.id, tmp, 60 * 1024 * 1024);
+        const head = Buffer.alloc(4096); const fh = await fs.promises.open(tmp, 'r'); const { bytesRead } = await fh.read(head, 0, 4096, 0); await fh.close();
+        const top = head.subarray(0, bytesRead), ext = top.subarray(0, 4).toString('latin1') === '%PDF' ? '.pdf' : top[0] === 0x50 && top[1] === 0x4b ? (top.includes(Buffer.from('xl/')) ? '.xlsx' : '.docx') : null; if (!ext) continue;
+        const day = k.modified ? todayEastern(new Date(k.modified)) : todayEastern(), stem = proposalStem(who, day); let name = stem + ext;
+        for (let n = 2; names.has(name.toLowerCase()); n++) name = `${stem} (${n})${ext}`;
+        const r = await SP.renameFile(k.id, name); names.add(String(r.name || name).toLowerCase()); out.push(`${k.name} is now ${r.name || name}`);
+      } finally { await fs.promises.rm(tmp, { force: true }).catch(() => {}); }
+    }
+  }
+  if (out.length) pdfSeen.delete(id);
+  return out;
 }
 
 // The proposals of a lead, wherever they are: written or uploaded in the app, or saved by hand into 02. Proposal in the library (a Word file

@@ -84,7 +84,7 @@ function filesPanel(o, canWrite, err) {
   };
   // Opening the lead brings the two in step: the folder is made if it should exist, files kept here are backed up, and the library is read.
   const sync = async (force) => { try { if (force) propLive.append(h('p', { class: 'muted' }, 'Syncing…')); const v = canWrite ? await api('POST', `/opportunities/${o.id}/sync`, { force: !!force }) : await api('GET', `/opportunities/${o.id}/proposal-files`); const sy = v.sync;
-    drawProps(v, sy?.error ? { bad: true, text: `The SharePoint folder could not be made: ${sy.error}` } : sy?.failed?.length ? { bad: true, text: `Not copied: ${sy.failed.join('; ')}` } : sy?.pushed || sy?.fixed || sy?.shortened || sy?.plansCopied || sy?.removed ? { text: [sy.pushed ? `${sy.pushed} file${sy.pushed === 1 ? '' : 's'} copied to SharePoint as a backup.` : '', sy.fixed ? `${sy.fixed} file${sy.fixed === 1 ? '' : 's'} in SharePoint given ${sy.fixed === 1 ? 'its' : 'their'} full name (.pdf, .docx).` : '', sy.removed ? `${sy.removed} file${sy.removed === 1 ? '' : 's'} you deleted in SharePoint ${sy.removed === 1 ? 'is' : 'are'} no longer listed here and will not be copied back.` : '', sy.plansCopied ? `${sy.plansCopied} plan file${sy.plansCopied === 1 ? '' : 's'} copied to the other GC folders.` : '', sy.shortened ? `${sy.shortened} proposal file${sy.shortened === 1 ? '' : 's'} given a shorter name so Word can open and save ${sy.shortened === 1 ? 'it' : 'them'}.` : ''].filter(Boolean).join(' ') } : force ? { text: 'In step with SharePoint.' } : null);
+    drawProps(v, sy?.error ? { bad: true, text: `The SharePoint folder could not be made: ${sy.error}` } : sy?.failed?.length ? { bad: true, text: `Not copied: ${sy.failed.join('; ')}` } : sy?.pushed || sy?.fixed || sy?.shortened || sy?.plansCopied || sy?.removed || sy?.renamedShort ? { text: [sy.pushed ? `${sy.pushed} file${sy.pushed === 1 ? '' : 's'} copied to SharePoint as a backup.` : '', sy.fixed ? `${sy.fixed} file${sy.fixed === 1 ? '' : 's'} in SharePoint given ${sy.fixed === 1 ? 'its' : 'their'} full name (.pdf, .docx).` : '', sy.renamedShort ? `${sy.renamedShort} file${sy.renamedShort === 1 ? '' : 's'} saved by Windows under a short name (like BYOTHE-1.PDF) ${sy.renamedShort === 1 ? 'was' : 'were'} given ${sy.renamedShort === 1 ? 'its' : 'their'} proper name and type.` : '', sy.removed ? `${sy.removed} file${sy.removed === 1 ? '' : 's'} you deleted in SharePoint ${sy.removed === 1 ? 'is' : 'are'} no longer listed here and will not be copied back.` : '', sy.plansCopied ? `${sy.plansCopied} plan file${sy.plansCopied === 1 ? '' : 's'} copied to the other GC folders.` : '', sy.shortened ? `${sy.shortened} proposal file${sy.shortened === 1 ? '' : 's'} given a shorter name so Word can open and save ${sy.shortened === 1 ? 'it' : 'them'}.` : ''].filter(Boolean).join(' ') } : force ? { text: 'In step with SharePoint.' } : null);
   } catch (e) { drawProps({ enabled: true, linked: false, earlier: props.map((f) => ({ name: f.name, href: f.local === false ? f.spUrl : '/api/opportunity-files/' + f.id })), latestPdf: null, latestWord: null, total: props.length }, { bad: true, text: e.message }); } };
   sync(false);
   const propsBox = h('div', { style: 'margin-top:.9rem' }, h('div', { class: 'row spread' }, propLabel, canWrite ? h('span', {}, propIn, h('button', { type: 'button', class: 'small primary', onclick: () => propIn.click(), title: 'A PDF or a Word (.docx) file. It is saved on this lead and in the 02. Proposal folder.' }, 'Upload Proposal')) : ''), propLive);
@@ -240,13 +240,43 @@ function statusSelect(o, w) {
 }
 
 // ---------------------------------------------------------------- the page
+let searchTimer = 0;
+// where each list was scrolled to, so Close puts you back at the same row
+const scrollAt = {}; let scrollHooked = false;
+function restoreScroll() {
+  if (!scrollHooked) { scrollHooked = true; addEventListener('scroll', () => { if (!state.estRestore && /^#\/estimating\/(bids|proposals|submittals|followups|insights)?$/.test(location.hash) || location.hash === '#/estimating') scrollAt[location.hash] = window.scrollY; }, { passive: true }); }
+  if (state.estRestore) { const y = scrollAt[location.hash] || 0; setTimeout(() => { window.scrollTo(0, y); state.estRestore = false; }, 0); }
+}
+// called as the page is handed over: the cursor goes back into the search box after the results are redrawn
+function afterDraw() { if (state.estSearchFocus) setTimeout(() => { const el = document.getElementById('est-search'); if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } state.estSearchFocus = false; }, 0); }
+const closeLead = () => { state.estRestore = true; location.hash = state.estBack || '#/estimating/bids'; };
+// every lead that matches the search box, whatever its status
+function searchResults(rows, term) {
+  return h('div', { class: 'card' }, h('h2', {}, `Search: "${term}"`), h('p', { class: 'muted', style: 'margin-top:0' }, rows.length ? `${rows.length} lead${rows.length === 1 ? '' : 's'}, every status, declined ones too. Click a row to open it.` : 'Nothing matches. Try part of the name, the GC, the city or the proposal number.'),
+    rows.length ? h('div', { class: 'scroll' }, h('table', { class: 'biglist' }, h('thead', {}, h('tr', {}, ['Proposal / Project', 'General Contractors', 'City', 'Bid Due', 'Status', 'Estimator'].map((t) => h('th', {}, t)))),
+      h('tbody', {}, rows.map((o) => h('tr', { style: 'cursor:pointer', onclick: () => (location.hash = '#/estimating/' + o.id) }, h('td', { style: 'white-space:normal;min-width:220px' }, o.proposalId ? h('strong', {}, o.proposalId) : '', h('div', {}, o.name), o.client && o.client !== o.gc ? sub(o.client) : ''),
+        h('td', { style: 'white-space:normal' }, (o.gcs || [o.gc]).join(' · ')), h('td', {}, o.city || ''), h('td', {}, o.due ? fmtDay(o.due) : '—'), h('td', {}, h('span', { class: 'pill' }, o.statusLabel || o.status)), h('td', {}, o.estimator || '—')))))) : '');
+}
 const TABS = [['bids', 'Bid Opportunities'], ['proposals', 'Proposal Tracker'], ['submittals', 'Submittal Tracker'], ['followups', 'Follow Ups'], ['insights', 'Insights']];
 export async function estimatingView(arg, arg2) {
   if (arg && arg2 === 'chat') return estchat.estimateChatView(arg, canEstimate());   // Estimate With AI: its own page for one lead
   const tab = TABS.some(([t]) => t === arg) ? arg : 'bids', detailId = arg && !TABS.some(([t]) => t === arg) ? arg : null, err = h('div'), w = canEstimate();
   const search = state.estSearch || '';
-  const sbox = h('input', { placeholder: 'Find a project, GC, or proposal #', value: search, onchange: (e) => { state.estSearch = e.target.value; render(); } });
+  // results show while you type; the page is drawn again a moment after you stop, and the cursor stays in the box
+  const sbox = h('input', { id: 'est-search', type: 'search', placeholder: 'Find a project, GC, client, contact or proposal #', value: search, autocomplete: 'off',
+    oninput: (e) => { clearTimeout(searchTimer); const v = e.target.value; searchTimer = setTimeout(() => { state.estSearch = v; state.estSearchFocus = true; render(); }, 300); } });
   const scope = state.estScope || (['Super Admin', 'Sub Admin'].includes(state.user.role) ? 'all' : 'mine'), q = `q=${encodeURIComponent(search)}&scope=${scope}`;
+  // a lead opened on its own: nothing else on the page; Close goes back to the list you came from, at the same place on it
+  if (detailId) {
+    const detail = await opportunityDetail(detailId, err, w, arg2 === 'edit');
+    return C.shell('estimating', [h('div', { class: 'row spread' }, h('h1', {}, 'Estimating'), h('div', { class: 'row' }, sbox)), err, detail]);
+  }
+  state.estBack = location.hash && location.hash.startsWith('#/estimating') ? location.hash : '#/estimating/' + tab;
+  if (search) {
+    const found = await api('GET', `/opportunities?tab=search&q=${encodeURIComponent(search)}`); afterDraw();
+    const stabs = h('div', { class: 'tabs', style: 'margin-top:1rem' }, TABS.map(([t, l]) => h('a', { href: '#/estimating/' + t, onclick: (e) => { e.preventDefault(); state.estSearch = ''; clearTimeout(searchTimer); if (location.hash === '#/estimating/' + t) render(); else location.hash = '#/estimating/' + t; } }, l)));
+    return C.shell('estimating', [h('div', { class: 'row spread' }, h('h1', {}, 'Estimating'), h('div', { class: 'row' }, sbox, h('button', { onclick: () => { state.estSearch = ''; render(); } }, 'Clear'))), stabs, err, searchResults(found.rows, search)]);
+  }
   const data = tab === 'bids' ? await api('GET', `/opportunities?tab=bids&${q}${state.estAll ? '&all=1' : ''}`)
     : tab === 'proposals' ? await api('GET', `/opportunities?tab=proposals&${q}&filter=${encodeURIComponent(state.propFilter || 'Active')}`)
     : tab === 'submittals' ? await api('GET', `/opportunities?tab=submittals&${q}`) : null;
@@ -254,16 +284,16 @@ export async function estimatingView(arg, arg2) {
   const kpi = (l, v, tone = '') => h('div', { class: 'kpi ' + tone }, h('div', { class: 'l' }, l), h('div', { class: 'v' }, v));
   const scopeBar = h('div', { class: 'row spread', style: 'margin:.2rem 0' }, h('span', { class: 'muted', style: 'font-size:13px' }, scope === 'mine' ? 'Accepted, working, submitted, awarded and follow-up figures are yours. New and Reviewing are for the whole company.' : 'Showing the whole company.'), h('div', { class: 'seg' }, [['mine', 'Mine'], ['all', 'All']].map(([v, l]) => h('button', { type: 'button', class: v === scope ? 'on' : '', onclick: () => { state.estScope = v; render(); } }, l))));
   const head = h('div', { class: 'grid kpis', style: 'grid-template-columns:repeat(auto-fit,minmax(140px,1fr))' }, kpi('New opportunities', st.openLeads), kpi('Reviewing', st.reviewing), kpi('Accepted this month', st.accepted), kpi('Working now', st.working), kpi('Submitted this month', st.submitted), kpi('Awarded this month', st.awarded ?? 0, st.awarded ? 'good' : ''), kpi('Awarded in all', st.awardedAll ?? 0), kpi('Follow-ups due', st.awaitingFollowUp, st.awaitingFollowUp ? 'warn' : ''), kpi('Awaiting award', st.interested, st.interested ? 'good' : ''));
-  const tabs = h('div', { class: 'tabs', style: 'margin-top:1rem' }, TABS.map(([t, l]) => h('a', { class: t === tab ? 'on' : '', href: '#/estimating/' + t }, l)));
+  const tabs = h('div', { class: 'tabs', style: 'margin-top:1rem' }, TABS.map(([t, l]) => h('a', { class: t === tab ? 'on' : '', href: '#/estimating/' + t, onclick: () => { state.estSearch = ''; clearTimeout(searchTimer); } }, l)));   // another tab: the search is cleared
   let body;
   if (tab === 'bids') body = bidsPanel(data, err, w, await api('GET', '/bids/status'), w ? (await api('GET', '/opportunities/bundles')).groups : []);
   else if (tab === 'proposals') body = proposalsPanel(data, err, w);
   else if (tab === 'submittals') body = submittalsPanel(data, err, w);
   else if (tab === 'followups') body = await followUpsPanel(err, w, arg === 'followups' ? arg2 : null);
   else body = await insightsTab(err);
-  const detail = detailId ? await opportunityDetail(detailId, err, w, arg2 === 'edit') : '';
+  restoreScroll(); afterDraw();
   return C.shell('estimating', [h('div', { class: 'row spread' }, h('h1', {}, 'Estimating'), h('div', { class: 'row' }, sbox, h('button', { onclick: () => calendarModal().catch((e) => alert(e.message)), title: 'Put the bid due dates on your Outlook or Google calendar' }, 'Calendar'), w && h('button', { onclick: () => acceptSeveralModal().catch((e) => alert(e.message)), title: 'Paste a list of job names, find them (declined ones too), and accept them all for one estimator.' }, 'Accept Several'), w && h('button', { onclick: importForm }, 'Import leads'), w && h('button', { class: 'primary', onclick: () => opportunityForm(null).catch((e) => alert(e.message)) }, '+ Opportunity'))),
-    h('p', { class: 'sub' }, 'Florida bid invitations to proposals to awarded projects. Reviewing and Accepted work moves to the Proposal Tracker; an award builds the project in Job Costing.'), scopeBar, head, tabs, err, detail, body]);
+    h('p', { class: 'sub' }, 'Florida bid invitations to proposals to awarded projects. Reviewing and Accepted work moves to the Proposal Tracker; an award builds the project in Job Costing.'), scopeBar, head, tabs, err, body]);
 }
 async function importForm() {
   const conn = (await api('GET', '/estimating/connection')).buildingConnected; const csv = h('textarea', { rows: 8, placeholder: 'Paste the CSV here, or choose a file below. First row = headings (Project, GC / Company, City, State, Bid Due, …).' }), file = h('input', { type: 'file', accept: '.csv,text/csv' });
@@ -343,7 +373,14 @@ async function acceptSeveralModal() {
 const BID_RULES = (r) => `One list of NEW opportunities, ordered by week, then closeness to Orlando, then shopping centers, then Retail, Restaurant, and Medical / Office. Weeks run Monday–Sunday: a bid due ON a Monday goes in the prior week. Undated leads stay visible. A New lead is declined ${r.declineNewDays} days after its bid due date, after 7 working days if nobody takes it up, and a Tier 3 or 4 lead is declined when its week is over; every change is written in the lead's log. The Include Declined box lists leads declined in the last 30 days; the search box finds a declined lead of any age. The same job from the same GC that arrives twice is combined into one lead. Reviewing and Accepted opportunities move to the Proposal Tracker.`;
 function bidFeedBar(feed, err, w) {
   const bar = h('div', { class: 'card', style: 'padding:.7rem 1rem' }); const refresh = guard(err, async () => { await api('POST', '/bids/refresh', {}); render(); });
-  if (!feed.connected) { bar.append(h('div', { class: 'row spread' }, h('span', {}, feed.googleSetUp ? 'Bid invitations are read from your BuildingConnected emails. The owner connects Gmail once in Admin.' : 'Bid invitations will be read from your BuildingConnected emails once Gmail is connected (see Admin).'), C.isSuper() ? h('span', { class: 'row', style: 'gap:.6rem' }, feed.googleSetUp ? h('button', { class: 'primary small', onclick: guard(err, async () => { location.href = (await api('GET', '/gmail/connect')).url; }) }, 'Connect Gmail') : '', h('a', { href: '#/admin/connections' }, 'Open Admin')) : '')); return bar; }
+  const connect = h('button', { class: 'primary small', onclick: guard(err, async () => { location.href = (await api('GET', '/gmail/connect')).url; }) }, feed.expectedEmail ? 'Reconnect Gmail' : 'Connect Gmail');
+  if (feed.needsReconnect) {
+    bar.style.borderColor = 'var(--red)';
+    bar.append(h('div', { class: 'row spread', style: 'gap:.6rem;flex-wrap:wrap' }, h('div', {}, h('strong', { class: 'neg' }, feed.connected ? 'The Gmail feed has lost its connection. No new bid invitations are coming in.' : 'The Gmail feed is not connected. No new bid invitations are coming in.'),
+      h('div', { class: 'muted', style: 'font-size:13px' }, feed.googleSetUp ? (feed.expectedEmail ? `Press Reconnect Gmail and sign in to Google as ${feed.expectedEmail}.` : 'Press Connect Gmail and sign in with the mailbox that receives the bid invitations.') : 'Google is not set up on the server yet (see Admin).')),
+      w && feed.googleSetUp ? connect : ''));
+    return bar;
+  }
   const l = feed.last, ok = feed.lastGood;
   bar.append(h('div', { class: 'row spread' }, h('div', {}, feed.running ? h('strong', {}, 'Refreshing from Gmail…') : l?.status === 'Error' ? h('span', { class: 'neg' }, `Last refresh failed: ${l.error}`) : ok ? h('span', {}, 'Last refreshed ', h('strong', {}, when(ok.finished_at)), ` · ${ok.added} new, ${ok.updated} updated${ok.declined ? `, ${ok.declined} declined` : ''}${ok.skipped ? `, ${ok.skipped} outside Florida skipped` : ''}`) : 'Not refreshed yet.', h('span', { class: 'muted', style: 'margin-left:.6rem;font-size:13px' }, `Automatic at 8:00 AM and 1:00 PM · ${feed.email}`)), w ? h('button', { class: 'primary', disabled: feed.running ? true : null, onclick: refresh }, feed.running ? 'Refreshing…' : 'Refresh now') : ''));
   if (feed.running) setTimeout(() => { if (location.hash.startsWith('#/estimating')) render(); }, 2500);
@@ -401,13 +438,17 @@ function submittalsPanel(data, err, w) {
   const FIL = { All: () => true, 'Not Submitted': (o) => ['Accepted', 'Started'].includes(o.status), Submitted: (o) => ['Submitted', 'Awarded', 'Not Awarded', 'No Communication'].includes(o.status) /* every bid that was sent, whatever came of it */, Awarded: (o) => o.status === 'Awarded', 'Not Awarded': (o) => o.status === 'Not Awarded', 'No Communication': (o) => o.status === 'No Communication' };
   const rows = data.rows.filter(FIL[filter]), counts = Object.fromEntries(Object.entries(FIL).map(([k, f]) => [k, data.rows.filter(f).length]));
   const toggle = h('div', { class: 'seg' }, ['list', 'calendar'].map((v) => h('button', { type: 'button', class: v === view ? 'on' : '', onclick: () => { state.subView = v; render(); } }, v === 'list' ? 'List' : 'Calendar')));
-  return h('div', { class: 'card' }, h('div', { class: 'row spread' }, h('h2', {}, 'Submittal Tracker'), toggle), filterChips(Object.keys(FIL), filter, counts, (k) => { state.subFilter = k; render(); }), LEGEND, tradeTally(data.rows.filter((o) => o.status === 'Submitted')), view === 'calendar' ? calendar(rows) : submittalList(rows, w));
+  return h('div', { class: 'card' }, h('div', { class: 'row spread' }, h('h2', {}, 'Submittal Tracker'), toggle), filterChips(Object.keys(FIL), filter, counts, (k) => { state.subFilter = k; render(); }), LEGEND, tradeTally(data.rows), view === 'calendar' ? calendar(rows) : submittalList(rows, w));
 }
 // What is out with GCs right now, by trade: how many bids and how much, and the total across all trades.
-function tradeTally(rows) {
-  const by = new Map(); let total = 0; for (const o of rows) for (const t of o.lastSubmission?.trades || []) { const e = by.get(t.name) || { bids: 0, amount: 0 }; e.bids++; e.amount += Number(t.amount); by.set(t.name, e); total += Number(t.amount); }
-  if (!by.size) return '';
-  return h('details', { open: true, style: 'margin:.2rem 0 .8rem' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, `Submitted and waiting: ${rows.length} bid${rows.length === 1 ? '' : 's'}, ${usd(total)}`),
+// This month's submissions by trade (it starts again on the 1st); closed until it is opened.
+function tradeTally(all) {
+  const month = todayStr().slice(0, 7), label = new Date(month + '-15T12:00:00').toLocaleDateString('en-US', { month: 'long' });
+  const subs = all.flatMap((o) => (o.submissions || []).filter((s) => String(s.date).startsWith(month)).map((s) => ({ o, s })));
+  const by = new Map(); let total = 0; for (const { s } of subs) for (const t of s.trades || []) { const e = by.get(t.name) || { bids: 0, amount: 0 }; e.bids++; e.amount += Number(t.amount); by.set(t.name, e); total += Number(t.amount); }
+  const waiting = subs.filter(({ o }) => o.status === 'Submitted').length;
+  if (!subs.length) return h('p', { class: 'muted', style: 'margin:.2rem 0 .8rem' }, `Nothing submitted in ${label} yet.`);
+  return h('details', { style: 'margin:.2rem 0 .8rem' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, `Submitted in ${label}: ${subs.length} bid${subs.length === 1 ? '' : 's'}, ${usd(total)} · ${waiting} still waiting for an answer`),
     h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Trade'), h('th', { class: 'n' }, 'Bids'), h('th', { class: 'n' }, 'Total'))), h('tbody', {}, [...by].sort((a, b) => b[1].amount - a[1].amount).map(([n, e]) => h('tr', {}, h('td', {}, n), h('td', { class: 'n' }, e.bids), h('td', { class: 'n' }, usd(e.amount))))), h('tfoot', {}, h('tr', { class: 'total' }, h('td', {}, 'All trades'), h('td', { class: 'n' }, [...by.values()].reduce((n, e) => n + e.bids, 0)), h('td', { class: 'n' }, usd(total))))));
 }
 // The latest proposal PDF of a lead (one per GC when the job keeps a folder under each GC). The one the app holds shows at once; the
@@ -470,7 +511,7 @@ async function opportunityDetail(id, err, w, editing) {
   const o = await api('GET', '/opportunities/' + id), op = await opts(), known = await api('GET', '/gcs/known');
   const built = buildOpportunityForm(o, op, known, { readonly: !editing }), msg = h('div');
   const save = guard(msg, async () => { await api('PUT', '/opportunities/' + id, built.body()); location.hash = '#/estimating/' + id; render(); });
-  return h('div', { class: 'card', style: 'border-color:var(--navy)' }, h('div', { class: 'row spread' }, h('h2', {}, `${o.proposalId ? o.proposalId + ' · ' : ''}${o.name}`), h('a', { href: '#/estimating/' + (['New', 'Declined'].includes(o.status) ? 'bids' : o.lastSubmission ? 'submittals' : 'proposals') }, 'Close')),
+  return h('div', { class: 'card', style: 'border-color:var(--navy)' }, h('div', { class: 'row spread' }, h('h2', {}, `${o.proposalId ? o.proposalId + ' · ' : ''}${o.name}`), h('a', { href: state.estBack || '#/estimating/' + (['New', 'Declined'].includes(o.status) ? 'bids' : o.lastSubmission ? 'submittals' : 'proposals'), onclick: (e) => { e.preventDefault(); closeLead(); } }, 'Close')),
     h('div', { class: 'row', style: 'margin:.3rem 0 .8rem;flex-wrap:wrap;gap:.5rem' }, statusSelect(o, w), o.expiry === 'expiring' ? h('span', { class: 'neg', style: 'font-size:13px;font-weight:600' }, 'Lead is expiring') : '',
       w && !editing ? h('button', { class: 'small', onclick: () => (location.hash = `#/estimating/${id}/edit`) }, 'Edit') : '', w && editing ? h('button', { class: 'small primary', onclick: save }, 'Save changes') : '', editing ? h('button', { class: 'small', onclick: () => (location.hash = '#/estimating/' + id) }, 'Cancel') : '',
       o.lastSubmission ? h('a', { href: '#/estimating/followups/' + o.id }, 'Open follow-up') : '', o.projectId ? h('a', { href: '#/projects/' + o.projectId }, 'Open the project') : ''), msg,
@@ -478,6 +519,7 @@ async function opportunityDetail(id, err, w, editing) {
     o.tradePrices.length ? h('p', { style: 'margin-top:.8rem' }, h('strong', {}, 'Proposed: '), o.tradePrices.map((p) => `${p.name} ${usd(p.amount)}`).join(' · '), ` = ${usd(o.total)}`) : '',
     o.submissions.length ? h('div', { style: 'margin-top:.8rem' }, h('label', {}, 'Bid versions'), h('table', {}, h('tbody', {}, o.submissions.map((s) => h('tr', {}, h('td', {}, 'v' + s.version), h('td', {}, fmtDay(s.date)), h('td', {}, s.method), h('td', { class: 'n' }, usd(s.price)), h('td', {}, (s.trades || []).map((t) => t.name).join(', ')), h('td', {}, w && o.status === 'Submitted' ? h('button', { class: 'small danger', onclick: guard(err, async () => { const why = prompt('Why remove this submission? (the PDF stays in the folder)'); if (why) { await api('POST', `/opportunities/${o.id}/submissions/${s.id}/void`, { reason: why }); render(); } }) }, 'Remove') : '')))))) : '',
     (o.gcs || []).length > 1 ? bundleSection(o, w, msg) : '',
+    (o.sameSite || []).length ? h('div', { class: 'card', style: 'margin-top:.8rem;padding:.7rem 1rem' }, h('label', {}, 'Other leads at this address'), h('p', { class: 'muted', style: 'margin:.2rem 0;font-size:14px' }, 'The same street: another store at the same center, or the same job under another name.'), o.sameSite.map((x) => h('div', {}, h('a', { href: '#/estimating/' + x.id }, `${x.proposalId ? x.proposalId + ' · ' : ''}${x.name}`), h('span', { class: 'muted' }, ` · ${x.gc}${x.client && x.client !== x.gc ? ' · ' + x.client : ''} · ${x.address} · ${x.statusLabel}`)))) : '',
     (o.siblings || []).length ? h('div', { class: 'card', style: 'margin-top:.8rem;padding:.7rem 1rem' }, h('label', {}, 'Same job, other GCs'), h('p', { class: 'muted', style: 'margin:.2rem 0;font-size:14px' }, 'Each GC has its own proposal and is submitted on its own.'), o.siblings.map((x) => h('div', {}, h('a', { href: '#/estimating/' + x.id }, `${x.proposalId || ''} · ${x.gc}`), h('span', { class: 'muted' }, ` · ${x.statusLabel}`)))) : '',
     h('div', { style: 'margin-top:.8rem' }, h('label', {}, 'Shared folder'), folderButtons(o, w, 'opportunity', OPTS?.sharepoint !== false)),
     h('div', { style: 'margin-top:.8rem' }, filesPanel(o, w, err)),
@@ -555,12 +597,33 @@ export async function originCard(projectId) {
       o.communications.length ? h('p', { class: 'muted' }, 'Follow-up: ' + o.communications.map((c) => `${fmtDay(c.date)} ${c.kind}`).join(' · ')) : ''));
 }
 
+// ---------------------------------------------------------------- the lead clean-up rules: one table, each rule with its number and an on/off switch
+// Shown on Insights and in Admin, Company. The owner and the Sub Admin change them; everyone else reads them.
+export async function rulesCard(errBox) {
+  const r = (await api('GET', '/estimating/options')).rules, can = ['Super Admin', 'Sub Admin'].includes(state.user.role), err = errBox || h('div');
+  const n = (k, lo, hi) => num(r[k], { step: '1', min: String(lo), max: String(hi), disabled: !can, style: 'width:5rem' }), on = (k) => { const c = h('input', { type: 'checkbox', disabled: !can ? true : null }); c.checked = r[k] !== false; return c; };
+  const f = { pastDueOn: on('pastDueOn'), declineNewDays: n('declineNewDays', 0, 30), declineReviewingDays: n('declineReviewingDays', 0, 30), idleOn: on('idleOn'), idleWorkingDays: n('idleWorkingDays', 1, 60), weekEndOn: on('weekEndOn'), weekEndMinTier: n('weekEndMinTier', 1, 4), expireOn: on('expireOn'), expiringDays: n('expiringDays', 0, 30), expireDays: n('expireDays', 1, 60) };
+  const row = (sw, rule, what, setting) => h('tr', {}, h('td', {}, sw), h('td', { style: 'white-space:normal;font-weight:600' }, rule), h('td', { style: 'white-space:normal' }, what), h('td', { style: 'white-space:normal' }, setting));
+  return h('div', { class: 'card' }, h('h2', {}, 'Lead Clean-Up Rules'), h('p', { class: 'muted', style: 'margin-top:0' }, 'The system moves leads by itself with these rules, checked every hour and at each Gmail refresh. Every move is written in the lead\'s log with the reason, and any lead can be brought back by hand.'), err,
+    h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, ['On', 'Rule', 'What happens', 'Setting'].map((t) => h('th', {}, t)))), h('tbody', {},
+      row(f.pastDueOn, 'New lead past its bid date', 'Declined after its bid due date has passed by:', h('span', {}, f.declineNewDays, ' days')),
+      row('', 'Reviewing lead past its bid date', 'Declined after its bid due date has passed by (same switch as above):', h('span', {}, f.declineReviewingDays, ' days')),
+      row(f.idleOn, 'New lead nobody took up', 'Declined when nobody has reviewed or accepted it this many working days (Monday to Friday) after it arrived or was brought back:', h('span', {}, f.idleWorkingDays, ' working days')),
+      row(f.weekEndOn, 'Far-away New lead', 'A lead of this tier or higher (farther from Orlando) is declined when the week it arrived in is over. It always gets at least 3 working days; one that arrives Thursday to Sunday gets the next week too.', h('span', {}, 'Tier ', f.weekEndMinTier, ' and up')),
+      row(f.expireOn, 'Accepted or Started, nothing submitted', 'Shows "Lead is expiring" after the bid due date by:', h('span', {}, f.expiringDays, ' days')),
+      row('', '', 'Then becomes Decided Not To Submit after the bid due date by (same switch):', h('span', {}, f.expireDays, ' days'))))),
+    h('ul', { class: 'muted', style: 'font-size:13px;margin:.6rem 0 0 1.2rem' },
+      h('li', {}, 'A lead with no bid due date is never moved by the date rules.'),
+      h('li', {}, 'A lead brought back by hand, or accepted or started after its bid date had already passed, is left alone by the date rules.'),
+      h('li', {}, 'Submitted, Awarded, Not Awarded and No Communication are never moved by the clean-up.'),
+      h('li', {}, 'Declined leads stay findable with the search box; the Include Declined box lists the last 30 days.')),
+    can ? h('div', { class: 'row', style: 'margin-top:.6rem' }, h('button', { class: 'primary', onclick: guard(err, async () => { await api('PUT', '/settings/estimating', Object.fromEntries(Object.entries(f).map(([k, el]) => [k, el.type === 'checkbox' ? el.checked : el.value]))); OPTS = null; notice(err, 'Saved. The next check uses the new rules.', 'ok'); }) }, 'Save Rules')) : '');
+}
+
 // ---------------------------------------------------------------- Insights (+ the decline rules)
 async function insightsTab(err) {
   const [panel, op, ins] = await Promise.all([insightsPanel(err), opts(), api('GET', '/estimating/insights')]); const canSet = ['Super Admin', 'Sub Admin'].includes(state.user.role);
-  const nd = num(op.rules.declineNewDays, { step: '1', min: '0', max: '30', disabled: !canSet }), rd = num(op.rules.declineReviewingDays, { step: '1', min: '0', max: '30', disabled: !canSet });
-  return h('div', {}, panel, h('div', { class: 'card' }, h('h2', {}, 'Auto-decline rules'), h('p', { class: 'muted' }, 'A New opportunity is declined this many days after its bid due date, and the system writes it in Notes. A Reviewing opportunity that was never accepted follows the second number. Opportunities with no bid due date never expire.'),
-    h('div', { class: 'row' }, h('label', { style: 'margin:0' }, 'New: days after due'), nd, h('label', { style: 'margin:0' }, 'Reviewing: days after due'), rd, canSet ? h('button', { class: 'small', onclick: guard(err, async () => { await api('PUT', '/settings/estimating', { declineNewDays: nd.value, declineReviewingDays: rd.value }); OPTS = null; render(); }) }, 'Save') : '')),
+  return h('div', {}, panel, await rulesCard(err),
     ins.declineReasons.length ? h('div', { class: 'card' }, h('h2', {}, 'Why opportunities were declined'), h('table', {}, h('tbody', {}, ins.declineReasons.map((r) => h('tr', {}, h('td', {}, r.reason), h('td', { class: 'n' }, r.n)))))) : '');
 }
 

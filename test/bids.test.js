@@ -64,13 +64,11 @@ test('setup; refreshing before Gmail is connected explains what to do', async ()
   assert.equal((await call('POST', '/api/bids/refresh', {}, asst)).status, 403);                  // refresh is for estimators and up
 });
 
-test('connecting Gmail: only the owner, read-only access, a signed state, and the lasting key is stored encrypted', async () => {
-  assert.equal((await call('GET', '/api/gmail/connect', null, sub)).status, 403);
+test('connecting Gmail: read-only access, a signed state, and the lasting key is stored encrypted', async () => {
   const u = new URL((await call('GET', '/api/gmail/connect', null, owner)).body.url);
   assert.equal(u.origin + u.pathname, 'https://accounts.google.com/o/oauth2/v2/auth'); assert.equal(u.searchParams.get('scope'), 'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send'); assert.equal(u.searchParams.get('access_type'), 'offline'); assert.equal(u.searchParams.get('redirect_uri'), 'https://desk.example/api/gmail/callback');
   const state = u.searchParams.get('state');
   assert.equal((await call('GET', `/api/gmail/callback?code=abc&state=${state}x`, null, owner)).status, 400);         // tampered
-  assert.equal((await call('GET', `/api/gmail/callback?code=abc&state=${state}`, null, sub)).status, 403);
   const ok = await call('GET', `/api/gmail/callback?code=abc&state=${state}`, null, owner); assert.equal(ok.status, 302); assert.equal(ok.headers.get('location'), '/#/admin/connections');
   const raw = JSON.stringify((await q(`SELECT data FROM integrations WHERE name='gmail'`))[0].data); assert.ok(!raw.includes('RT-SECRET-123')); assert.ok(raw.includes('benny@byother.net'));
   const s = (await call('GET', '/api/bids/status', null, est)).body; assert.deepEqual([s.connected, s.email], [true, 'benny@byother.net']); assert.ok(!JSON.stringify(s).includes('RT-SECRET'));
@@ -173,7 +171,8 @@ test('failures are reported, not hidden; leads already in the list are kept; set
 
 test('Gmail search follows the BuildingConnected rules: by sender and phrase, 50 newest, widen to 30 days only when nothing turns up, one retry', async () => {
   await call('PUT', '/api/bids/settings', { label: '' }, sub);
-  assert.deepEqual(bd.GATHER_QUERIES(14, ''), ['from:buildingconnected.com newer_than:14d', '"invitation to bid" newer_than:14d', '"invited to bid" newer_than:14d']);
+  assert.deepEqual(bd.GATHER_QUERIES(14, '').slice(0, 3), ['from:buildingconnected.com newer_than:14d', '"invitation to bid" newer_than:14d', '"invited to bid" newer_than:14d']);
+  assert.match(bd.GATHER_QUERIES(14, '', ['powerhousenow.com'])[4], /^from:\(powerhousenow\.com\) -subject:\(onboarding OR .*"purchase order".*\) newer_than:14d$/);   // a GC that emails invitations directly
   // connect again, then make the first (14 day) searches come back empty
   const u = new URL((await call('GET', '/api/gmail/connect', null, owner)).body.url); await call('GET', `/api/gmail/callback?code=abc&state=${u.searchParams.get('state')}`, null, owner);
   gmailCalls = []; let empty = true, flaked = false;
@@ -183,7 +182,7 @@ test('Gmail search follows the BuildingConnected rules: by sender and phrase, 50
   THREADS.t1.hid = 'h1c'; await call('POST', '/api/bids/refresh', {}, est); await waitIdle();
   const qs = gmailCalls.filter((c) => c.includes('newer_than')); assert.ok(qs.some((c) => c.includes('invited to bid')) && qs.some((c) => c.includes('invitation to bid')));
   assert.ok(gmailCalls.includes('flake')); assert.equal((await call('GET', '/api/bids/status', null, est)).body.last.status, 'Done');
-  assert.equal(gmailCalls.filter((c) => c.includes('newer_than:14d')).length, 3);                            // all three 14-day searches ran first; the 30-day one (which flaked once) came only after they found nothing
+  assert.equal(gmailCalls.filter((c) => c.includes('newer_than:14d')).length, 5);                            // all three 14-day searches ran first; the 30-day one (which flaked once) came only after they found nothing
   bd.setGoogleFetch(googleStandIn);
 });
 
@@ -286,4 +285,48 @@ test('a busy mailbox: every page of the BuildingConnected search is read, not on
   seenQ.length = 0; assert.equal((await call('POST', '/api/bids/refresh', { days: 30 }, owner)).status, 200); await waitIdle();
   assert.ok(seenQ.some((x) => x.startsWith('from:buildingconnected.com newer_than:30d')) && !seenQ.some((x) => x.includes('newer_than:14d')));
   bd.setGoogleFetch(googleStandIn);
+});
+
+test('the feed: senders that email invitations directly are a setting; a lost connection says so; anyone estimating can reconnect, but only to the same mailbox', async () => {
+  assert.deepEqual((await call('GET', '/api/bids/status', null, est)).body.senders, ['powerhousenow.com']);
+  assert.equal((await call('PUT', '/api/bids/settings', { senders: 'powerhousenow.com, bids@acme.example, not a domain' }, sub)).status, 400);
+  assert.equal((await call('PUT', '/api/bids/settings', { senders: 'PowerhouseNow.com; @bids.acme.example' }, sub)).status, 200); assert.deepEqual((await call('GET', '/api/bids/status', null, est)).body.senders, ['powerhousenow.com', 'bids.acme.example']);
+  assert.equal((await call('GET', '/api/bids/status', null, est)).body.needsReconnect, false);
+  await call('DELETE', '/api/gmail', null, owner);
+  let s = (await call('GET', '/api/bids/status', null, est)).body; assert.deepEqual([s.connected, s.needsReconnect, s.expectedEmail], [false, true, 'benny@byother.net']);
+  // an estimator reconnects: signing in as another mailbox is refused, the same one works and brings them back to Bid Opportunities
+  const u = new URL((await call('GET', '/api/gmail/connect', null, est)).body.url), state = u.searchParams.get('state');
+  bd.setGoogleFetch(async (url, init) => (new URL(url).pathname.endsWith('/profile') ? { ok: true, status: 200, json: async () => ({ emailAddress: 'someone.else@gmail.com' }) } : googleStandIn(url, init)));
+  const wrong = await call('GET', `/api/gmail/callback?code=abc&state=${state}`, null, est); assert.equal(wrong.status, 400); assert.match(wrong.body.error, /Sign in to Google as benny@byother\.net/);
+  bd.setGoogleFetch(googleStandIn);
+  const ok = await call('GET', `/api/gmail/callback?code=abc&state=${state}`, null, est); assert.deepEqual([ok.status, ok.headers.get('location')], [302, '/#/estimating/bids']);
+  s = (await call('GET', '/api/bids/status', null, est)).body; assert.deepEqual([s.connected, s.needsReconnect, s.email], [true, false, 'benny@byother.net']);
+  // a refresh that finds Google has withdrawn access marks the feed as lost
+  await q(`INSERT INTO bid_refresh_runs(trigger,status,started_at,finished_at,error) VALUES ('Scheduled','Error', now(), now(), 'Google no longer allows access to this mailbox. Reconnect Gmail in Admin.')`);
+  assert.equal((await call('GET', '/api/bids/status', null, est)).body.needsReconnect, true);
+});
+
+test('the clean-up rules are one table of settings: numbers and switches change what the hourly check does', async () => {
+  const before = (await call('GET', '/api/estimating/options', null, est)).body.rules;
+  assert.deepEqual(before, { declineNewDays: 2, declineReviewingDays: 2, pastDueOn: true, idleOn: true, idleWorkingDays: 7, weekEndOn: true, weekEndMinTier: 3, expireOn: true, expiringDays: 3, expireDays: 5 });
+  assert.equal((await call('PUT', '/api/settings/estimating', { expiringDays: 9, expireDays: 5 }, sub)).status, 400); assert.equal((await call('PUT', '/api/settings/estimating', { weekEndMinTier: 7 }, sub)).status, 400); assert.equal((await call('PUT', '/api/settings/estimating', { expireDays: 8 }, est)).status, 403);
+  // accepted work 6 days past its bid date: expired under the default 5 days, kept when the rule says 8, kept when the rule is off
+  const mk = async (name) => (await q(`INSERT INTO opportunities(name,gc_name,city,due_date,status,accepted_date,source_key) VALUES ($1,'GC','Orlando',$2,'Accepted',$3,$1) RETURNING id`, [name, shift(today, -6), shift(today, -9)]))[0].id;
+  const st = async (id) => (await q('SELECT status FROM opportunities WHERE id=$1', [id]))[0].status;
+  assert.equal((await call('PUT', '/api/settings/estimating', { expireDays: 8, expiringDays: 3 }, sub)).status, 200); const a = await mk('Rule eight days'); await bidsSweep(); assert.equal(await st(a), 'Accepted');
+  assert.equal((await call('GET', `/api/opportunities/${a}`, null, est)).body.expiry, 'expiring');
+  assert.equal((await call('PUT', '/api/settings/estimating', { expireDays: 5, expireOn: false }, sub)).status, 200); await bidsSweep(); assert.equal(await st(a), 'Accepted');
+  assert.equal((await call('PUT', '/api/settings/estimating', { expireOn: true }, sub)).status, 200); await bidsSweep(); assert.equal(await st(a), 'Decided Not To Submit');
+  assert.ok((await call('GET', `/api/opportunities/${a}`, null, est)).body.notes.some((n) => /within 5 days of the bid due date/.test(n.body)));
+  // a new lead past its bid date is left alone while that rule is off
+  const b = (await q(`INSERT INTO opportunities(name,gc_name,city,due_date,status,source_key) VALUES ('Rule past due','GC','Orlando',$1,'New','rule-pd') RETURNING id`, [shift(today, -3)]))[0].id;
+  assert.equal((await call('PUT', '/api/settings/estimating', { pastDueOn: false }, sub)).status, 200); await bidsSweep(); assert.equal(await st(b), 'New');
+  assert.equal((await call('PUT', '/api/settings/estimating', { pastDueOn: true }, sub)).status, 200); await bidsSweep(); assert.equal(await st(b), 'Declined');
+});
+
+test('whoever first moves a lead becomes its estimator; an edit never leaves it blank', async () => {
+  const id = (await q(`INSERT INTO opportunities(name,gc_name,client_name,city,due_date,status,source_key) VALUES ('No Estimator Yet','GC','Client','Orlando',$1,'New','noest') RETURNING id`, [shift(today, 9)]))[0].id;
+  assert.equal((await call('POST', `/api/opportunities/${id}/status`, { status: 'Reviewing' }, sub)).status, 200);
+  const subId = (await q(`SELECT id FROM app_users WHERE email='sub@x.net'`))[0].id; assert.equal((await q('SELECT estimator_id FROM opportunities WHERE id=$1', [id]))[0].estimator_id, subId);
+  assert.equal((await call('PUT', `/api/opportunities/${id}`, { estimatorId: '', note: 'keep it' }, est)).status, 200); assert.equal((await q('SELECT estimator_id FROM opportunities WHERE id=$1', [id]))[0].estimator_id, subId);   // clearing it does nothing
 });

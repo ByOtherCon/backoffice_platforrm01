@@ -415,3 +415,15 @@ test('Started with several GCs: each GC gets its own proposal with the folder un
   assert.ok(find(...B, '02. Proposal', 'Two price.pdf')); assert.equal(find(...A, '02. Proposal', 'Two price.pdf'), null);
   const v = await syncNow(two.id); assert.deepEqual([v.sync.pushed, v.sync.failed, v.latestPdf.name, v.gcs], [0, [], 'Two price.pdf', []]);
 });
+
+test('a file Windows saved under a short name (BYOTHE-1.PDF) is given its proper name and type, read from the file itself', async () => {
+  const id = await mk({ name: 'Short Name Job', gc: 'Short GC', addr: await addrOk('8 Short St', 'Orlando', '32801') }); await call('POST', `/api/opportunities/${id}/status`, { status: 'Accepted' }, est);
+  const o = await opp(id), prop = find('ByOther', YEAR, 'Short GC', `${o.proposalId}_Short Name Job_Orlando`, '02. Proposal');
+  const word = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.from('[Content_Types].xml word/document.xml')]), pdf = mkPdf();
+  add(prop.id, 'BYOTHE-1.PDF', false, { size: word.length, bytes: word }); add(prop.id, 'BYOTHE~2.PDF', false, { size: pdf.length, bytes: pdf }); add(prop.id, 'Notes.PDF', false, { size: pdf.length, bytes: pdf });
+  const v = await syncNow(id); assert.equal(v.sync.renamedShort, 2, JSON.stringify(v.sync));
+  const names = kids(prop.id).map((n) => n.name).sort(), md = (d) => `${d.slice(5, 7)}-${d.slice(8, 10)}-${d.slice(0, 4)}`;
+  assert.ok(names.includes('Notes.PDF')); assert.ok(names.some((n) => new RegExp(`^byOther Proposal-${o.proposalId}_.*\\d\\d-\\d\\d-\\d{4}\\.docx$`).test(n)), names.join(' | ')); assert.ok(names.some((n) => /^byOther Proposal-.*\.pdf$/.test(n)), names.join(' | '));
+  assert.ok(!names.some((n) => /^BYOTHE/.test(n))); assert.ok((await opp(id)).notes.some((n) => /given their proper name and type: BYOTHE-1\.PDF is now byOther Proposal-/.test(n.body)));
+  assert.equal((await syncNow(id)).sync.renamedShort, 0);
+});

@@ -62,7 +62,7 @@ test('two stores at the same mall are two jobs: a name that only says where it i
   const rm = j('OPP-138227 - RM3543_Mall at Millenia - Orlando, FL', 'Orlando', '4200 Conroy Road, Orlando, FL 32839');
   assert.equal(R.sameJob(rm, j('Abercrombie - Mall at Millenia - Orlando FL', 'Orlando', '4200 Conroy Road, Space #C-196, Orlando, FL 32839')), false);
   assert.equal(R.sameJob(rm, j('Abercrombie - Mall at Millenia', 'Orlando', 'Mall at Millenia')), false);
-  assert.equal(R.sameJob(j('A&F Kids - Mall at Millenia', 'Orlando', '4200 Conroy Road'), j('Abercrombie - Mall at Millenia', 'Orlando', '4200 Conroy Road')), false);
+  assert.equal(R.sameJob(j('Ulta - Mall at Millenia', 'Orlando', '4200 Conroy Road'), j('Abercrombie - Mall at Millenia', 'Orlando', '4200 Conroy Road')), false);
   assert.equal(R.sameJob(j('Wingstop - St Cloud', 'St Cloud', '1200 13th St'), j('Panda Express - St Cloud', 'St Cloud', '1200 13th St')), false);   // a strip center: only the city in common
   assert.equal(R.sameJob(j('Old Navy - Plaza at Citrus Park', 'Tampa', '12851 Citrus Plaza Drive'), j('Ulta - Plaza at Citrus Park', 'Tampa', '12851 Citrus Plaza Drive')), false);
   // the same store, worded differently, is still one job
@@ -73,4 +73,13 @@ test('two stores at the same mall are two jobs: a name that only says where it i
   assert.deepEqual(R.tenantWords('Old Navy 5904 Refresh - Tampa, FL - Plaza at Citrus Park', 'Tampa'), ['old', 'navy', 'refresh']);
   assert.deepEqual(R.tenantWords('Sunglass Hut Lutz Premium Outlets', 'Lutz'), ['sunglass', 'hut']);
   assert.deepEqual(R.tenantWords('Aritzia at Disney Springs', 'Lake Buena Vista'), ['aritzia']);
+});
+
+test('A&F is Abercrombie & Fitch; the client a name points to; one street however it is written', () => {
+  const j = (name: string, city: string | null, address: string | null) => ({ name, city, address });
+  assert.equal(R.sameJob(j('A&F Kids - Mall at Millenia', 'Orlando', '4200 Conroy Road'), j('Abercrombie - Mall at Millenia', 'Orlando', '4200 Conroy Road')), true);
+  assert.equal(R.sameJob(j('A&F Kids - Mall at Millenia', 'Orlando', '4200 Conroy Road, Space #D-210'), j('Abercrombie - Mall at Millenia', 'Orlando', '4200 Conroy Road, Space #C-196')), false);   // two spaces: two stores
+  assert.deepEqual(['Abercrombie - Mall at Millenia - Orlando FL', 'A&F Kids - Mall at Millenia', 'Old Navy 5904 Refresh - Tampa, FL - Plaza at Citrus Park', 'OPP-138227 - RM3543_Mall at Millenia - Orlando, FL', 'Wingstop - St Cloud'].map((n) => R.clientFromName(n, 'Orlando')),
+    ['Abercrombie & Fitch', 'Abercrombie & Fitch', 'Old Navy 5904 Refresh', '', 'Wingstop']);
+  assert.equal(R.streetKey('4200 Conroy Rd, Space #C-196, Orlando, FL 32839'), R.streetKey('Mall at Millenia, 4200 Conroy Road')); assert.equal(R.streetKey('Mall at Millenia'), '');
 });

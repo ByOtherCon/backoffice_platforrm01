@@ -389,11 +389,11 @@ route('POST', '/api/bids/refresh', async ({ user, body }) => {
   const r = await bd.runRefresh({ trigger: 'Manual', userId: user.id, days }); return { id: r.id };
 });
 route('PUT', '/api/bids/settings', async ({ user, body }) => { auth.requireRole(user, auth.APPROVERS); await bd.saveBidSettings(body); return { ok: true }; });
-route('GET', '/api/gmail/connect', async ({ user }) => { auth.requireRole(user, auth.SUPER); return { url: bd.connectUrl(user) }; });
+route('GET', '/api/gmail/connect', async ({ user }) => { estWrite(user); return { url: bd.connectUrl(user) }; });   // anyone estimating can reconnect the feed (to the same mailbox)
 route('GET', '/api/gmail/callback', async ({ req, res, user }) => {
-  auth.requireRole(user, auth.SUPER); const p = new URL(req.url, 'http://x').searchParams;
+  estWrite(user); const p = new URL(req.url, 'http://x').searchParams;
   if (p.get('error')) throw bad('Google did not allow the connection (' + p.get('error') + ').');
-  await bd.finishConnect(p.get('code'), p.get('state')); res.writeHead(302, { location: '/#/admin/connections', 'cache-control': 'no-store' }); res.end(); return 'sent';
+  await bd.finishConnect(p.get('code'), p.get('state')); res.writeHead(302, { location: auth.SUPER.includes(user.role) ? '/#/admin/connections' : '/#/estimating/bids', 'cache-control': 'no-store' }); res.end(); return 'sent';
 });
 route('DELETE', '/api/gmail', async ({ user }) => { auth.requireRole(user, auth.SUPER); await bd.disconnect(); return { ok: true }; });
 route('GET', '/api/regions', async ({ user }) => { estRead(user); return bd.listRegions(); });

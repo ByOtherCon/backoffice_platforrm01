@@ -358,3 +358,13 @@ test('bid due dates as a private calendar feed: open bids only, timed or all-day
   assert.equal((await get('/api/calendar/bids.ics?key=nope')).status, 404); assert.equal((await get('/api/calendar/bids.ics')).status, 404); assert.equal((await call('GET', '/api/calendar/link', null, pm)).status, 403);
   const fresh = (await call('POST', '/api/calendar/link/reset', {}, est)).body; assert.notEqual(fresh.all, l.all); assert.equal((await get(l.all)).status, 404); assert.equal((await get(fresh.all)).status, 200);
 });
+
+test('the search box finds any lead in any status by any GC on it, its contacts, client, city or number', async () => {
+  const id = await mk({ name: 'OPP-138227 - RM3543_Mall at Millenia', client: 'Abercrombie & Fitch', gc: 'Search GC One', addr: await verified('4200 Conroy Road', 'Orlando', '32839') });
+  await q(`UPDATE opportunities SET invitations=$2 WHERE id=$1`, [id, JSON.stringify([{ gc: 'Search GC One' }, { gc: 'Powerhouse Retail Services, LLC', contactName: 'Nemanja Bogdanovic', email: 'nemanja@powerhousenow.example' }])]);
+  const reason = (await call('GET', '/api/estimating/options', null, est)).body.declineReasons[0]; assert.equal((await status(id, 'Declined', { reason })).status, 200);
+  const find = async (t) => (await call('GET', `/api/opportunities?tab=search&q=${encodeURIComponent(t)}`, null, est)).body.rows.map((o) => o.id);
+  for (const t of ['powerhouse', 'Nemanja', 'powerhousenow', 'abercrombie', 'RM3543', 'millenia powerhouse']) assert.ok((await find(t)).includes(id), t);
+  assert.ok(!(await find('powerhouse tampa')).includes(id)); assert.deepEqual(await find(''), []);
+  const all = (await call('GET', `/api/opportunities?tab=search&q=wingstop`, null, est)).body.rows; assert.ok(all.some((o) => o.status === 'Awarded'));   // awarded ones too
+});

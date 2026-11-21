@@ -52,9 +52,12 @@ function addressParts(value: string | null) {
 // can tell them apart.
 const ANCHOR = ['mall', 'plaza', 'center', 'centre', 'shops', 'shoppes', 'shopping', 'outlets', 'outlet', 'premium', 'square', 'village', 'commons', 'galleria', 'promenade'];
 const FILLER = ['opp', 'rm', 'bid', 'invite', 'invitation', 'rfp', 'tenant', 'improvement', 'ti', 'store', 'space', 'suite', 'unit'];
+// The same brand written differently: "A&F Kids" and "Abercrombie & Fitch" are Abercrombie & Fitch.
+const BRANDS: [RegExp, string, string][] = [[/\ba\s*&\s*f\b|\ba\s+and\s+f\b/g, 'abercrombie', 'Abercrombie & Fitch'], [/\babercrombie(\s*(&|and)\s*fitch)?\b/g, 'abercrombie', 'Abercrombie & Fitch']];
+const brandWords = (s: string) => BRANDS.reduce((x, [re, w]) => x.replace(re, w), String(s || '').toLowerCase());
 export function tenantWords(name: string, ...cities: (string | null | undefined)[]): string[] {
   const cityW = new Set(cities.flatMap((c) => String(c || '').toLowerCase().split(/[^a-z0-9]+/)).filter(Boolean)), out = new Set<string>();
-  for (const seg of String(name || '').toLowerCase().split(/[-\u2013\u2014_,()|/:;]+/)) {
+  for (const seg of brandWords(name).split(/[-\u2013\u2014_,()|/:;]+/)) {
     const t = seg.split(/[^a-z0-9]+/).filter(Boolean), place = new Set<number>(), at = t.indexOf('at');
     if (at >= 0) for (let i = at; i < t.length; i++) place.add(i);
     t.forEach((w, i) => { if (ANCHOR.includes(w)) { place.add(i); if (i > 0 && !ANCHOR.includes(t[i - 1])) place.add(i - 1); } });
@@ -62,6 +65,15 @@ export function tenantWords(name: string, ...cities: (string | null | undefined)
   }
   return [...out];
 }
+// The client a project name points to: the brand when it is a known one written several ways, else the first part of the name that says
+// which store it is ("Old Navy 5904 Refresh - Tampa" gives "Old Navy 5904 Refresh"). Empty when the name only says where (a GC code and a mall).
+export function clientFromName(name: string, ...cities: (string | null | undefined)[]): string {
+  const low = String(name || '').toLowerCase(); for (const [re, , label] of BRANDS) { re.lastIndex = 0; if (re.test(low)) { re.lastIndex = 0; return label; } }
+  for (const seg of String(name || '').split(/\s+[-\u2013\u2014]\s+|_|,/)) if (tenantWords(seg, ...cities).length) return seg.trim().replace(/\s+/g, ' ').slice(0, 120);
+  return '';
+}
+// The street of an address in one form ("4200 Conroy Rd, Space #C-196" and "4200 Conroy Road" give the same), empty when there is no house number.
+export const streetKey = (address: string | null) => addressParts(address).street;
 // "#C-196" and "#196" are the same space; "983" and "120" are not.
 const unitNo = (u: string) => u.replace(/[^0-9]/g, '');
 const sameUnit = (a: string, b: string) => a === b || (!!unitNo(a) && unitNo(a) === unitNo(b) && (a === unitNo(a) || b === unitNo(b)));

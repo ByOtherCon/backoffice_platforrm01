@@ -107,6 +107,10 @@ test('the latest estimating file can be loaded from the file itself: text, Markd
   const xml = '<?xml version="1.0"?><w:document><w:body><w:p><w:r><w:t>Estimating 2.44</w:t></w:r></w:p><w:p><w:r><w:t>Framing &amp; drywall: $9.50</w:t></w:r><w:r><w:tab/><w:t>per SF</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p><w:r><w:t>ACT</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>$4.25</w:t></w:r></w:p></w:tc></w:tr></w:tbl></w:body></w:document>';
   const docx = await up(zipOf([['[Content_Types].xml', Buffer.from('<Types/>'), false], ['word/document.xml', Buffer.from(xml), true]]), 'Estimating 2.44.docx'); assert.equal(docx.status, 200, JSON.stringify(docx.body));
   assert.match(docx.body.text, /^Estimating 2\.44\nFraming & drywall: \$9\.50\tper SF\nACT/); assert.match(docx.body.text, /\$4\.25/);
+  const JSZip = (await import('jszip')).default, x = new JSZip(); x.file('xl/workbook.xml', '<workbook><sheets><sheet name="Pricing 2.45" sheetId="1"/></sheets></workbook>');
+  x.file('xl/sharedStrings.xml', '<sst><si><t>Item</t></si><si><t>Rate</t></si><si><t>ACT ceiling, per SF</t></si></sst>');
+  x.file('xl/worksheets/sheet1.xml', '<worksheet><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c></row><row r="2"><c r="A2" t="s"><v>2</v></c><c r="B2"><f>4+0.25</f><v>4.25</v></c></row></sheetData></worksheet>');
+  const xl = await up(await x.generateAsync({ type: 'nodebuffer' }), 'Estimating 2.45.xlsx'); assert.equal(xl.status, 200, JSON.stringify(xl.body)); assert.equal(xl.body.text, 'Sheet: Pricing 2.45\nItem\tRate\nACT ceiling, per SF\t4.25');   // the pricing workbook, formulas as their values
   assert.equal((await up(Buffer.from('%PDF-1.4'), 'rules.pdf')).status, 400); assert.equal((await up(Buffer.alloc(0), 'rules.md')).status, 400);
   assert.equal((await call('GET', '/api/estimating/instructions', null, est)).body.custom, false);   // reading a file changes nothing until it is saved
 });

@@ -427,3 +427,21 @@ test('a file Windows saved under a short name (BYOTHE-1.PDF) is given its proper
   assert.ok(!names.some((n) => /^BYOTHE/.test(n))); assert.ok((await opp(id)).notes.some((n) => /given their proper name and type: BYOTHE-1\.PDF is now byOther Proposal-/.test(n.body)));
   assert.equal((await syncNow(id)).sync.renamedShort, 0);
 });
+
+test('the estimating sheet is whatever is in ByOther / Estimating Sheet: shown by name, given to the AI, read again only when it changes', async () => {
+  const ec = await import('../server/estimateChat.js'), JSZip = (await import('jszip')).default;
+  const book = async (rate) => { const x = new JSZip(); x.file('xl/workbook.xml', '<workbook><sheets><sheet name="Rates" sheetId="1"/></sheets></workbook>'); x.file('xl/worksheets/sheet1.xml', `<worksheet><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>Demo ACT per SF</t></is></c><c r="B1"><v>${rate}</v></c></row></sheetData></worksheet>`); return x.generateAsync({ type: 'nodebuffer' }); };
+  let sh = await ec.estimatingSheet({ fresh: true }); assert.equal(sh.connected, true); assert.deepEqual(sh.files, []); assert.ok(find('ByOther', 'Estimating Sheet'), 'the folder is made');
+  const dir = find('ByOther', 'Estimating Sheet'), b1 = await book(1.25);
+  const f = add(dir.id, 'byOther Estimating 2.45.xlsx', false, { bytes: b1, size: b1.length }); add(dir.id, '~$byOther Estimating 2.45.xlsx', false, { bytes: Buffer.from('lock'), size: 4 }); add(dir.id, 'old.pdf', false, { bytes: Buffer.from('%PDF'), size: 4 });
+  sh = await ec.estimatingSheet({ fresh: true }); assert.deepEqual(sh.files.map((x) => x.name), ['byOther Estimating 2.45.xlsx']); assert.deepEqual(sh.problems, ['old.pdf is not read (use Excel, Word, CSV, text or Markdown).']);
+  let sys = await ec.systemPrompt(sh); assert.match(sys, /current estimating sheet \(from the "Estimating Sheet" folder in SharePoint\)/); assert.match(sys, /## File: byOther Estimating 2\.45\.xlsx \(last changed \d{4}-\d\d-\d\d\)\n```\nSheet: Rates\nDemo ACT per SF\t1\.25/);
+  // the chat page shows it by name
+  const [{ id: lead }] = await q(`INSERT INTO opportunities(name,gc_name,city,status,source_key) VALUES ('Sheet Job','GC','Orlando','Accepted','sheet1') RETURNING id`);
+  const page = (await call('GET', `/api/opportunities/${lead}/estimate-chat`, null, est)).body; assert.deepEqual(page.sheet.files.map((x) => x.name), ['byOther Estimating 2.45.xlsx']); assert.match(page.sheet.folderUrl, /ByOther\/Estimating%20Sheet$/);
+  // a new file in place of the old one: read again; the same file is not downloaded twice
+  const b2 = await book(1.4); Object.assign(nodes.get(f.id), { bytes: b2, size: b2.length, mtime: new Date(Date.now() + 60000).toISOString() });
+  sys = await ec.systemPrompt(await ec.estimatingSheet({ fresh: true })); assert.match(sys, /Demo ACT per SF\t1\.4\n/); assert.ok(!/\t1\.25/.test(sys));
+  nodes.get(f.id).bytes = await book(9.99); sys = await ec.systemPrompt(await ec.estimatingSheet({ fresh: true })); assert.match(sys, /\t1\.4\n/);   // same date: the copy already read is used
+  drop(f.id); await ec.estimatingSheet({ fresh: true });
+});

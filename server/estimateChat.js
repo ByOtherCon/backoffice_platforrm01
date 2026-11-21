@@ -22,6 +22,7 @@ import { proposalSpec, proposalDocx, proposalPdf, priceText, defaultTemplate, ch
 import { saveFile, checkFile, sha256 as shaOf, UPLOAD_DIR } from './documents.js';
 import { matchTrades } from './estimating.js';
 import * as folders from './folders.js';
+import * as SP from './sharepoint.js';
 import { cleanName, todayEastern } from '../src/lib/estimating.ts';
 import * as R from '../src/lib/bidrules.ts';
 
@@ -45,8 +46,9 @@ export async function saveInstructions(user, body) {
 export async function readInstructionFile(bytes, filename) {
   const ext = path.extname(String(filename || '')).toLowerCase();
   if (!bytes?.length) throw bad('The file is empty.'); if (bytes.length > 5 * 1024 * 1024) throw bad('That file is over 5 MB. Paste the text instead.');
-  if (['.md', '.txt', '.markdown'].includes(ext)) return { name: filename, text: bytes.toString('utf8').replace(/^\uFEFF/, '') };
-  if (ext !== '.docx') throw bad('Use a text, Markdown (.md) or Word (.docx) file, or paste the text.');
+  if (['.md', '.txt', '.markdown', '.csv'].includes(ext)) return { name: filename, text: bytes.toString('utf8').replace(/^\uFEFF/, '') };
+  if (ext === '.xlsx') { const t = await xlsxText(bytes); if (!t.trim()) throw bad('No text could be read from that Excel file.'); return { name: filename, text: t }; }   // the pricing workbook: every sheet, row by row
+  if (ext !== '.docx') throw bad('Use an Excel (.xlsx), Word (.docx), text, CSV or Markdown (.md) file, or paste the text.');
   const { zipEntries, zipExtract } = await import('./plans.js'), os = await import('node:os'), crypto = await import('node:crypto');
   const tmp = path.join(os.tmpdir(), 'instr-' + crypto.randomBytes(8).toString('hex')), out = tmp + '.xml';
   try {
@@ -86,7 +88,39 @@ How to work here:
 - When something you need is not in the plans or the files, or no plans are attached, say so and ask. Do not guess scope, quantities or prices.
 - Write replies in plain Markdown: short paragraphs, bullet lists, and tables for pricing. Keep them short.`;
 const STYLE = () => read('proposal-style.md');
-export async function systemPrompt() { return `${APP_RULES}\n\n# byOther estimating instructions (the estimating sheet)\n\n${(await getInstructions()).text}\n\n---\n\n${STYLE()}`; }
+// ------------------------------------------------------------------ the estimating sheet kept in SharePoint
+// Whatever is in ByOther / Estimating Sheet (Excel, Word, CSV, text or Markdown) is read and given to the AI with the instructions, so
+// updating the pricing is replacing the file in that folder. The chat page shows each file's name and when it was last changed, so the
+// estimator can see which one is in use. A file is read again only when it changes.
+export const SHEET_FOLDER = 'Estimating Sheet';
+const SHEET_KINDS = ['.xlsx', '.docx', '.csv', '.txt', '.md'], sheetText = new Map(); let sheetSeen = { at: 0, v: null };
+export async function estimatingSheet({ fresh = false } = {}) {
+  if (!SP.configured()) return { connected: false, files: [], problems: [], text: '' };
+  if (!fresh && sheetSeen.v && Date.now() - sheetSeen.at < 60000) return sheetSeen.v;
+  let dir, kids;
+  try { dir = await SP.ensurePath([...SP.settings().root, SHEET_FOLDER]); kids = await SP.listFolder(dir.id); }
+  catch (e) { return { connected: true, files: [], problems: [`The ${SHEET_FOLDER} folder in SharePoint could not be read (${String(e?.message || e).slice(0, 200)}).`], text: '' }; }
+  const files = [], problems = [], parts = [];
+  for (const k of kids.filter((x) => !x.folder).sort((a, b) => a.name.localeCompare(b.name))) {
+    const ext = path.extname(k.name).toLowerCase();
+    if (!SHEET_KINDS.includes(ext)) { if (!/^~\$/.test(k.name)) problems.push(`${k.name} is not read (use Excel, Word, CSV, text or Markdown).`); continue; }
+    if (/^~\$/.test(k.name)) continue;   // the lock file Office leaves while a file is open
+    const tag = `${k.id}|${k.modified}`;
+    try {
+      if (!sheetText.has(tag)) { const { bytes } = await SP.downloadFile(k.id); sheetText.set(tag, ext === '.xlsx' ? await xlsxText(bytes) : ext === '.docx' ? await docxText(bytes) : bytes.toString('utf8').replace(/^﻿/, '')); }
+      const t = sheetText.get(tag); files.push({ name: k.name, modified: k.modified, webUrl: k.webUrl, chars: t.length });
+      parts.push(`## File: ${k.name} (last changed ${k.modified ? todayEastern(new Date(k.modified)) : 'unknown'})\n\`\`\`\n${t}\n\`\`\``);
+    } catch (e) { problems.push(`${k.name} could not be read (${String(e?.message || e).slice(0, 200)}).`); }
+  }
+  let text = parts.join('\n\n'); if (text.length > MAX_SHEET) { problems.push(`The files in ${SHEET_FOLDER} are too large to read in full; only the first ${MAX_SHEET.toLocaleString()} characters are used. Keep only the current sheet in the folder.`); text = text.slice(0, MAX_SHEET); }
+  const v = { connected: true, folderUrl: dir.webUrl, files, problems, text }; sheetSeen = { at: Date.now(), v }; return v;
+}
+const MAX_SHEET = 600000;
+export async function systemPrompt(sheet = null) {
+  const sh = sheet ?? await estimatingSheet();
+  const fromSp = sh.files.length ? `\n\n---\n\n# The current estimating sheet (from the "${SHEET_FOLDER}" folder in SharePoint)\n\nThese are byOther's current prices and rates. Where they differ from the instructions above, use these. When you price, say which file the rate came from.\n\n${sh.text}` : '';
+  return `${APP_RULES}\n\n# byOther estimating instructions (the estimating sheet)\n\n${(await getInstructions()).text}${fromSp}\n\n---\n\n${STYLE()}`;
+}
 
 const LINE = { type: 'object', required: ['text'], properties: { text: { type: 'string', description: 'The words of the line, no bullet character.' },
   level: { type: 'integer', enum: [0, 1, 2, 3], description: '1 the task, 2 its parts, 3 a short qualifier of a level-2 line, 0 a plain line with no bullet.' }, heading: { type: 'boolean', description: 'True for a sub-heading inside the trade (printed bold and underlined).' } } };
@@ -125,6 +159,7 @@ export async function getChat(user, opportunityId, chatId = null) {
   const drafts = cur ? await q('SELECT id, seq, message_id, input, created_at, final_version, final_files, final_at FROM estimate_drafts WHERE chat_id=$1 ORDER BY seq', [cur.id]) : [];
   const waiting = await q('SELECT id, name, purpose, size FROM estimate_attachments WHERE opportunity_id=$1 AND message_id IS NULL AND created_by=$2 ORDER BY created_at', [opportunityId, user.id]);
   return { opportunity: { id: o.id, name: o.name, gc: o.gc_name, proposalId: o.proposal_id }, aiConnected: aiConnected(), model: chatModel(), effort: ESTIMATE_EFFORT, chatId: cur?.id ?? null,
+    sheet: await estimatingSheet().then((x) => ({ connected: x.connected, folderUrl: x.folderUrl ?? null, files: x.files, problems: x.problems })).catch(() => null),
     drafts: drafts.map((d) => draftView(o, d)), attachments: waiting.map((a) => ({ id: a.id, name: a.name, purpose: a.purpose, size: Number(a.size) })), instructions: { label: ins.label, updatedAt: ins.updatedAt, updatedBy: ins.updatedBy, custom: ins.custom }, template: await templateInfo(),
     chats: chats.map((c) => ({ id: c.id, startedAt: c.created_at, messages: c.n })), plans, proposals: proposals.map((p) => ({ id: p.id, name: p.name, version: p.version, at: p.created_at })),
     messages: msgs.map((m) => ({ id: m.id, role: m.role, text: m.body, status: m.status, error: m.error, files: m.files || [], at: m.created_at, who: m.who })), working: msgs.some((m) => m.status === 'working') };
@@ -172,6 +207,7 @@ export async function runTurn(user, o, { chatId, userMessageId, assistantMessage
     const [chat] = await q('SELECT docs FROM estimate_chats WHERE id=$1', [chatId]), [um] = await q('SELECT body FROM estimate_messages WHERE id=$1', [userMessageId]);
     // plans: everything on the lead, sent to the AI service once. New ones since the last message are attached to this message.
     note('Getting the plans ready…');
+    const sheet = await estimatingSheet({ fresh: true });   // the estimating sheet as it is in SharePoint right now
     const prep = await preparePlans(o.id, (s) => note(s)), already = new Set((chat.docs || []).map((d) => d.sha256)), fresh = prep.docs.filter((d) => !already.has(d.sha256));
     const history = await q(`SELECT role, blocks FROM estimate_messages WHERE chat_id=$1 AND status='done' AND blocks IS NOT NULL AND id <> $2 ORDER BY seq`, [chatId, userMessageId]);
     const first = !history.length, parts = [], label = (d) => `${d.name}${d.revision ? ` (revised plans${d.at ? ', added ' + todayEastern(new Date(d.at)) : ''})` : ''}`;
@@ -187,6 +223,7 @@ export async function runTurn(user, o, { chatId, userMessageId, assistantMessage
       first && prep.docs.some((d) => d.revision) ? '[Files marked revised plans are a newer set. When the estimator asks, compare them with the earlier set sheet by sheet and list what changed.]' : null,
       revised.length && !first ? '[These are revised plans. Before anything else, compare them with the earlier set sheet by sheet and list what changed, then ask whether to revise the proposal.]' : null,
       first && !prep.docs.length ? '[No plan PDFs are on this lead yet.]' : null, prep.problems.length ? `[Plan files that could not be attached: ${prep.problems.join(' ')}]` : null,
+      sheet.problems.length ? `[Estimating sheet in SharePoint: ${sheet.problems.join(' ')} Tell the estimator.]` : null,
       attText.length ? `[Files the estimator attached to this message: ${attText.join('; ')}]` : null,
       purposes.has('takeoff') ? '[Use the PlanSwift quantities for pricing; they come before anything read off the plans. Say which quantities you used.]' : null,
       purposes.has('proposal') ? '[Check the attached proposal against the plans and the estimating sheet: list the discrepancies and ask which updates to accept. Do not call preview_proposal until the estimator answers.]' : null,
@@ -197,7 +234,7 @@ export async function runTurn(user, o, { chatId, userMessageId, assistantMessage
 
     const msgs = []; for (const m of history) { if (m.role === 'user') msgs.push({ role: 'user', content: m.blocks }); else msgs.push(...m.blocks); }
     msgs.push({ role: 'user', content: parts });
-    const system = await systemPrompt(), turn = []; let texts = [];
+    const system = await systemPrompt(sheet), turn = []; let texts = [];
     note(prep.docs.length ? 'Reading the plans…' : 'Thinking…');
     for (let step = 0; step < 6; step++) {
       // two cache marks: after the first set of plans (the big, unchanging part) and at the very end of what is sent

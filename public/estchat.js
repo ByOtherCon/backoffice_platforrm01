@@ -176,9 +176,20 @@ export async function estimateChatView(oppId, canWrite) {
     h('div', { class: 'row spread', style: 'flex-wrap:wrap;gap:.5rem' }, h('div', {}, h('a', { href: '#/estimating/' + oppId }, '← Back to the lead'), h('h1', { style: 'margin:.2rem 0 0' }, 'Estimate With AI'), h('p', { class: 'sub', style: 'margin:0' }, [data.opportunity.proposalId, data.opportunity.name, data.opportunity.gc].filter(Boolean).join(' · '))),
       h('div', { class: 'row', style: 'gap:.4rem;flex-wrap:wrap' }, pick, canWrite ? h('button', { class: 'small', type: 'button', onclick: newChat }, 'New Conversation') : '', instr, needs)),
     data.aiConnected ? '' : h('p', { class: 'err' }, 'AI is not connected yet. The owner adds the Anthropic API key on the server; then this works.'),
+    sheetLine(data.sheet),
     h('p', { class: 'muted', style: 'font-size:13px;margin:.4rem 0 0' }, `AI: Claude Opus 5.5, ${data.effort || 'high'} effort · Following: ${data.instructions.label}${data.instructions.updatedAt ? ' · updated ' + when(data.instructions.updatedAt) + (data.instructions.updatedBy ? ' by ' + data.instructions.updatedBy : '') : ''}.`),
     side, list, err,
     chips, h('div', { class: 'chat-compose' }, attach, box, send), h('p', { class: 'muted', style: 'font-size:12px;margin:.3rem 0 0' }, 'Enter sends, Shift+Enter starts a new line. Attach a PlanSwift takeoff, photos, a proposal to check, or revised plans. Every proposal shows as a preview first; the Word and PDF are made when you press Create Final Proposal. The first answer on a full plan set can take a few minutes.'))]);
+}
+
+// The estimating sheet the AI prices from: every file in the Estimating Sheet folder in SharePoint, by name and date, so it is clear which is in use.
+function sheetLine(sh) {
+  if (!sh || !sh.connected) return '';
+  const open = sh.folderUrl ? h('a', { href: sh.folderUrl, target: '_blank', rel: 'noopener' }, 'Open The Estimating Sheet Folder') : '';
+  return h('div', { class: 'muted', style: 'font-size:13px;margin:.2rem 0 0' },
+    sh.files.length ? [h('strong', { style: 'color:var(--ink)' }, 'Pricing from: '), sh.files.map((f, k) => [k ? ' · ' : '', h('a', { href: f.webUrl, target: '_blank', rel: 'noopener' }, f.name), ` (changed ${when(f.modified)})`]), '  ', open]
+      : [h('strong', { class: 'err', style: 'display:inline' }, 'No estimating sheet in SharePoint yet. '), 'Put the current pricing file (Excel) in the Estimating Sheet folder. ', open],
+    sh.problems.length ? h('div', { class: 'err' }, sh.problems.join(' ')) : '');
 }
 
 // Every item the AI could not find in the estimating sheet, from every job, until the owner marks it updated in the sheet.
@@ -199,14 +210,14 @@ async function instructionsModal() {
   const d = await api('GET', '/estimating/instructions'), sup = C.state.user?.role === 'Super Admin', msg = h('div');
   const ta = h('textarea', { rows: 20, style: 'font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px', disabled: sup ? null : true }); ta.value = d.text;
   const label = h('input', { placeholder: 'For example: Estimating 2.42', value: d.custom && d.label !== 'Edited in the app' ? d.label : '', disabled: sup ? null : true });
-  const pick = (append) => { const f = h('input', { type: 'file', accept: '.md,.markdown,.txt,.docx', style: 'display:none', onchange: guard(msg, async () => { const file = f.files[0]; if (!file) return; notice(msg, `Reading ${file.name}…`, 'ok');
+  const pick = (append) => { const f = h('input', { type: 'file', accept: '.xlsx,.docx,.md,.markdown,.txt,.csv', style: 'display:none', onchange: guard(msg, async () => { const file = f.files[0]; if (!file) return; notice(msg, `Reading ${file.name}…`, 'ok');
     const r = await C.uploadFile('/estimating/instructions/file', file); ta.value = append ? `${ta.value.trim()}\n\n---\n\n${r.text}` : r.text; if (!label.value) label.value = file.name.replace(/\.[^.]+$/, '');
     notice(msg, `${file.name} was read (${r.text.length.toLocaleString()} characters) and ${append ? 'added to the end' : 'put in place of the text'}. Look it over, then press Save Instructions. Nothing changes until you save.`, 'ok'); }) }); document.body.append(f); f.click(); setTimeout(() => f.remove(), 60000); };
   const bg = modal('Estimating Instructions', h('div', {},
     h('p', { class: 'muted' }, h('strong', {}, `In use: ${d.label}`), d.updatedAt ? ` · updated ${when(d.updatedAt)}${d.updatedBy ? ' by ' + d.updatedBy : ''}` : '', '. ',
-      sup ? 'The app cannot see your estimating file in Claude chats. When that file changes (new prices or rules), load the new file here or paste it, name the version, and save. Every conversation follows it from the next message on.' : 'Only the owner can change them.'),
+      'Prices: the AI also reads every file in the Estimating Sheet folder in SharePoint (ByOther / Estimating Sheet) with each answer, and uses those prices where they differ from the text below. To change prices, replace the Excel file in that folder; the chat page shows which file is in use. ', sup ? 'For rules that are not in that file, load a file here (Excel, Word, text or Markdown) or paste it, name the version, and save.' : 'Only the owner can change the text below.'),
     sup ? h('div', { class: 'row', style: 'gap:.5rem;flex-wrap:wrap;margin:.4rem 0;align-items:flex-end' }, h('div', { style: 'flex:1;min-width:14rem' }, h('label', {}, 'Version name'), label),
-      h('button', { type: 'button', class: 'small', title: 'Replaces everything in the box with the text of a file (.md, .txt or .docx).', onclick: () => pick(false) }, 'Replace With A File'),
+      h('button', { type: 'button', class: 'small', title: 'Replaces everything in the box with the text of a file (Excel, Word, text or Markdown).', onclick: () => pick(false) }, 'Replace With A File'),
       h('button', { type: 'button', class: 'small', title: 'Keeps what is in the box and adds the text of a file after it, for example a new pricing guide.', onclick: () => pick(true) }, 'Add A File To The End')) : '',
     ta, msg, h('div', { class: 'row', style: 'margin-top:.8rem;justify-content:flex-end;gap:.5rem' }, h('button', { type: 'button', onclick: () => bg.remove() }, 'Close'),
       sup && d.custom ? h('button', { type: 'button', onclick: guard(msg, async () => { if (!confirm('Go back to the original instructions? Your edited text is discarded.')) return; await api('PUT', '/estimating/instructions', { reset: true }); bg.remove(); C.render(); }) }, 'Back To The Original') : '',

@@ -382,3 +382,20 @@ test('a server without the memory to split a very large set does not try: the es
   try { const r = await plans.preparePlans(lead); assert.deepEqual(r.docs, []); assert.equal(uploads.length, n); assert.match(r.problems[0], /^Huge Set\.pdf \(31 MB\) is too large for this server to split for the AI\. Split it into smaller PDFs/); }
   finally { plans.setRoomToSplit(real); }
 });
+
+test('a large set keeps page 1 through the last architectural or structural sheet; the MEP sheets after it are not sent, and the AI is told', async () => {
+  const { PDFDocument, StandardFonts } = await import('pdf-lib');
+  const codes = ['G-001', 'G-002', ...Array.from({ length: 60 }, (_, i) => `A-${100 + i}`), 'ID-1.0', ...Array.from({ length: 20 }, (_, i) => `S-${200 + i}`), ...Array.from({ length: 30 }, (_, i) => `M-${300 + i}`), ...Array.from({ length: 10 }, (_, i) => `P-${400 + i}`), 'E-1.0', 'FP-1.0'];
+  const d = await PDFDocument.create(), f = await d.embedFont(StandardFonts.Helvetica);
+  for (const c of codes) { const p = d.addPage([1224, 792]); p.drawText('SEE A-501 AND S-201 FOR DETAILS', { x: 50, y: 700, size: 9, font: f }); p.drawText(c, { x: 1080, y: 40, size: 26, font: f }); }
+  const bytes = Buffer.from(await d.save()), tmp = path.join(process.env.UPLOAD_DIR, 'sheets.pdf'); fs.writeFileSync(tmp, bytes);
+  const map = await plans.sheetMap(tmp); assert.deepEqual([map[0], map[2], map[62], map[63], map[83], map.at(-1)], ['G-001', 'A-100', 'ID-1.0', 'S-200', 'M-300', 'FP-1.0']); fs.rmSync(tmp);
+  assert.equal(plans.keepThrough(map), 82); assert.equal(plans.keepThrough(['M-1', null]), null);
+  const [{ id: lead }] = await q(`INSERT INTO opportunities(name,gc_name,city,status,source_key) VALUES ('CK Bunnell','GC','Bunnell','Accepted','ckb1') RETURNING id`);
+  assert.equal((await call('POST', `/api/opportunities/${lead}/plans`, bytes, est, 'CK Combined.pdf')).status, 200);
+  const r = await plans.preparePlans(lead);
+  assert.deepEqual(r.docs.map((x) => x.name), ['CK Combined (pages 1-40 of 125).pdf', 'CK Combined (pages 41-80 of 125).pdf', 'CK Combined (pages 81-83 of 125).pdf']);
+  assert.deepEqual(r.notes, ['CK Combined.pdf: pages 1-83 were sent (cover through the architectural and structural sheets); pages 84-125 (MEP, fire protection, specs and anything after) were left out, as byOther\'s rule for large sets says.']);
+  script = [textAnswer('Noted.')]; const x = await call('POST', `/api/opportunities/${lead}/estimate-chat`, { text: 'Read the plans.' }, est); assert.equal(x.status, 200); await settle();
+  assert.match(requests.at(-1).body.messages[0].content.at(-1).text, /\[Large plan sets: CK Combined\.pdf: pages 1-83 were sent .* Mention this to the estimator once\.\]/);
+});

@@ -50,7 +50,7 @@ export function markdown(src) {
 const mb = (n) => (n ? ` (${(n / 1048576).toFixed(n > 10485760 ? 0 : 1)} MB)` : '');
 const when = (d) => new Date(d).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 const STARTERS = ['Read the plans and draft the proposal with a section for each trade in our scope, priced from the estimating sheet.', 'What is in our scope for demolition?', 'List everything that should be flagged before we send a proposal.'];
-const LABEL = { takeoff: 'PlanSwift Takeoff', reference: 'Photo Or Document', proposal: 'Proposal To Check' };
+const LABEL = { takeoff: 'PlanSwift Takeoff', studio: 'Takeoff Studio', reference: 'Photo Or Document', proposal: 'Proposal To Check' };
 const KINDS = { takeoff: ['PlanSwift Takeoff (Excel, CSV or PDF)', '.xlsx,.csv,.pdf,.txt'], reference: ['Photos Or Documents', '.png,.jpg,.jpeg,.pdf,.docx,.xlsx,.csv,.txt'], proposal: ['A Proposal To Check', '.docx,.pdf'], revised: ['Revised Plans (Compare With The Current Set)', '.pdf,.zip'] };
 // prices on a proposal: whole dollars, rounded up; rates in the pricing method can have cents
 const usd0 = (n) => (n === null || n === undefined ? '$_____' : '$' + Math.ceil(Math.round(Number(n) * 100) / 100).toLocaleString('en-US'));
@@ -185,7 +185,7 @@ export async function estimateChatView(oppId, canWrite) {
   drawSide(); draw(false); drawChips(); loadLatest(); if (data.working) poll(); setTimeout(() => { if (data.messages.length) toBottom(); }, 50);
   return C.shell('estimating', [h('div', { class: 'chat-page' },
     h('div', { class: 'row spread', style: 'flex-wrap:wrap;gap:.5rem' }, h('div', {}, h('a', { href: '#/estimating/' + oppId }, '← Back to the lead'), h('h1', { style: 'margin:.2rem 0 0' }, 'Estimate With AI'), h('p', { class: 'sub', style: 'margin:0' }, [data.opportunity.proposalId, data.opportunity.name, data.opportunity.gc].filter(Boolean).join(' · '))),
-      h('div', { class: 'row', style: 'gap:.4rem;flex-wrap:wrap' }, pick, canWrite ? h('button', { class: 'small', type: 'button', onclick: newChat }, 'New Conversation') : '', instr, needs)),
+      h('div', { class: 'row', style: 'gap:.4rem;flex-wrap:wrap' }, h('a', { class: 'btn small', href: `#/estimating/${oppId}/takeoff`, style: 'text-decoration:none' }, 'Takeoff Studio'), pick, canWrite ? h('button', { class: 'small', type: 'button', onclick: newChat }, 'New Conversation') : '', instr, needs)),
     data.aiConnected ? '' : h('p', { class: 'err' }, 'AI is not connected yet. The owner adds the Anthropic API key on the server; then this works.'),
     sheetLine(data.sheet),
     h('p', { class: 'muted', style: 'font-size:13px;margin:.4rem 0 0' }, `AI: Claude Opus 5.5, ${data.effort || 'high'} effort · Following: ${data.instructions.label}${data.instructions.updatedAt ? ' · updated ' + when(data.instructions.updatedAt) + (data.instructions.updatedBy ? ' by ' + data.instructions.updatedBy : '') : ''}.`),

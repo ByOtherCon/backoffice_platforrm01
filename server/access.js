@@ -37,7 +37,7 @@ export const hasLentManage = (user) => lentAreas(user).some((a) => ['projects', 
 
 // Which pages belong to which area. Reading shared lists (trades, GCs and so on) stays open so forms keep working.
 const RULES = [
-  [/^\/api\/(opportunities|opportunity-files|followups|outbox|bids|regions|estimating|takeoff)(\/|$)/, 'estimating'],
+  [/^\/api\/(opportunities|opportunity-files|followups|outbox|bids|regions|estimating|takeoff|takeoff-studio)(\/|$)/, 'estimating'],
   [/^\/api\/settings\/estimating$/, 'estimating'],
   [/^\/api\/quickbooks\/(invoices|costs|sync|settings|review)(\/|$)/, 'billing'],
   [/^\/api\/projects\/[^/]+\/qb-suggestions$/, 'billing'],

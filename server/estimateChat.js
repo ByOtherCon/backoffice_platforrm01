@@ -265,6 +265,7 @@ export async function runTurn(user, o, { chatId, userMessageId, assistantMessage
       sheet.problems.length ? `[Estimating sheet in SharePoint: ${sheet.problems.join(' ')} Tell the estimator.]` : null,
       attText.length ? `[Files the estimator attached to this message: ${attText.join('; ')}]` : null,
       purposes.has('takeoff') ? '[Use the PlanSwift quantities for pricing; they come before anything read off the plans. Say which quantities you used.]' : null,
+      purposes.has('studio') ? '[Use the Takeoff Studio quantities for pricing: the estimator measured them on these plans and chose which lines to send, so they come before anything read off the plans. Price only the trades and lines it lists, keep its split between new and existing walls, and say which quantities you used.]' : null,
       purposes.has('proposal') ? '[Check the attached proposal against the plans and the estimating sheet: list the discrepancies and ask which updates to accept. Do not call preview_proposal until the estimator answers.]' : null,
       ...told.map((d) => `[Since your last answer the estimator made the final proposal from Preview ${d.seq}: version ${d.final_version}${(d.final_files || []).length ? ` (${d.final_files.map((f) => f.name).join(' and ')})` : ''}.]`)].filter(Boolean).join('\n\n');
     parts.push({ type: 'text', text: (pre ? pre + '\n\n' : '') + um.body });
@@ -400,7 +401,7 @@ export async function saveProposal(user, o, chatId, input, { draft = null } = {}
 }
 
 // ------------------------------------------------------------------ files attached to the conversation
-export const PURPOSE = { takeoff: { label: 'PlanSwift takeoff' }, reference: { label: 'Photo or document' }, proposal: { label: 'Proposal to check' } };
+export const PURPOSE = { takeoff: { label: 'PlanSwift takeoff' }, studio: { label: 'Takeoff Studio takeoff' }, reference: { label: 'Photo or document' }, proposal: { label: 'Proposal to check' } };
 const TEXT_KINDS = ['.csv', '.txt', '.xlsx', '.docx'], MAX_TEXT = 400000;
 const unx = (x) => String(x).replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
 const tOf = (x) => unx([...x.matchAll(/<(?:w:)?t(?:\s[^>]*)?>([^<]*)<\/(?:w:)?t>/g)].map((m) => m[1]).join(''));

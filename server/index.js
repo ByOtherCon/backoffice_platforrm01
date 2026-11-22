@@ -25,6 +25,7 @@ import { verifyAddress } from './address.js';
 import * as db from './dashboard.js';
 import * as rp from './reports.js';
 import * as tk from './takeoff.js';
+import * as ts from './takeoffStudio.js';
 import * as bd from './bids.js';
 import * as pw from './passwords.js';
 import * as ct from './contracts.js';
@@ -363,6 +364,25 @@ route('DELETE', '/api/invoice-schedule/:id', async ({ user, params }) => { manag
 route('GET', '/api/projects/:id/origin', async ({ user, params }) => { await auth.requireProject(user, uuid(params.id)); return es.projectOrigin(params.id); });
 route('POST', '/api/opportunities/:id/takeoff', async ({ req, user, params }) => tk.runTakeoff(estWrite(user), uuid(params.id), await readRaw(req), fname(req)), { raw: true });
 route('GET', '/api/opportunities/:id/takeoff', async ({ user, params }) => { estRead(user); return tk.getTakeoff(uuid(params.id)); });
+// Takeoff Studio (inside Estimate With AI): the measured takeoff on a lead, the lead's plan PDFs for it to draw, Claude's drafts, the rules it
+// follows, and the handoff of the report to the estimating chat. The takeoff and Claude's questions can be larger than an ordinary form.
+route('GET', '/api/opportunities/:id/takeoff-studio', async ({ user, params }) => { estRead(user); return ts.getStudio(uuid(params.id)); });
+route('PUT', '/api/opportunities/:id/takeoff-studio', async ({ req, user, params }) => ts.saveStudio(estWrite(user), uuid(params.id), await readJson(req, 5 * 1024 * 1024)), { raw: true });
+route('GET', '/api/opportunities/:id/takeoff-studio/plans', async ({ user, params }) => { estRead(user); return ts.planList(uuid(params.id)); });
+route('GET', '/api/opportunities/:id/takeoff-studio/plan-pages', async ({ req, user, params }) => { estRead(user); return ts.planPages(uuid(params.id), q1(req, 'key')); });
+route('GET', '/api/opportunities/:id/takeoff-studio/plan-file', async ({ req, res, user, params }) => {
+  estRead(user); const f = await ts.planFile(uuid(params.id), q1(req, 'key'));
+  res.writeHead(200, fileHead({ mime: 'application/pdf', name: f.name })); const s = fs.createReadStream(f.file);
+  s.on('close', () => f.done()); s.on('error', () => res.destroy()); s.pipe(res); return 'sent';
+});
+route('POST', '/api/opportunities/:id/takeoff-studio/ask', async ({ req, user, params }) => ts.ask(estWrite(user), uuid(params.id), await readJson(req, 25 * 1024 * 1024)), { raw: true });
+route('POST', '/api/opportunities/:id/takeoff-studio/send', async ({ user, params, body }) => ts.sendToChat(estWrite(user), uuid(params.id), body));
+route('GET', '/api/opportunities/:id/takeoff-studio/rules', async ({ user, params }) => { estRead(user); return { rules: await ts.listRules(uuid(params.id)) }; });
+route('POST', '/api/opportunities/:id/takeoff-studio/rules', async ({ user, params, body }) => ts.addRule(estWrite(user), uuid(params.id), body));
+route('PUT', '/api/opportunities/:id/takeoff-studio/rules/:rid', async ({ user, params, body }) => { estWrite(user); return ts.setRuleScope(uuid(params.id), uuid(params.rid), body.scope); });
+route('DELETE', '/api/opportunities/:id/takeoff-studio/rules/:rid', async ({ user, params }) => { estWrite(user); return ts.deleteRule(uuid(params.rid)); });
+route('GET', '/api/takeoff-studio/library', async ({ user }) => { estRead(user); return ts.getLibrary(); });
+route('PUT', '/api/takeoff-studio/library', async ({ user, body }) => { estWrite(user); return ts.saveLibrary(body); });
 // Estimating with AI: the conversation on a lead. Sending a message returns at once; the answer is written in the background and read by asking again.
 route('GET', '/api/opportunities/:id/estimate-chat', async ({ req, user, params }) => { const c = q1(req, 'chat'); return ec.getChat(estRead(user), uuid(params.id), c ? uuid(c) : null); });
 route('POST', '/api/opportunities/:id/estimate-chat', async ({ user, params, body }) => ec.postMessage(estWrite(user), uuid(params.id), { text: body.text, chatId: body.chatId ? uuid(body.chatId) : null, newChat: !!body.newChat, attachments: Array.isArray(body.attachments) ? body.attachments.map(uuid) : [] }));
@@ -483,6 +503,8 @@ function serveStatic(req, res) {
   let rel; try { rel = decodeURIComponent(new URL(req.url, 'http://x').pathname); } catch { res.writeHead(400, SEC); return res.end('Bad request'); }
   if (rel === '/') rel = '/index.html';
   if (rel === '/clock') rel = '/clock.html';
+  // pdf.js for Takeoff Studio, served from the app itself (the page may only load scripts from this site)
+  if (rel === '/vendor/pdf.mjs' || rel === '/vendor/pdf.worker.mjs') { const f = path.join(PUBLIC, '..', 'node_modules', 'pdfjs-dist', 'build', rel === '/vendor/pdf.mjs' ? 'pdf.min.mjs' : 'pdf.worker.min.mjs'); res.writeHead(200, { ...SEC, 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'public, max-age=86400' }); return fs.createReadStream(f).on('error', () => res.destroy()).pipe(res); }
   if (rel === '/terms') rel = '/terms.html';       // public pages Intuit asks for when an app goes live
   if (rel === '/privacy') rel = '/privacy.html';
   const file = path.normalize(path.join(PUBLIC, rel));

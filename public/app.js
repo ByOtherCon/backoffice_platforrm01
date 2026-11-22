@@ -423,6 +423,39 @@ function pie(slices) {
 }
 const legend = (slices) => h('div', {}, slices.map((s) => h('div', { class: 'row', style: 'gap:.5rem;margin:.25rem 0' }, h('span', { style: `width:12px;height:12px;border-radius:3px;background:${s.color};display:inline-block` }), h('span', {}, s.label), h('strong', { style: 'margin-left:auto;padding-left:1.5rem' }, usd(s.value)))));
 
+// ------------------------------------------------------------------ tracking numbers on purchases
+// A package's status as a pill: delivered green, a problem red, anything else amber.
+const shipPill = (s) => h('span', { class: 'pill ' + (s.status === 'Delivered' ? 'Approved' : /^Problem|Cancelled/.test(s.status) ? 'Rejected' : s.status === 'Not checked' ? '' : 'Pending') }, s.status);
+const shipWhen = (s) => (s.deliveredAt ? 'Delivered ' + new Date(s.deliveredAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : s.estDelivery ? 'Expected ' + new Date(s.estDelivery + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '');
+const shipNumber = (s) => h('span', {}, s.link ? h('a', { href: s.link, target: '_blank', rel: 'noopener' }, s.number) : s.number, s.carrier ? h('span', { class: 'muted' }, ' · ' + s.carrier) : '');
+const NOT_CONNECTED = 'The tracking service is not connected yet, so delivery alerts are off. The numbers are kept and open on the carrier\'s site. To turn alerts on, the owner adds the EasyPost key (EASYPOST_API_KEY) on Render.';
+// Adds tracking numbers to a vendor invoice or receipt (or to a project). Several can be typed, one per line.
+const addTracking = async (where, numbers, description = '') => (String(numbers || '').trim() ? api('POST', '/shipments', { ...where, numbers, description }) : null);
+const trackingField = () => h('textarea', { rows: 2, placeholder: 'Optional. One per line, or separated by commas: UPS 1Z…, FedEx, USPS, DHL…' });
+// The tracking numbers on one vendor invoice or receipt: add more, check one now, remove one.
+async function trackingModal(invoiceId, title, after = () => {}) {
+  const err = h('div'), list = h('div'), nums = trackingField();
+  const draw = async () => { const d = await api('GET', `/supplier-invoices/${invoiceId}/shipments`);
+    list.replaceChildren(d.connected ? '' : h('p', { class: 'muted', style: 'font-size:13px' }, NOT_CONNECTED), d.shipments.length ? h('table', { class: 'nostack' }, h('tbody', {}, d.shipments.map((s) => h('tr', {}, h('td', {}, shipNumber(s)), h('td', {}, shipPill(s), s.detail ? h('div', { class: 'muted', style: 'font-size:12px' }, s.detail) : ''), h('td', { class: 'muted', style: 'font-size:13px' }, shipWhen(s)),
+      h('td', {}, d.connected ? h('button', { class: 'small', type: 'button', onclick: guard(err, async () => { await api('POST', `/shipments/${s.id}/check`); await draw(); }) }, 'Check Now') : '', ' ', h('button', { class: 'small danger', type: 'button', onclick: guard(err, async () => { if (!confirm(`Remove tracking number ${s.number}?`)) return; await api('DELETE', `/shipments/${s.id}`); await draw(); }) }, 'Remove')))))) : h('p', { class: 'muted' }, 'No tracking numbers yet.')); };
+  await draw();
+  const bg = modal(`Tracking: ${title}`, h('div', {}, list, h('label', { style: 'margin-top:.8rem' }, 'Add Tracking Numbers'), nums, err,
+    h('div', { class: 'row', style: 'justify-content:flex-end;gap:.5rem;margin-top:.6rem' }, h('button', { type: 'button', onclick: () => { bg.remove(); after(); } }, 'Close'), h('button', { class: 'primary', type: 'button', onclick: guard(err, async () => { await addTracking({ supplierInvoiceId: invoiceId }, nums.value); nums.value = ''; await draw(); }) }, 'Add'))));
+}
+// The project's packages, on Costs & Payables: every tracking number on its vendor invoices and any added to the project directly.
+async function deliveriesCard(p, canAdd, reload) {
+  const d = await api('GET', `/projects/${p.project.id}/shipments`), err = h('div');
+  const addToProject = () => { const nums = trackingField(), desc = h('input', { placeholder: 'What it is, for example: Doors from Masonite' });
+    formModal('Add A Tracking Number', [field('Tracking Numbers', nums, 'wide'), field('What Is Being Delivered', desc, 'wide'), h('p', { class: 'muted wide', style: 'margin:0;font-size:13px' }, 'For a purchase entered as a vendor invoice, use the Tracking button on the invoice instead, so the package is tied to it.')],
+      async () => { await addTracking({ projectId: p.project.id }, nums.value, desc.value); reload(); }, 'Add'); };
+  return h('div', { class: 'card' }, h('div', { class: 'row spread' }, h('h2', {}, `Deliveries${d.shipments.length ? ` (${d.shipments.filter((s) => !s.deliveredAt).length} on the way)` : ''}`), canAdd ? h('button', { class: 'primary', onclick: addToProject }, '+ Tracking Number') : ''),
+    h('p', { class: 'muted', style: 'margin:0 0 .4rem;font-size:13px' }, d.connected ? 'Checked every hour. When a package is delivered, ready for pickup, or has a problem, the project\'s managers and the office get an alert that opens this project.' : NOT_CONNECTED), err,
+    d.shipments.length ? h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, ['Purchase', 'Tracking #', 'Status', 'When', ''].map((t) => h('th', {}, t)))),
+      h('tbody', {}, d.shipments.map((s) => h('tr', {}, h('td', { style: 'white-space:normal' }, s.vendor ? [s.vendor, s.reference ? ' #' + s.reference : '', s.description ? h('div', { class: 'muted', style: 'font-size:12px' }, s.description) : ''] : s.description || '—'),
+        h('td', {}, shipNumber(s)), h('td', {}, shipPill(s), s.detail ? h('div', { class: 'muted', style: 'font-size:12px' }, s.detail) : ''), h('td', { class: 'muted', style: 'font-size:13px' }, shipWhen(s)),
+        h('td', {}, canAdd && d.connected && !s.deliveredAt ? h('button', { class: 'small', onclick: guard(err, async () => { await api('POST', `/shipments/${s.id}/check`); reload(); }) }, 'Check Now') : '', ' ', canAdd ? h('button', { class: 'small danger', onclick: guard(err, async () => { if (confirm(`Remove tracking number ${s.number}?`)) { await api('DELETE', `/shipments/${s.id}`); reload(); } }) }, 'Remove') : '')))))) : h('p', { class: 'muted' }, 'No tracking numbers on this project yet. Add them when you enter a vendor invoice or receipt, or later with the Tracking button on the invoice.'));
+}
+
 // ------------------------------------------------------------------ progress billing
 // Notes on the billing: newest first, with who wrote them and when. The writer (or an admin) can edit or remove a note.
 async function billingNotesCard(pid) {
@@ -615,9 +648,9 @@ async function costsTab(p, canEdit, reload) {
     const lines = h('div'); const addLine = () => { const sel = tradeSelect(p, { project: true }), amt = num('', { placeholder: 'Amount' }); const row = h('div', { class: 'trade-row' }, sel, amt, h('button', { class: 'small', type: 'button', onclick: () => row.remove() }, 'Remove')); row._get = () => ({ projectId: p.project.id, projectTradeId: sel.value || null, amount: amt.value }); lines.append(row); }; addLine();
     const paid = h('input', { type: 'checkbox' }), paidDate = h('input', { type: 'date', value: todayStr() }); paidDate.parentElement; const paidBox = h('div', { style: 'display:none' }, field('Date Paid', paidDate)); paid.onchange = () => { paidBox.style.display = paid.checked ? '' : 'none'; };
     const f = { sup: h('select', {}, h('option', { value: '' }, 'Choose vendor…'), sups.filter((s) => !s.one_time).map((s) => h('option', { value: s.id }, s.name))), newSup: h('input', { placeholder: 'Or type a new vendor' }), ref: h('input'), date: h('input', { type: 'date', value: todayStr() }), total: num(), desc: h('input', { placeholder: 'What was bought (for example: drywall screws and 2 boxes of mud)' }) };
-    const keepVendor = vendorKeepChoice(f.sup, f.newSup);
-    formModal('Vendor invoice', [field('Vendor (from Admin)', f.sup), field('…or a new vendor', f.newSup), keepVendor.el, field('Invoice #', f.ref), field('Invoice date', f.date), field('Invoice total', f.total), field('Description Of The Purchase', f.desc, 'wide'), h('label', { class: 'wide', style: 'text-transform:none;letter-spacing:0;font-weight:400;display:flex;gap:.5rem;align-items:center' }, paid, 'Already paid (a website purchase or card charge)'), h('div', { class: 'wide' }, paidBox), field('Allocate to trades (must add up to the total)', h('div', {}, lines, h('button', { class: 'small', type: 'button', onclick: addLine }, '+ Split to another trade')), 'wide')],
-      async () => { await api('POST', '/supplier-invoices', { supplierId: f.sup.value || undefined, supplierName: f.newSup.value, saveVendor: keepVendor.save(), reference: f.ref.value, description: f.desc.value, paid: paid.checked, paidDate: paidDate.value, date: f.date.value, total: f.total.value, allocations: [...lines.children].map((r) => r._get()) }); reload(); }, 'Add invoice');
+    const keepVendor = vendorKeepChoice(f.sup, f.newSup), track = trackingField();
+    formModal('Vendor invoice', [field('Vendor (from Admin)', f.sup), field('…or a new vendor', f.newSup), keepVendor.el, field('Invoice #', f.ref), field('Invoice date', f.date), field('Invoice total', f.total), field('Description Of The Purchase', f.desc, 'wide'), field('Tracking Numbers', track, 'wide'), h('label', { class: 'wide', style: 'text-transform:none;letter-spacing:0;font-weight:400;display:flex;gap:.5rem;align-items:center' }, paid, 'Already paid (a website purchase or card charge)'), h('div', { class: 'wide' }, paidBox), field('Allocate to trades (must add up to the total)', h('div', {}, lines, h('button', { class: 'small', type: 'button', onclick: addLine }, '+ Split to another trade')), 'wide')],
+      async () => { const made = await api('POST', '/supplier-invoices', { supplierId: f.sup.value || undefined, supplierName: f.newSup.value, saveVendor: keepVendor.save(), reference: f.ref.value, description: f.desc.value, paid: paid.checked, paidDate: paidDate.value, date: f.date.value, total: f.total.value, allocations: [...lines.children].map((r) => r._get()) }); await addTracking({ supplierInvoiceId: made.id }, track.value, f.desc.value); reload(); }, 'Add invoice');
   };
   const paySupplier = (s) => {
     const f = { date: h('input', { type: 'date', value: todayStr() }), amount: num('', { placeholder: `Invoice total ${usd(s.invoiceTotal)}` }) };
@@ -626,7 +659,7 @@ async function costsTab(p, canEdit, reload) {
   const suppliers = h('div', { class: 'card' }, h('div', { class: 'row spread' }, h('h2', {}, '2. Vendors (materials, lodging, equipment, purchases)'), canEdit && h('button', { class: 'primary', onclick: guard(err, addSupplier) }, '+ Vendor invoice')),
     c.suppliers.length ? h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, th('Trade'), th('Vendor'), th('Invoice'), th('Date'), th('Allocated', 1), th('Paid', 1), th('Balance', 1), canEdit && th(''))),
       h('tbody', {}, c.suppliers.map((s) => h('tr', {}, h('td', {}, s.trade || 'Project-level'), h('td', {}, s.supplier), h('td', { style: 'white-space:normal' }, s.reference, s.description ? h('div', { class: 'muted', style: 'font-size:12px' }, s.description) : ''), h('td', {}, s.date || '—'), h('td', { class: 'n' }, usd(s.amount)), h('td', { class: 'n' }, usd(s.paid)), h('td', { class: 'n' }, usd(s.balance)),
-        canEdit && h('td', {}, h('button', { class: 'small', onclick: () => paySupplier(s) }, 'Pay'), ' ', h('button', { class: 'small danger', onclick: guard(err, async () => { if (confirm(`Delete invoice ${s.reference} (all of its allocations, on every project)?`)) { await api('DELETE', `/supplier-invoices/${s.invoiceId}`); reload(); } }) }, 'Delete'))))))) : h('p', { class: 'muted' }, 'No vendor invoices yet.'));
+        canEdit && h('td', {}, h('button', { class: 'small', onclick: () => paySupplier(s) }, 'Pay'), ' ', h('button', { class: 'small', onclick: guard(err, () => trackingModal(s.invoiceId, `${s.supplier} ${s.reference}`, reload)) }, 'Tracking'), ' ', h('button', { class: 'small danger', onclick: guard(err, async () => { if (confirm(`Delete invoice ${s.reference} (all of its allocations, on every project)?`)) { await api('DELETE', `/supplier-invoices/${s.invoiceId}`); reload(); } }) }, 'Delete'))))))) : h('p', { class: 'muted' }, 'No vendor invoices yet.'));
 
   const labor = h('div', { class: 'card' }, h('h2', {}, '3. Labor (1099 crew, from the time clock)'), h('p', { class: 'muted' }, 'Hours and pay come from the time clock.'),
     c.labor.length ? h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, th('Trade'), th('Employee'), th('Hours', 1), th('Pay', 1))), h('tbody', {}, c.labor.map((l) => h('tr', {}, h('td', {}, l.trade || 'Project-level'), h('td', {}, l.employee), h('td', { class: 'n' }, l.hours.toFixed(2)), h('td', { class: 'n' }, l.pay == null ? '—' : usd(l.pay))))))) : h('p', { class: 'muted' }, 'No labor posted yet.'));
@@ -645,7 +678,7 @@ async function costsTab(p, canEdit, reload) {
     h('p', { class: 'muted', style: 'margin:0 0 .4rem;font-size:13px' }, '"Still Owed" for subcontractors is their whole contract minus what we have paid, whether or not they have invoiced us yet. For vendors it is invoices not paid yet. "Total Cost" counts the full subcontracts, vendor invoices and labor.'),
     h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, th('Trade'), th('Sub Contracts', 1), th('Sub Invoiced', 1, 'lo'), th('Sub Paid', 1, 'lo'), th('Sub Still Owed', 1), th('Vendor Invoiced', 1), th('Vendor Paid', 1, 'lo'), th('Vendor Still Owed', 1), th('Labor Cost', 1), th('Total Cost', 1), th('Total Still Owed', 1))),
       h('tbody', {}, sumRows.map((r) => h('tr', {}, sc(r)))), h('tfoot', {}, h('tr', { class: 'total' }, sc(tot))))));
-  return h('div', {}, err, tally, toReceipts, vendors, suppliers, labor);
+  return h('div', {}, err, tally, toReceipts, vendors, suppliers, await deliveriesCard(p, canEdit || state.user.role === 'Project Manager', reload), labor);
 }
 
 
@@ -885,12 +918,14 @@ function receiptReview(res, opts, done) {
     lines.append(row);
   };
   parsed.lines.forEach(addLine);
+  const rTrack = trackingField();
   const warn = (parsed.warnings || []).concat(res.aiError ? [res.aiError] : []);
   formModal(res.parsed ? 'Review receipt' : 'Enter receipt', [
     ...(warn.length ? [h('div', { class: 'err wide' }, warn.map((w) => h('div', {}, w)))] : []),
     field('Vendor', sup), field('…or new vendor', newSup), keepVendor.el, field('Receipt / invoice #', f.ref), field('Date', f.date), field('Tax', f.tax), field('', h('label', { style: 'text-transform:none;letter-spacing:0;font-size:15px;font-weight:400' }, f.paid, ' Paid at purchase')),
+    field('Tracking Numbers', rTrack, 'wide'),
     field('Lines: what it was, and where it goes (tax is shared across the lines)', h('div', {}, lines, h('button', { class: 'small', type: 'button', onclick: () => addLine({}) }, '+ Add line')), 'wide')],
-  async () => { await api('POST', '/receipts', { supplierId: sup.value || undefined, supplierName: newSup.value, saveVendor: keepVendor.save(), reference: f.ref.value, date: f.date.value, tax: f.tax.value, paid: f.paid.checked, documentId: res.documentId, source: res.parsed ? 'AI' : 'Manual', total: parsed.total ?? undefined, lines: [...lines.children].map((r) => r._get()) }); done(); }, 'Save receipt');
+  async () => { const made = await api('POST', '/receipts', { supplierId: sup.value || undefined, supplierName: newSup.value, saveVendor: keepVendor.save(), reference: f.ref.value, date: f.date.value, tax: f.tax.value, paid: f.paid.checked, documentId: res.documentId, source: res.parsed ? 'AI' : 'Manual', total: parsed.total ?? undefined, lines: [...lines.children].map((r) => r._get()) }); await addTracking({ supplierInvoiceId: made.id }, rTrack.value); done(); }, 'Save receipt');
 }
 async function receiptsView() {
   const [list, opts, use] = await Promise.all([api('GET', '/receipts'), Promise.all([api('GET', '/trade-options'), api('GET', '/admin/suppliers')]).then(([projects, suppliers]) => ({ projects, suppliers: suppliers.filter((s) => !s.archived) })), api('GET', '/ai/usage')]);
@@ -902,7 +937,7 @@ async function receiptsView() {
     h('div', { class: 'card' }, list.length ? h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, th('Date'), th('Vendor'), th('Invoice #'), th('Where it went'), th('Total', 1), th('Paid', 1), th(''))),
       h('tbody', {}, list.map((r) => h('tr', {}, h('td', {}, r.invoice_date || '—'), h('td', {}, r.supplier, r.source === 'AI' ? h('span', { class: 'pill', style: 'margin-left:.4rem' }, 'Read by AI') : ''), h('td', {}, r.reference.startsWith('NO-NUMBER') ? '—' : r.reference),
         h('td', { style: 'white-space:normal' }, (r.lines || []).map((l) => `${l.description || l.kind || 'Item'} → ${l.overhead ? 'Overhead: ' + l.overhead : l.project + (l.trade ? ' / ' + l.trade : '')} ${usd(l.amount)}`).join('  ·  ')), h('td', { class: 'n' }, usd(r.total)), h('td', { class: 'n' }, usd(r.paid)),
-        h('td', {}, r.document_id ? h('a', { href: `/api/documents/${r.document_id}/file`, target: '_blank', rel: 'noopener' }, 'Receipt') : '', ' ', h('button', { class: 'small danger', onclick: guard(err, async () => { if (confirm(`Delete ${r.supplier} ${r.reference}?`)) { await api('DELETE', `/supplier-invoices/${r.id}`); render(); } }) }, 'Delete'))))))) : h('p', { class: 'muted' }, 'No receipts yet.'))]);
+        h('td', {}, r.document_id ? h('a', { href: `/api/documents/${r.document_id}/file`, target: '_blank', rel: 'noopener' }, 'Receipt') : '', ' ', h('button', { class: 'small', onclick: guard(err, () => trackingModal(r.id, `${r.supplier} ${r.reference.startsWith('NO-NUMBER') ? '' : r.reference}`.trim(), render)) }, r.shipments ? `Tracking (${r.shipments})` : 'Tracking'), ' ', h('button', { class: 'small danger', onclick: guard(err, async () => { if (confirm(`Delete ${r.supplier} ${r.reference}?`)) { await api('DELETE', `/supplier-invoices/${r.id}`); render(); } }) }, 'Delete'))))))) : h('p', { class: 'muted' }, 'No receipts yet.'))]);
 }
 async function overheadCard() {
   const o = await api('GET', '/overhead'); const err = h('div'); const th = (t, n) => h('th', { class: n ? 'n' : '' }, t); const sup = isSuper();

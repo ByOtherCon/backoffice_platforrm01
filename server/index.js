@@ -8,6 +8,7 @@ import * as auth from './auth.js';
 import * as admin from './admin.js';
 import * as pj from './projectApi.js';
 import * as bl from './billingApi.js';
+import * as track from './tracking.js';
 import * as tc from './timeclock.js';
 import * as cp from './compliance.js';
 import * as ap from './approvals.js';
@@ -146,6 +147,13 @@ route('POST', '/api/projects/:id/sub-bills/:bid/payment-requests', async ({ user
 route('DELETE', '/api/projects/:id/sub-payments/:pid', async ({ user, params }) => { await bl.deleteSubPayment(write(user, params), uuid(params.pid)); return { ok: true }; });
 route('POST', '/api/supplier-invoices', async ({ user, body }) => { manage(user); return bl.addSupplierInvoice(body); });
 route('DELETE', '/api/supplier-invoices/:id', async ({ user, params }) => { manage(user); await bl.deleteSupplierInvoice(uuid(params.id)); return { ok: true }; });
+// tracking numbers on purchases: delivery alerts to the project (the office, or a project manager on the job)
+const shipper = (u) => { auth.requireRole(u, [...auth.MANAGE, 'Project Manager']); return u; };
+route('GET', '/api/projects/:id/shipments', async ({ user, params }) => track.projectShipments(uuid(await view(user, params))));
+route('GET', '/api/supplier-invoices/:id/shipments', async ({ user, params }) => track.invoiceShipments(shipper(user), uuid(params.id)));
+route('POST', '/api/shipments', async ({ user, body }) => track.addShipments(shipper(user), { ...body, supplierInvoiceId: body.supplierInvoiceId ? uuid(body.supplierInvoiceId) : null, projectId: body.projectId ? uuid(body.projectId) : null }));
+route('POST', '/api/shipments/:id/check', async ({ user, params }) => track.checkOne(shipper(user), uuid(params.id)));
+route('DELETE', '/api/shipments/:id', async ({ user, params }) => track.removeShipment(shipper(user), uuid(params.id)));
 route('POST', '/api/supplier-invoices/:id/payments', async ({ user, params, body }) => { manage(user); await bl.addSupplierPayment(uuid(params.id), body); return { ok: true }; });
 
 // Time clock. Employees sign in with a PIN (separate from office logins); the office sees and corrects entries.
@@ -521,7 +529,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const port = Number(process.env.PORT) || 3000;
   if (!process.env.DATABASE_URL) { console.error('DATABASE_URL is not set.'); process.exit(1); }
   bootstrapOwner().then((r) => console.log(r.created ? `Created the owner login for ${r.email}. Remove ADMIN_PASSWORD from the host settings now.` : r.reason.startsWith('Set ') ? r.reason : 'Owner login already set up.')).catch((e) => console.error('bootstrap failed', e.message));
-  server.listen(port, () => { console.log(`by Other Desk Platform on port ${port}`); bd.startScheduler(); sms.startScheduler(); esign.startScheduler(); bd.retierOnce().catch((e) => console.error('retier', e.message)); dc.backfillHashes().then((n) => n && console.log(`Fingerprinted ${n} saved file${n === 1 ? '' : 's'}.`)).catch((e) => console.error('fingerprint', e.message)); tc.ensureDefaultPins().then((n) => n && console.log(`Gave ${n} employee${n === 1 ? '' : 's'} the automatic time clock PIN (last 4 of the phone, else 0000).`)).catch((e) => console.error('default PINs', e.message)); setTimeout(() => folders.syncGcs(), 20000); setInterval(() => folders.syncGcs(), 3600000); setInterval(() => { qbo.status().then((st) => st.connected && st.connectedEnvironment === st.environment ? qbi.sync().then(() => qbc.sync()) : null).catch((e) => console.error('QuickBooks sync', e.message)); }, 3600000); setInterval(() => fu.closeDueCases().catch((e) => console.error('follow-up sweep', e.message)), 3600000); });
+  server.listen(port, () => { console.log(`by Other Desk Platform on port ${port}`); bd.startScheduler(); sms.startScheduler(); track.startScheduler(); esign.startScheduler(); bd.retierOnce().catch((e) => console.error('retier', e.message)); dc.backfillHashes().then((n) => n && console.log(`Fingerprinted ${n} saved file${n === 1 ? '' : 's'}.`)).catch((e) => console.error('fingerprint', e.message)); tc.ensureDefaultPins().then((n) => n && console.log(`Gave ${n} employee${n === 1 ? '' : 's'} the automatic time clock PIN (last 4 of the phone, else 0000).`)).catch((e) => console.error('default PINs', e.message)); setTimeout(() => folders.syncGcs(), 20000); setInterval(() => folders.syncGcs(), 3600000); setInterval(() => { qbo.status().then((st) => st.connected && st.connectedEnvironment === st.environment ? qbi.sync().then(() => qbc.sync()) : null).catch((e) => console.error('QuickBooks sync', e.message)); }, 3600000); setInterval(() => fu.closeDueCases().catch((e) => console.error('follow-up sweep', e.message)), 3600000); });
   const watch = () => cp.scan().then(() => cp.scanNtos()).then(() => cp.retryAlerts()).then(() => cp.sendQueued()).then(() => cp.purgeOld()).catch((e) => console.error('compliance scan failed', e.message));
   setTimeout(watch, 15_000); setInterval(watch, 6 * 3600_000);
 }

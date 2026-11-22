@@ -66,6 +66,7 @@ export async function createReceipt(user, b, outer = null) {
 }
 export const listReceipts = () => q(`SELECT si.id, si.reference, si.invoice_date, si.total, si.tax, si.source, s.name AS supplier, si.document_id,
     COALESCE((SELECT SUM(amount) FROM supplier_payments WHERE supplier_invoice_id=si.id),0) AS paid,
+    (SELECT count(*)::int FROM shipments WHERE supplier_invoice_id=si.id) AS shipments,
     (SELECT json_agg(json_build_object('description', sa.description, 'amount', sa.amount, 'kind', sa.item_kind, 'project', p.name, 'trade', t.name, 'overhead', sa.overhead_category) ORDER BY sa.seq)
        FROM supplier_allocations sa LEFT JOIN projects p ON p.id=sa.project_id LEFT JOIN project_trades pt ON pt.id=sa.project_trade_id LEFT JOIN trades t ON t.id=pt.trade_id WHERE sa.supplier_invoice_id=si.id) AS lines
   FROM supplier_invoices si JOIN suppliers s ON s.id=si.supplier_id ORDER BY si.invoice_date DESC NULLS LAST, si.reference LIMIT 200`);

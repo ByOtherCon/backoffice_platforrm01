@@ -188,13 +188,14 @@ export async function getCosts(projectId, { rates = false } = {}) {
       remaining: Math.max(0, r2(s.contract_amount - invoiced)), scope: s.scope ?? null, holdAmount: s.hold_amount, holdReason: s.hold_reason, holdReleased: s.hold_released, held, availableToPay: r2(invoiced - paid - held), materialsIncluded: s.materials_included, bills: mine, compliance: { status: comp.get(s.subcontractor_id)?.status, canPay: comp.get(s.subcontractor_id)?.canPay, verified: !!comp.get(s.subcontractor_id)?.verified, reasons: comp.get(s.subcontractor_id)?.blockers ?? [] } };
   });
   const sup = await q(`SELECT sa.id AS alloc_id, sa.amount, sa.project_trade_id, t.name AS trade, si.id AS invoice_id, si.reference, si.description, si.invoice_date, si.total, s.name AS supplier,
-                         COALESCE((SELECT SUM(amount) FROM supplier_payments WHERE supplier_invoice_id=si.id),0) paid_total
+                         COALESCE((SELECT SUM(amount) FROM supplier_payments WHERE supplier_invoice_id=si.id),0) paid_total,
+                         (SELECT count(*)::int FROM shipments WHERE supplier_invoice_id=si.id) AS ship_n, (SELECT count(*)::int FROM shipments WHERE supplier_invoice_id=si.id AND delivered_at IS NOT NULL) AS ship_done
                        FROM supplier_allocations sa JOIN supplier_invoices si ON si.id=sa.supplier_invoice_id JOIN suppliers s ON s.id=si.supplier_id
                        LEFT JOIN project_trades pt ON pt.id=sa.project_trade_id LEFT JOIN trades t ON t.id=pt.trade_id
                        WHERE sa.project_id=$1 ORDER BY t.name NULLS LAST, si.invoice_date, si.reference`, [projectId]);
   const suppliers = sup.map((r) => {
     const paid = r.total > 0 ? toDollars(Math.round((toCents(r.amount) * toCents(r.paid_total)) / toCents(r.total))) : 0;
-    return { allocId: r.alloc_id, invoiceId: r.invoice_id, supplier: r.supplier, reference: r.reference, description: r.description, date: r.invoice_date, trade: r.trade, projectTradeId: r.project_trade_id, amount: r.amount, paid, balance: r2(r.amount - paid), invoiceTotal: r.total };
+    return { allocId: r.alloc_id, invoiceId: r.invoice_id, supplier: r.supplier, reference: r.reference, description: r.description, date: r.invoice_date, trade: r.trade, projectTradeId: r.project_trade_id, amount: r.amount, paid, balance: r2(r.amount - paid), invoiceTotal: r.total, shipments: { n: r.ship_n, delivered: r.ship_done } };
   });
   const lab = await q(`SELECT t.name AS trade, e.name AS employee, SUM(l.hours) hours, SUM(COALESCE(l.pay, ROUND(l.hours*l.rate,2))) pay FROM labor_entries l JOIN employees e ON e.id=l.employee_id
                        LEFT JOIN project_trades pt ON pt.id=l.project_trade_id LEFT JOIN trades t ON t.id=pt.trade_id WHERE l.project_id=$1 GROUP BY t.name, e.name ORDER BY t.name NULLS LAST, e.name`, [projectId]);

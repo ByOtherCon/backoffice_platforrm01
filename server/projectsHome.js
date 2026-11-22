@@ -51,7 +51,18 @@ export async function projectsHome(user, manageAll, yearArg) {
   for (const s of sched) { const r = rows.find((x) => x.id === s.project_id); if (!r || !r.active) continue; const late = s.d < today;
     alerts.push({ severity: late ? 'medium' : 'info', kind: 'schedule', title: `${late ? 'Invoice Past Its Expected Date' : 'Invoice Expected Soon'}: ${r.name}`, detail: `${s.label}${s.amount != null ? ' · ' + money(s.amount) : ''} · expected ${s.d}`, date: s.d, link: link(r.id, 'contract'), projectId: r.id }); }
   alerts.sort((a, b) => sev[a.severity] - sev[b.severity] || String(a.date || '9').localeCompare(String(b.date || '9')));
-  for (const a of alerts) a.key = alertKey(a);
+  const ships = ids.length ? await q(`SELECT s.id, s.status, s.status_detail, s.tracking_number, s.carrier, s.description, s.delivered_at, sup.name AS vendor, i.reference, i.description AS idesc,
+      COALESCE(s.project_id, (SELECT sa.project_id FROM supplier_allocations sa WHERE sa.supplier_invoice_id=s.supplier_invoice_id AND sa.project_id = ANY($1::uuid[]) ORDER BY sa.seq LIMIT 1)) AS pid
+    FROM shipments s LEFT JOIN supplier_invoices i ON i.id=s.supplier_invoice_id LEFT JOIN suppliers sup ON sup.id=i.supplier_id
+    WHERE s.status IN ('Ready for pickup','Out for delivery') OR s.status LIKE 'Problem%' OR (s.status='Delivered' AND s.delivered_at > now() - interval '3 days')`, [ids]) : [];
+  for (const s of ships) {
+    const r = rows.find((x) => x.id === s.pid); if (!r) continue;
+    const what = [s.vendor, s.reference && !String(s.reference).startsWith('NO-NUMBER') ? `#${s.reference}` : null, s.description || s.idesc].filter(Boolean).join(' ') || `Package ${s.tracking_number}`;
+    const [severity, head] = /^Problem/.test(s.status) ? ['high', 'Delivery Problem'] : s.status === 'Ready for pickup' ? ['medium', 'Ready For Pickup'] : s.status === 'Out for delivery' ? ['info', 'Out For Delivery Today'] : ['info', 'Delivered'];
+    const when = s.delivered_at ? new Date(s.delivered_at).toLocaleString('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : null;
+    alerts.push({ severity, kind: 'delivery', key: `delivery:${s.id}:${s.status}`, title: `${head}: ${what} · ${r.name}`, detail: `${s.carrier || 'Carrier'} ${s.tracking_number}${/^Problem/.test(s.status) ? ' · ' + s.status.replace(/^Problem: ?/, '') : ''}${when ? ' · ' + when : ''}`, link: link(r.id, 'costs'), projectId: r.id });
+  }
+  for (const a of alerts) a.key = a.key || alertKey(a);
   const gone = new Set((await q('SELECT alert_key FROM dismissed_alerts WHERE user_id=$1', [user.id])).map((r) => r.alert_key));
   const shown = alerts.filter((a) => !gone.has(a.key)), clearedCount = alerts.length - shown.length;
   return { year, years,

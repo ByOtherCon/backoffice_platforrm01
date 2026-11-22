@@ -76,6 +76,13 @@ test('with the tracking service: registered at once, checked every hour; deliver
     await tk.checkAll(); assert.equal((await q(`SELECT count(*)::int AS n FROM notifications WHERE kind='Delivery'`))[0].n, notes.length);   // each alert once
     s = (await call('GET', `/supplier-invoices/${inv}/shipments`.replace(/^/, '/api'), null, office)).body.shipments[0]; assert.equal(s.status, 'Ready for pickup');
     const list = (await call('GET', `/api/projects/${pid}/shipments`, null, pm)).body.shipments; assert.equal(list.at(-1).status, 'Delivered');   // delivered ones last
+    // the dashboard's Alerts & Deadlines lists them too, each one cleared on its own; the costs list knows each invoice's tracking state
+    let home = (await call('GET', '/api/projects/home', null, pm)).body.alerts.filter((x) => x.kind === 'delivery');
+    assert.deepEqual(home.map((x) => [x.severity, x.title]).sort(), [['info', 'Delivered: Door hardware · Burlington Ocala'], ['medium', 'Ready For Pickup: Masonite #INV-77 Doors · Burlington Ocala']]);
+    assert.ok(home.every((x) => x.link === `#/projects/${pid}/costs`)); assert.match(home.find((x) => x.severity === 'info').detail, /^UPS 1Z999AA10123456784 · Nov 22/);
+    assert.equal((await call('POST', '/api/projects/home/alerts/clear', { keys: [home.find((x) => x.severity === 'info').key] }, pm)).status, 200);
+    home = (await call('GET', '/api/projects/home', null, pm)).body.alerts.filter((x) => x.kind === 'delivery'); assert.deepEqual(home.map((x) => x.severity), ['medium']);
+    const costRow = (await call('GET', `/api/projects/${pid}/costs`, null, office)).body.suppliers.find((x) => x.invoiceId === inv); assert.deepEqual(costRow.shipments, { n: 1, delivered: 0 });
     trackers.get('trk_2').status = 'return_to_sender'; const c = (await call('POST', `/api/shipments/${s.id}/check`, null, pm)).body; assert.equal(c.status, 'Problem: returning to sender');
     assert.ok((await q(`SELECT 1 FROM notifications WHERE title LIKE 'Delivery problem: Masonite #INV-77%'`)).length);
     const ed = await call('PUT', `/api/shipments/${s.id}`, { number: '1Z999AA10123456799', description: 'Hinges' }, pm); assert.equal(ed.status, 200, JSON.stringify(ed.body));   // a corrected number starts tracking again

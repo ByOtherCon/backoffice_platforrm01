@@ -318,3 +318,6 @@ table tr.grp th{text-align:center;border-bottom:1px solid var(--line);padding-bo
 .trade-bubble.on{background:var(--navy);color:#fff;border-color:var(--navy)}
 .billing-note{border-top:1px solid var(--line);padding:.6rem 0}
 .billing-note:first-child{border-top:0}
+/* the Tracking button: grey with no tracking number, white while on the way, green when delivered */
+button.track-none{background:#eef0f4;color:#8a90a0;border-color:#e1e4ea}
+button.track-done{background:#e3f4e8;color:#17632f;border-color:#9fd6b0}

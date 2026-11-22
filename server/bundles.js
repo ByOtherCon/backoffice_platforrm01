@@ -82,6 +82,8 @@ export async function mergeInto(user, primaryId, otherIds, { folderPerGc } = {})
       await t('UPDATE opportunity_files SET opportunity_id=$1 WHERE opportunity_id=$2', [primaryId, id]);
       await t('UPDATE communications SET opportunity_id=$1 WHERE opportunity_id=$2', [primaryId, id]);
       await t('UPDATE takeoff_runs SET opportunity_id=$1 WHERE opportunity_id=$2', [primaryId, id]);
+      await t('UPDATE takeoff_studio SET opportunity_id=$1 WHERE opportunity_id=$2 AND NOT EXISTS (SELECT 1 FROM takeoff_studio x WHERE x.opportunity_id=$1)', [primaryId, id]);   // a takeoff on the kept lead stays; one on the duplicate moves over only if the kept lead has none
+      await t('UPDATE takeoff_rules SET opportunity_id=$1 WHERE opportunity_id=$2', [primaryId, id]);
       await t('INSERT INTO opportunity_considered_trades(opportunity_id,trade_id) SELECT $1, trade_id FROM opportunity_considered_trades WHERE opportunity_id=$2 ON CONFLICT DO NOTHING', [primaryId, id]);
       await t(`UPDATE record_links SET record_id=$1 WHERE kind='opportunity' AND record_id=$2 AND NOT EXISTS (SELECT 1 FROM record_links x WHERE x.owner_kind=record_links.owner_kind AND x.owner_id=record_links.owner_id AND x.kind='opportunity' AND x.record_id=$1)`, [primaryId, id]);
       await t('UPDATE opportunities SET merged_into=$2 WHERE id=$1', [id, primaryId]);
@@ -159,6 +161,8 @@ async function absorbDuplicates(primaryId, otherIds) {
       await t('UPDATE opportunity_files SET opportunity_id=$1 WHERE opportunity_id=$2', [primaryId, id]);
       await t('UPDATE communications SET opportunity_id=$1 WHERE opportunity_id=$2', [primaryId, id]);
       await t('UPDATE takeoff_runs SET opportunity_id=$1 WHERE opportunity_id=$2', [primaryId, id]);
+      await t('UPDATE takeoff_studio SET opportunity_id=$1 WHERE opportunity_id=$2 AND NOT EXISTS (SELECT 1 FROM takeoff_studio x WHERE x.opportunity_id=$1)', [primaryId, id]);   // a takeoff on the kept lead stays; one on the duplicate moves over only if the kept lead has none
+      await t('UPDATE takeoff_rules SET opportunity_id=$1 WHERE opportunity_id=$2', [primaryId, id]);
       await t('UPDATE estimate_chats SET opportunity_id=$1 WHERE opportunity_id=$2', [primaryId, id]);
       await t('INSERT INTO opportunity_considered_trades(opportunity_id,trade_id) SELECT $1, trade_id FROM opportunity_considered_trades WHERE opportunity_id=$2 ON CONFLICT DO NOTHING', [primaryId, id]);
       await t(`UPDATE record_links SET record_id=$1 WHERE kind='opportunity' AND record_id=$2 AND NOT EXISTS (SELECT 1 FROM record_links x WHERE x.owner_kind=record_links.owner_kind AND x.owner_id=record_links.owner_id AND x.kind='opportunity' AND x.record_id=$1)`, [primaryId, id]);

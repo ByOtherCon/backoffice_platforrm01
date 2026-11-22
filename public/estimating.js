@@ -260,6 +260,7 @@ function searchResults(rows, term) {
 const TABS = [['bids', 'Bid Opportunities'], ['proposals', 'Proposal Tracker'], ['submittals', 'Submittal Tracker'], ['followups', 'Follow Ups'], ['insights', 'Insights']];
 export async function estimatingView(arg, arg2) {
   if (arg && arg2 === 'chat') return estchat.estimateChatView(arg, canEstimate());   // Estimate With AI: its own page for one lead
+  if (arg && arg2 === 'takeoff') return (await import('/takeoff-studio.js')).takeoffStudioView(C, arg, canEstimate());   // loaded only when opened   // Estimate With AI, first step: measure the plans, then send the takeoff to the chat
   const tab = TABS.some(([t]) => t === arg) ? arg : 'bids', detailId = arg && !TABS.some(([t]) => t === arg) ? arg : null, err = h('div'), w = canEstimate();
   const search = state.estSearch || '';
   // results show while you type; the page is drawn again a moment after you stop, and the cursor stays in the box
@@ -647,8 +648,8 @@ async function takeoffCard(o, err, w) {
       w && r.status !== 'Applied' ? h('div', { class: 'row', style: 'margin-top:.8rem' }, h('button', { onclick: () => { const d = h('input'), s2 = h('select', {}, sections.map((x) => h('option', { value: x }, x))); formModal('Add an item the plans missed', [field('Section', s2), field('Description', d, 'wide')], async () => { await api('POST', `/takeoff/${r.id}/items`, { section: s2.value, description: d.value }); render(); }, 'Add'); } }, '+ Add item'),
         h('button', { onclick: guard(msg, async () => { await api('POST', `/takeoff/${r.id}/verify`, {}); render(); }) }, 'Mark verified'), h('button', { class: 'primary', disabled: r.status !== 'Verified' ? true : null, title: r.status !== 'Verified' ? 'Verify every included item first' : '', onclick: guard(msg, async () => { const x = await api('POST', `/takeoff/${r.id}/apply`, {}); notice(msg, `Applied to ${x.trades} trade prices. Review them under Price trades.`, 'ok'); render(); }) }, 'Apply to proposal prices')) : '');
   };
-  return h('div', { style: 'margin-top:1rem;border-top:1px solid var(--line);padding-top:.8rem' }, h('div', { class: 'row spread' }, h('h2', {}, 'Estimate With AI'), h('div', { class: 'row' }, file, h('button', { class: 'primary', onclick: () => (location.hash = `#/estimating/${o.id}/chat`) }, 'Open The Estimating Chat'))),
-    h('p', { class: 'muted' }, 'Reads the plans already on this lead (it asks for plans only when there are none), follows the byOther estimating instructions, and works through scope and pricing with you. Each proposal it writes is saved here as a new version, and the conversation stays with the lead.'), msg,
+  return h('div', { style: 'margin-top:1rem;border-top:1px solid var(--line);padding-top:.8rem' }, h('div', { class: 'row spread' }, h('h2', {}, 'Estimate With AI'), h('div', { class: 'row' }, file, h('button', { onclick: () => (location.hash = `#/estimating/${o.id}/takeoff`) }, 'Open Takeoff Studio'), h('button', { class: 'primary', onclick: () => (location.hash = `#/estimating/${o.id}/chat`) }, 'Open The Estimating Chat'))),
+    h('p', { class: 'muted' }, 'Start in Takeoff Studio: it measures the plans already on this lead (framing and drywall by wall type, new and existing walls, room finishes from the finish schedule and ceiling plan) with Claude drafting and you checking, then sends the takeoff to the estimating chat. The chat follows the byOther estimating instructions and works through scope and pricing with you. Each proposal it writes is saved here as a new version, and the conversation stays with the lead.'), msg,
     runs.length ? h('details', { style: 'margin-top:.6rem' }, h('summary', {}, `Earlier plan readings (${runs.length})`), runs.map(runCard)) : '');
 }
 

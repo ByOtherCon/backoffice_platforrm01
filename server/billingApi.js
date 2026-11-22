@@ -368,3 +368,57 @@ export async function updateBillingNote(projectId, user, id, b) {
   await q('UPDATE project_billing_notes SET body=$2, updated_at=now() WHERE id=$1', [id, body]); return { ok: true };
 }
 export async function deleteBillingNote(projectId, user, id) { await noteFor(projectId, user, id); await q('DELETE FROM project_billing_notes WHERE id=$1', [id]); return { ok: true }; }
+
+// ------------------------------------------------------------------ editing entries in place (instead of deleting and adding again)
+// A payment from the GC: its date, amount and kind. The project's money rules are checked again (no overpaying an invoice).
+export async function updateClientPayment(projectId, invoiceId, payId, b) {
+  const amount = money(b.amount, 'Amount'); if (!(amount > 0)) throw bad('Amount must be greater than zero.');
+  const date = dateStr(b.date, 'Payment date', true), kind = b.kind === 'Retainage Release' ? 'Retainage Release' : b.kind === 'Payment' ? 'Payment' : null;
+  return run(async (t) => {
+    await lockProjects(t, [projectId]);
+    if (!(await t(`UPDATE client_payments SET paid_date=$4, amount=$5, kind=COALESCE($6,kind) WHERE id=$1 AND client_invoice_id=$2 AND client_invoice_id IN (SELECT id FROM client_invoices WHERE project_id=$3) RETURNING id`, [payId, invoiceId, projectId, date, amount, kind])).length) throw new HttpError(404, 'Payment not found.');
+    await assertValid(t, projectId); return { ok: true };
+  });
+}
+// A subcontractor's bill: number, date and amount. It cannot drop below what has already been paid on it.
+export async function updateSubBill(projectId, commitmentId, id, b) {
+  const amount = money(b.amount, 'Bill amount'); if (!(amount > 0)) throw bad('Bill amount must be greater than zero.');
+  return run(async (t) => {
+    await lockProjects(t, [projectId]);
+    const [bill] = await t(`SELECT si.id, COALESCE((SELECT SUM(amount) FROM sub_payments WHERE sub_invoice_id=si.id),0) AS paid FROM sub_invoices si JOIN sub_commitments sc ON sc.id=si.commitment_id WHERE si.id=$1 AND si.commitment_id=$2 AND sc.project_id=$3 FOR UPDATE OF si`, [id, commitmentId, projectId]);
+    if (!bill) throw new HttpError(404, 'Bill not found.');
+    if (toCents(amount) < toCents(Number(bill.paid))) throw bad(`$${Number(bill.paid).toFixed(2)} has already been paid on this bill, more than $${amount.toFixed(2)}. Change the payment first.`);
+    await t('UPDATE sub_invoices SET number=$2, invoice_date=$3, amount=$4 WHERE id=$1', [id, text(b.number, 'Bill #', { max: 60 }), dateStr(b.date, 'Bill date'), amount]);
+    await assertValid(t, projectId); return { ok: true };
+  });
+}
+// A payment to a subcontractor: date and amount. It is recorded again through the same rules as a new payment (the bill, the
+// contract, the held final payment), so an edit can never get around them. Correcting a past payment does not need the paperwork
+// check that gates new money going out.
+export async function updateSubPayment(projectId, payId, b) {
+  const amount = money(b.amount, 'Amount'); if (!(amount > 0)) throw bad('Amount must be greater than zero.');
+  const date = dateStr(b.date, 'Payment date', true);
+  return run(async (t) => {
+    await lockProjects(t, [projectId]);
+    const [p] = await t(`SELECT sp.* FROM sub_payments sp JOIN sub_invoices si ON si.id=sp.sub_invoice_id JOIN sub_commitments sc ON sc.id=si.commitment_id WHERE sp.id=$1 AND sc.project_id=$2`, [payId, projectId]);
+    if (!p) throw new HttpError(404, 'Payment not found.');
+    await t('DELETE FROM sub_payments WHERE id=$1', [payId]);
+    const id = await recordSubPayment(t, projectId, p.sub_invoice_id, amount, date, { method: p.method, memo: p.memo, allowUnverified: true });
+    if (p.qb_payment_id) await t('UPDATE sub_payments SET qb_payment_id=$2 WHERE id=$1', [id, p.qb_payment_id]);
+    return { id };
+  });
+}
+// The payments on a vendor invoice, as edited in the invoice's Edit form: changed ones updated, removed ones deleted, new ones added.
+// Together they can never be more than the invoice total.
+export async function setSupplierPayments(t, invoiceId, list) {
+  const cur = await t('SELECT id FROM supplier_payments WHERE supplier_invoice_id=$1', [invoiceId]), keep = new Set();
+  for (const p of list) {
+    const amount = money(p.amount, 'Payment amount'); if (!(amount > 0)) throw bad('Payment amounts must be greater than zero.');
+    const date = dateStr(p.date, 'Payment date', true);
+    if (p.id && cur.some((c) => c.id === p.id)) { keep.add(p.id); await t('UPDATE supplier_payments SET paid_date=$2, amount=$3 WHERE id=$1', [p.id, date, amount]); }
+    else await t('INSERT INTO supplier_payments(supplier_invoice_id,paid_date,amount) VALUES ($1,$2,$3)', [invoiceId, date, amount]);
+  }
+  for (const c of cur) if (!keep.has(c.id)) await t('DELETE FROM supplier_payments WHERE id=$1', [c.id]);
+  const [inv] = await t('SELECT total, COALESCE((SELECT SUM(amount) FROM supplier_payments WHERE supplier_invoice_id=si.id),0) AS paid FROM supplier_invoices si WHERE id=$1', [invoiceId]);
+  if (toCents(Number(inv.paid)) > toCents(Number(inv.total))) throw bad('Payments cannot add up to more than the invoice total.');
+}

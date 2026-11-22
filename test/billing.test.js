@@ -152,3 +152,41 @@ test('billing notes: anyone who can see the billing adds them, newest first; onl
   assert.equal((await call('DELETE', P(`/billing-notes/${notes[0].id}`), null, office)).status, 200);   // an admin can remove anyone's
   notes = (await call('GET', P('/billing-notes'), null, office)).body; assert.deepEqual(notes.map((n) => n.body), ['Pay app goes to the GC by the 25th.']);
 });
+
+test('entries are edited in place: a GC payment, a subcontractor bill and its payment, a vendor invoice with its lines and payments, a document; the money rules still hold', async () => {
+  // a payment from the GC
+  const iv = (await call('POST', P('/invoices'), { projectTradeId: dry, number: 'E-1', date: '2026-11-01', amount: 5000, retainageHeld: 0 }, office)).body.id;
+  assert.equal((await call('POST', P(`/invoices/${iv}/payments`), { date: '2026-11-05', amount: 1000 }, office)).status, 200);
+  const payId = (await q('SELECT id FROM client_payments WHERE client_invoice_id=$1', [iv]))[0].id;
+  assert.equal((await call('PUT', P(`/invoices/${iv}/payments/${payId}`), { date: '2026-11-06', amount: 2000 }, pm)).status, 403);   // a PM reads, does not enter money
+  assert.equal((await call('PUT', P(`/invoices/${iv}/payments/${payId}`), { date: '2026-11-06', amount: 2000 }, office)).status, 200);
+  assert.equal((await call('PUT', P(`/invoices/${iv}/payments/${payId}`), { date: '2026-11-06', amount: 6000 }, office)).status, 400);   // more than the invoice
+  assert.deepEqual((await q('SELECT paid_date::text AS d, amount::float AS a FROM client_payments WHERE id=$1', [payId]))[0], { d: '2026-11-06', a: 2000 });
+  // a subcontractor's bill and the payment on it
+  const com = (await call('POST', P('/commitments'), { projectTradeId: dry, subcontractorId: vendorId, contractAmount: 20000 }, office)).body.id;
+  const bid = (await call('POST', P(`/commitments/${com}/bills`), { number: 'B-1', date: '2026-11-02', amount: 8000 }, office)).body.id;
+  assert.equal((await call('POST', P(`/sub-bills/${bid}/payments`), { date: '2026-11-10', amount: 5000 }, office)).status, 200);
+  assert.equal((await call('PUT', P(`/commitments/${com}/bills/${bid}`), { number: 'B-1', date: '2026-11-02', amount: 4000 }, office)).status, 400);   // less than paid
+  assert.equal((await call('PUT', P(`/commitments/${com}/bills/${bid}`), { number: 'B-1A', date: '2026-11-03', amount: 9000 }, office)).status, 200);
+  const sp = (await q('SELECT id FROM sub_payments WHERE sub_invoice_id=$1', [bid]))[0].id;
+  assert.equal((await call('PUT', P(`/sub-payments/${sp}`), { date: '2026-11-11', amount: 9500 }, office)).status, 400);   // more than the bill
+  const ed = await call('PUT', P(`/sub-payments/${sp}`), { date: '2026-11-11', amount: 6000 }, office); assert.equal(ed.status, 200, JSON.stringify(ed.body));
+  assert.deepEqual(await q('SELECT number, amount::float AS a FROM sub_invoices WHERE id=$1', [bid]), [{ number: 'B-1A', a: 9000 }]);
+  assert.deepEqual(await q('SELECT paid_date::text AS d, amount::float AS a FROM sub_payments WHERE sub_invoice_id=$1', [bid]), [{ d: '2026-11-11', a: 6000 }]);
+  // a vendor invoice: lines, number and payments
+  const vi = (await call('POST', '/api/supplier-invoices', { supplierId, reference: 'HD-1', date: '2026-11-04', total: 300, paid: true, paidDate: '2026-11-04', allocations: [{ projectId: pid, projectTradeId: dry, amount: 300 }] }, office)).body.id;
+  const got = (await call('GET', `/api/supplier-invoices/${vi}`, null, office)).body; assert.deepEqual([got.reference, got.total, got.paid, got.lines.length, got.payments.length], ['HD-1', 300, 300, 1, 1]);
+  const lines = [{ description: 'Studs', amount: 250, itemKind: 'Materials', projectId: pid, projectTradeId: dry }, { description: 'Screws', amount: 150, itemKind: 'Materials', projectId: pid, projectTradeId: demo }];
+  assert.equal((await call('PUT', `/api/supplier-invoices/${vi}`, { reference: 'HD-1B', date: '2026-11-04', lines, payments: [{ id: got.payments[0].id, date: '2026-11-04', amount: 500 }] }, office)).status, 400);   // payments over the total
+  const up = await call('PUT', `/api/supplier-invoices/${vi}`, { reference: 'HD-1B', date: '2026-11-05', description: 'Framing materials', lines, payments: [{ id: got.payments[0].id, date: '2026-11-04', amount: 400 }] }, office); assert.equal(up.status, 200, JSON.stringify(up.body));
+  const after = (await call('GET', `/api/supplier-invoices/${vi}`, null, office)).body;
+  assert.deepEqual([after.reference, after.date, after.total, after.paid, after.description, after.lines.map((l) => [l.description, l.amount])], ['HD-1B', '2026-11-05', 400, 400, 'Framing materials', [['Studs', 250], ['Screws', 150]]]);
+  assert.equal(after.payments[0].id, got.payments[0].id);   // the same payment, changed
+  assert.equal((await call('PUT', `/api/supplier-invoices/${vi}`, { reference: 'HD-1B', date: '2026-11-05', lines: [{ amount: 100, projectId: pid }] }, office)).status, 400);   // under what was paid
+  assert.equal((await call('PUT', `/api/supplier-invoices/${vi}`, { reference: 'X', date: '2026-11-05', lines }, pm)).status, 403);
+  // a document: name, type, expiry
+  const [{ id: doc }] = await q(`INSERT INTO documents(category,name,url,project_id) VALUES ('Other','scan001.pdf','https://example.com/a.pdf',$1) RETURNING id`, [pid]);
+  assert.equal((await call('PUT', `/api/documents/${doc}`, { name: 'Signed change order 3', category: 'Approved CO', expiresOn: '' }, office)).status, 200);
+  assert.deepEqual((await q('SELECT name, category FROM documents WHERE id=$1', [doc]))[0], { name: 'Signed change order 3', category: 'Approved CO' });
+  assert.equal((await call('PUT', `/api/documents/${doc}`, { name: 'x', category: 'W-9' }, office)).status, 400);   // a W-9 keeps its own path
+});

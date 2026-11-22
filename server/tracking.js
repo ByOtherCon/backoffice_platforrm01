@@ -97,6 +97,19 @@ export async function invoiceShipments(user, invoiceId) {
   await mayWork(user, await projectsOf({ supplier_invoice_id: invoiceId }));
   return { connected: connected(), shipments: (await q(`${LIST} WHERE s.supplier_invoice_id=$1 ORDER BY s.created_at`, [invoiceId])).map(view) };
 }
+// Editing a tracking number: a different number starts tracking afresh; the description and carrier can be corrected.
+export async function updateShipment(user, id, b = {}) {
+  const [s] = await q('SELECT * FROM shipments WHERE id=$1', [id]); if (!s) throw new HttpError(404, 'Tracking number not found.');
+  await mayWork(user, await projectsOf(s));
+  const number = String(b.number ?? s.tracking_number).replace(/[\s-]/g, '').toUpperCase(); if (!/^[A-Z0-9]{8,40}$/.test(number)) throw bad(`${number} does not look like a tracking number (letters and numbers only, 8 to 40 of them).`);
+  const description = b.description === undefined ? s.description : text(b.description, 'Description', { max: 300, required: false }) || null;
+  if (number !== s.tracking_number) {
+    const carrier = b.carrier ? text(b.carrier, 'Carrier', { max: 40 }) : carrierOf(number);
+    await q(`UPDATE shipments SET tracking_number=$2, carrier=$3, description=$4, status='Not checked', status_detail=NULL, est_delivery=NULL, delivered_at=NULL, service_id=NULL, public_url=NULL, checked_at=NULL, alerted=NULL WHERE id=$1`, [id, number, carrier, description]);
+    await register(id).catch((e) => q('UPDATE shipments SET status_detail=$2 WHERE id=$1', [id, String(e.message).slice(0, 300)]));
+  } else await q('UPDATE shipments SET description=$2, carrier=COALESCE($3, carrier) WHERE id=$1', [id, description, b.carrier ? text(b.carrier, 'Carrier', { max: 40 }) : null]);
+  return { ok: true };
+}
 export async function removeShipment(user, id) {
   const [s] = await q('SELECT * FROM shipments WHERE id=$1', [id]); if (!s) throw new HttpError(404, 'Tracking number not found.');
   await mayWork(user, await projectsOf(s)); await q('DELETE FROM shipments WHERE id=$1', [id]); return { ok: true };

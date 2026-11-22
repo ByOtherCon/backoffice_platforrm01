@@ -133,19 +133,24 @@ route('POST', '/api/projects/:id/retainage-apply', async ({ user, params }) => b
 route('PUT', '/api/projects/:id/invoices/:iid', async ({ user, params, body }) => { await bl.updateInvoice(write(user, params), uuid(params.iid), body); return { ok: true }; });
 route('DELETE', '/api/projects/:id/invoices/:iid', async ({ user, params }) => { await bl.deleteInvoice(write(user, params), uuid(params.iid)); return { ok: true }; });
 route('POST', '/api/projects/:id/invoices/:iid/payments', async ({ user, params, body }) => { await bl.addClientPayment(write(user, params), uuid(params.iid), body); return { ok: true }; });
+route('PUT', '/api/projects/:id/invoices/:iid/payments/:pid', async ({ user, params, body }) => bl.updateClientPayment(write(user, params), uuid(params.iid), uuid(params.pid), body));
 route('DELETE', '/api/projects/:id/invoices/:iid/payments/:pid', async ({ user, params }) => { await bl.deleteClientPayment(write(user, params), uuid(params.iid), uuid(params.pid)); return { ok: true }; });
 route('GET', '/api/projects/:id/costs', async ({ user, params }) => bl.getCosts(await view(user, params), { rates: auth.SUPER.includes(user.role) }));
 route('POST', '/api/projects/:id/commitments', async ({ user, params, body }) => bl.addCommitment(write(user, params), body));
 route('PUT', '/api/projects/:id/commitments/:cid', async ({ user, params, body }) => { await bl.updateCommitment(write(user, params), uuid(params.cid), body); return { ok: true }; });
 route('DELETE', '/api/projects/:id/commitments/:cid', async ({ user, params }) => { await bl.deleteCommitment(write(user, params), uuid(params.cid)); return { ok: true }; });
 route('POST', '/api/projects/:id/commitments/:cid/bills', async ({ user, params, body }) => bl.addSubBill(write(user, params), uuid(params.cid), body));
+route('PUT', '/api/projects/:id/commitments/:cid/bills/:bid', async ({ user, params, body }) => bl.updateSubBill(write(user, params), uuid(params.cid), uuid(params.bid), body));
 route('DELETE', '/api/projects/:id/commitments/:cid/bills/:bid', async ({ user, params }) => { await bl.deleteSubBill(write(user, params), uuid(params.cid), uuid(params.bid)); return { ok: true }; });
 route('POST', '/api/projects/:id/sub-bills/:bid/payments', async ({ user, params, body }) => { auth.requireRole(user, auth.APPROVERS); await bl.addSubPayment(write(user, params), uuid(params.bid), body, { allowUnverified: user.role === 'Super Admin' && body?.confirmUnverified === true }); return { ok: true }; });
 route('POST', '/api/projects/:id/commitments/:cid/pay-without-invoice', async ({ user, params, body }) => { auth.requireRole(user, auth.APPROVERS); return bl.addPaymentWithoutInvoice(write(user, params), uuid(params.cid), body, { allowUnverified: user.role === 'Super Admin' && body?.confirmUnverified === true }); });
 route('POST', '/api/projects/:id/commitments/:cid/request-without-invoice', async ({ user, params, body }) => ap.requestPaymentWithoutInvoice(user, write(user, params), uuid(params.cid), body));
 route('POST', '/api/projects/:id/sub-bills/:bid/payment-requests', async ({ user, params, body }) => ap.requestPayment(user, write(user, params), uuid(params.bid), body));
+route('PUT', '/api/projects/:id/sub-payments/:pid', async ({ user, params, body }) => { auth.requireRole(user, auth.APPROVERS); return bl.updateSubPayment(write(user, params), uuid(params.pid), body); });
 route('DELETE', '/api/projects/:id/sub-payments/:pid', async ({ user, params }) => { await bl.deleteSubPayment(write(user, params), uuid(params.pid)); return { ok: true }; });
 route('POST', '/api/supplier-invoices', async ({ user, body }) => { manage(user); return bl.addSupplierInvoice(body); });
+route('GET', '/api/supplier-invoices/:id', async ({ user, params }) => { manage(user); return rc.getSupplierInvoice(uuid(params.id)); });
+route('PUT', '/api/supplier-invoices/:id', async ({ user, params, body }) => { manage(user); return rc.updateSupplierInvoice(uuid(params.id), body); });
 route('DELETE', '/api/supplier-invoices/:id', async ({ user, params }) => { manage(user); await bl.deleteSupplierInvoice(uuid(params.id)); return { ok: true }; });
 // tracking numbers on purchases: delivery alerts to the project (the office, or a project manager on the job)
 const shipper = (u) => { auth.requireRole(u, [...auth.MANAGE, 'Project Manager']); return u; };
@@ -153,6 +158,7 @@ route('GET', '/api/projects/:id/shipments', async ({ user, params }) => track.pr
 route('GET', '/api/supplier-invoices/:id/shipments', async ({ user, params }) => track.invoiceShipments(shipper(user), uuid(params.id)));
 route('POST', '/api/shipments', async ({ user, body }) => track.addShipments(shipper(user), { ...body, supplierInvoiceId: body.supplierInvoiceId ? uuid(body.supplierInvoiceId) : null, projectId: body.projectId ? uuid(body.projectId) : null }));
 route('POST', '/api/shipments/:id/check', async ({ user, params }) => track.checkOne(shipper(user), uuid(params.id)));
+route('PUT', '/api/shipments/:id', async ({ user, params, body }) => track.updateShipment(shipper(user), uuid(params.id), body));
 route('DELETE', '/api/shipments/:id', async ({ user, params }) => track.removeShipment(shipper(user), uuid(params.id)));
 route('POST', '/api/supplier-invoices/:id/payments', async ({ user, params, body }) => { manage(user); await bl.addSupplierPayment(uuid(params.id), body); return { ok: true }; });
 
@@ -464,6 +470,7 @@ route('GET', '/api/documents/:id/file', async ({ res, user, params }) => {
   res.writeHead(200, fileHead(d));
   fs.createReadStream(d.file).pipe(res); return 'sent';
 });
+route('PUT', '/api/documents/:id', async ({ user, params, body }) => { manage(user); return dc.updateDocument(uuid(params.id), body); });
 route('DELETE', '/api/documents/:id', async ({ user, params }) => { manage(user); await dc.deleteDocument(uuid(params.id)); return { ok: true }; });
 route('POST', '/api/receipts/parse', async ({ req, user }) => { manage(user); return rc.parseUpload(user, await readRaw(req), fname(req)); }, { raw: true });
 route('POST', '/api/receipts', async ({ user, body }) => { manage(user); return rc.createReceipt(user, body); });

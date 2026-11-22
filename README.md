@@ -278,3 +278,12 @@ The app adapts to a phone screen (width 700 pixels or less); there is no separat
 - **Where.** Tracking numbers go on a vendor invoice or receipt when it is entered (the **Tracking Numbers** box, one per line), or later with the **Tracking** button on the invoice (project Costs & Payables, Vendors) or on the receipt (Receipts & Supplier Invoices). **+ Tracking Number** on a project's **Deliveries** card adds a package that has no invoice yet. The carrier is worked out from the number (UPS, FedEx, USPS, DHL) and the number links to the carrier's tracking page.
 - **Delivery alerts.** With `EASYPOST_API_KEY` on the server (EasyPost Trackers API; $0.01 to $0.03 per package as published), each number is registered with EasyPost and checked every hour for 60 days (`server/tracking.js`). When a package is **Delivered**, **Ready for pickup**, or has a **Problem** (returned, failed), the person who added it, the project managers on the job and the office (Super Admin, Sub Admin, Exec Assistant) get an alert in Alerts that opens the project's Costs & Payables tab; each alert once. **Check Now** asks straight away. Without the key the numbers are kept and the Deliveries card says alerts are off.
 - **Who.** The office, or a project manager on the job.
+
+## Editing entries in place
+Saved entries are changed with **Edit**, never by deleting and adding again:
+- **Vendor invoices and receipts** (project Costs & Payables, Vendors; and Receipts & Supplier Invoices): vendor, number, date, description, the lines with their projects, trades or overhead (amounts as saved, tax already in them), and the payments made on it (`GET`/`PUT /api/supplier-invoices/:id`). Payments can never add up to more than the invoice.
+- **Payments from the GC** on Progress Billing: date and amount (`PUT /api/projects/:id/invoices/:iid/payments/:pid`), checked against the invoice.
+- **Subcontractor bills**: number, date and amount, never below what was paid; the **payments on a bill** are edited in the same window by an approver, and an edited payment is recorded again through the same rules as a new one (the bill, the contract, the held final payment).
+- **Documents**: name, type and expiry date (a subcontractor's W-9, insurance or exemption keeps its type).
+- **Tracking numbers**: the number (a new number starts tracking again) and what is being delivered.
+Invoices to the GC, subcontracts, change orders, trades, time entries, to-dos, overhead and billing notes already had Edit.

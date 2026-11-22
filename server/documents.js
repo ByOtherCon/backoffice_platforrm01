@@ -153,3 +153,15 @@ export async function deleteDocument(id) {
   }).catch((e) => { throw e.code === '23503' ? new HttpError(409, 'This document is still referenced elsewhere.') : e; });
   if (d.storage_key) await fs.promises.rm(path.join(UPLOAD_DIR, path.basename(d.storage_key)), { force: true });
 }
+
+// Editing a document's name, type and expiry date. A subcontractor's W-9, insurance or exemption keeps its type (it is what the
+// payment checks read); everything else can be moved to another type.
+export async function updateDocument(id, b) {
+  const [d] = await q('SELECT category FROM documents WHERE id=$1', [id]); if (!d) throw new HttpError(404, 'Document not found.');
+  const name = text(b.name, 'Name', { max: 200 }), category = b.category === undefined ? d.category : String(b.category);
+  if (!CATEGORIES.includes(category)) throw bad('Choose a document type from the list.');
+  if (category !== d.category && (VENDOR_DOC[d.category] || VENDOR_DOC[category])) throw bad('A W-9, insurance certificate or exemption keeps its type. Upload it again under the right type instead.');
+  const expires = b.expiresOn === undefined ? undefined : dateStr(b.expiresOn, 'Expiry date', false);
+  await q(`UPDATE documents SET name=$2, category=$3${expires !== undefined ? ', expires_on=$4' : ''} WHERE id=$1`, expires !== undefined ? [id, name, category, expires] : [id, name, category]);
+  return { ok: true };
+}

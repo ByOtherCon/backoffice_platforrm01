@@ -78,6 +78,9 @@ test('with the tracking service: registered at once, checked every hour; deliver
     const list = (await call('GET', `/api/projects/${pid}/shipments`, null, pm)).body.shipments; assert.equal(list.at(-1).status, 'Delivered');   // delivered ones last
     trackers.get('trk_2').status = 'return_to_sender'; const c = (await call('POST', `/api/shipments/${s.id}/check`, null, pm)).body; assert.equal(c.status, 'Problem: returning to sender');
     assert.ok((await q(`SELECT 1 FROM notifications WHERE title LIKE 'Delivery problem: Masonite #INV-77%'`)).length);
+    const ed = await call('PUT', `/api/shipments/${s.id}`, { number: '1Z999AA10123456799', description: 'Hinges' }, pm); assert.equal(ed.status, 200, JSON.stringify(ed.body));   // a corrected number starts tracking again
+    const s2 = (await call('GET', `/api/supplier-invoices/${inv}/shipments`, null, office)).body.shipments.find((x) => x.id === s.id); assert.deepEqual([s2.number, s2.carrier, s2.description, s2.status], ['1Z999AA10123456799', 'UPS', 'Hinges', 'In transit']);
+    assert.equal((await call('PUT', `/api/shipments/${s.id}`, { number: 'x' }, pm)).status, 400);
     assert.equal((await call('DELETE', `/api/shipments/${s.id}`, null, pm2)).status, 403); assert.equal((await call('DELETE', `/api/shipments/${s.id}`, null, pm)).status, 200);
   } finally { delete process.env.EASYPOST_API_KEY; }
 });

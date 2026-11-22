@@ -345,3 +345,26 @@ export async function addSupplierPayment(invoiceId, b) {
     for (const p of await t('SELECT DISTINCT project_id FROM supplier_allocations WHERE supplier_invoice_id=$1 AND project_id IS NOT NULL', [invoiceId])) await assertValid(t, p.project_id);
   });
 }
+
+// ------------------------------------------------------------------ billing notes
+// Notes on the Progress Billing tab. Anyone who can see the project's billing can add one; a note can be changed or removed by the
+// person who wrote it, or by an admin.
+const ADMINS = ['Super Admin', 'Sub Admin', 'Exec Assistant'];
+export async function billingNotes(projectId, user) {
+  const rows = await q(`SELECT n.id, n.body, n.created_at, n.updated_at, n.user_id, u.name, u.email FROM project_billing_notes n LEFT JOIN app_users u ON u.id=n.user_id WHERE n.project_id=$1 ORDER BY n.created_at DESC`, [projectId]);
+  return rows.map((r) => ({ id: r.id, body: r.body, at: r.created_at, editedAt: r.updated_at, by: r.name || r.email || 'Someone', mine: r.user_id === user.id, canChange: r.user_id === user.id || ADMINS.includes(user.role) }));
+}
+export async function addBillingNote(projectId, user, b) {
+  const body = text(b?.body, 'Note', { max: 5000 });
+  const [r] = await q('INSERT INTO project_billing_notes(project_id,user_id,body) VALUES ($1,$2,$3) RETURNING id', [projectId, user.id, body]);
+  return { id: r.id };
+}
+const noteFor = async (projectId, user, id) => {
+  const [n] = await q('SELECT user_id FROM project_billing_notes WHERE id=$1 AND project_id=$2', [id, projectId]); if (!n) throw new HttpError(404, 'Note not found.');
+  if (n.user_id !== user.id && !ADMINS.includes(user.role)) throw new HttpError(403, 'Only the person who wrote this note, or an admin, can change it.');
+};
+export async function updateBillingNote(projectId, user, id, b) {
+  await noteFor(projectId, user, id); const body = text(b?.body, 'Note', { max: 5000 });
+  await q('UPDATE project_billing_notes SET body=$2, updated_at=now() WHERE id=$1', [id, body]); return { ok: true };
+}
+export async function deleteBillingNote(projectId, user, id) { await noteFor(projectId, user, id); await q('DELETE FROM project_billing_notes WHERE id=$1', [id]); return { ok: true }; }

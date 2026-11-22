@@ -138,3 +138,17 @@ test('deleting an invoice or bill re-checks the rules and removes its payments',
   assert.equal((await call('DELETE', P(`/commitments/${com}/bills/${bill}`), null, office)).status, 200);
   assert.equal((await call('DELETE', P(`/commitments/${com}`), null, office)).status, 200);
 });
+
+test('billing notes: anyone who can see the billing adds them, newest first; only the writer or an admin edits or deletes one; others cannot see them', async () => {
+  assert.equal((await call('POST', P('/billing-notes'), { body: '' }, office)).status, 400);
+  assert.equal((await call('POST', P('/billing-notes'), { body: 'Pay app goes to the GC by the 25th.' }, office)).status, 200);
+  assert.equal((await call('POST', P('/billing-notes'), { body: 'GC says retainage released at\nsubstantial completion.' }, pm)).status, 200);
+  assert.equal((await call('GET', P('/billing-notes'), null, pm2)).status, 403);   // a PM not on this job
+  assert.equal((await call('POST', P('/billing-notes'), { body: 'x' }, pm2)).status, 403);
+  let notes = (await call('GET', P('/billing-notes'), null, pm)).body;
+  assert.deepEqual(notes.map((n) => [n.body, n.by, n.canChange]), [['GC says retainage released at\nsubstantial completion.', 'pm@x.net', true], ['Pay app goes to the GC by the 25th.', 'office@x.net', false]]);
+  assert.equal((await call('PUT', P(`/billing-notes/${notes[1].id}`), { body: 'changed' }, pm)).status, 403); assert.equal((await call('DELETE', P(`/billing-notes/${notes[1].id}`), null, pm)).status, 403);
+  assert.equal((await call('PUT', P(`/billing-notes/${notes[0].id}`), { body: 'Retainage released at substantial completion.' }, pm)).status, 200);
+  assert.equal((await call('DELETE', P(`/billing-notes/${notes[0].id}`), null, office)).status, 200);   // an admin can remove anyone's
+  notes = (await call('GET', P('/billing-notes'), null, office)).body; assert.deepEqual(notes.map((n) => n.body), ['Pay app goes to the GC by the 25th.']);
+});

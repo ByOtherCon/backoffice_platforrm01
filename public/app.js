@@ -424,6 +424,24 @@ function pie(slices) {
 const legend = (slices) => h('div', {}, slices.map((s) => h('div', { class: 'row', style: 'gap:.5rem;margin:.25rem 0' }, h('span', { style: `width:12px;height:12px;border-radius:3px;background:${s.color};display:inline-block` }), h('span', {}, s.label), h('strong', { style: 'margin-left:auto;padding-left:1.5rem' }, usd(s.value)))));
 
 // ------------------------------------------------------------------ progress billing
+// Notes on the billing: newest first, with who wrote them and when. The writer (or an admin) can edit or remove a note.
+async function billingNotesCard(pid) {
+  const err = h('div'), list = h('div'), box = h('textarea', { rows: 3, placeholder: 'Add a note about billing on this job: pay app dates, what the GC said, retainage, anything to remember…' });
+  const stamp = (d) => new Date(d).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
+  const lines = (t) => String(t).split('\n').flatMap((x, k) => (k ? [h('br'), x] : [x]));
+  const draw = async () => {
+    const notes = await api('GET', `/projects/${pid}/billing-notes`);
+    list.replaceChildren(...(notes.length ? notes.map((n) => {
+      const body = h('div', { style: 'margin-top:.2rem;white-space:normal' }, lines(n.body));
+      const edit = () => { const ta = h('textarea', { rows: 3 }); ta.value = n.body;
+        body.replaceChildren(ta, h('div', { class: 'row', style: 'gap:.4rem;margin-top:.3rem' }, h('button', { class: 'primary small', type: 'button', onclick: guard(err, async () => { await api('PUT', `/projects/${pid}/billing-notes/${n.id}`, { body: ta.value }); await draw(); }) }, 'Save'), h('button', { class: 'small', type: 'button', onclick: () => draw() }, 'Cancel'))); ta.focus(); };
+      return h('div', { class: 'billing-note' }, h('div', { class: 'row spread', style: 'gap:.5rem' }, h('span', { class: 'muted', style: 'font-size:13px' }, h('strong', { style: 'color:var(--ink)' }, n.by), ` · ${stamp(n.at)}${n.editedAt ? ' · edited ' + stamp(n.editedAt) : ''}`),
+        n.canChange ? h('span', { class: 'row', style: 'gap:.3rem' }, h('button', { class: 'linklike', type: 'button', onclick: edit }, 'Edit'), h('button', { class: 'linklike', type: 'button', onclick: guard(err, async () => { if (!confirm('Delete this note?')) return; await api('DELETE', `/projects/${pid}/billing-notes/${n.id}`); await draw(); }) }, 'Delete')) : ''), body);
+    }) : [h('p', { class: 'muted', style: 'margin:.3rem 0 0' }, 'No notes yet.')]));
+  };
+  await draw();
+  return h('div', { class: 'card' }, h('h2', {}, 'Billing Notes'), box, h('div', { class: 'row', style: 'justify-content:flex-end;margin-top:.4rem' }, h('button', { class: 'primary', type: 'button', onclick: guard(err, async () => { if (!box.value.trim()) return; await api('POST', `/projects/${pid}/billing-notes`, { body: box.value }); box.value = ''; await draw(); }) }, 'Add Note')), err, list);
+}
 // The whole job on one screen, like the owner's spreadsheet: each trade's original contract, the approved change orders and the new total on the left,
 // then one column per invoice with the amount billed to each trade, colored by whether it has been paid. Totals run along the bottom and to the right.
 function billingMatrix(p, inv, canEdit, openInvoice) {
@@ -531,7 +549,7 @@ async function billingTab(p, canEdit, reload) {
           h('button', { class: 'small danger', onclick: guard(err, async () => { if (confirm(`Delete invoice ${i.number} and its payments?`)) { await api('DELETE', `${base}/invoices/${i.id}`); reload(); } }) }, 'Delete'))),
         ...i.payments.map((pm) => h('tr', { class: 'muted' }, h('td', { colspan: 2, style: 'padding-left:1.5rem' }, pm.kind === 'Payment' ? '↳ Payment' : '↳ Retainage received'), h('td', {}, pm.date), h('td', { colspan: 5 }), h('td', { class: 'n' }, usd(pm.amount)),
           canEdit && h('td', {}, h('button', { class: 'small danger', onclick: guard(err, async () => { await api('DELETE', `${base}/invoices/${i.id}/payments/${pm.id}`); reload(); }) }, 'Remove'))))])))) : h('p', { class: 'muted' }, 'No invoices yet.'));
-  return h('div', {}, qbCard, retCard, billingMatrix(p, inv, canEdit, editInvoice), sov, list);
+  return h('div', {}, qbCard, retCard, billingMatrix(p, inv, canEdit, editInvoice), sov, list, await billingNotesCard(p.project.id));
 }
 
 // ------------------------------------------------------------------ costs & payables

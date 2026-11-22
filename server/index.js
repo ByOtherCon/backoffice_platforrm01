@@ -121,6 +121,11 @@ route('DELETE', '/api/projects/:id/change-orders/:cid', async ({ user, params })
 const view = async (user, params) => { await auth.requireProject(user, uuid(params.id)); return params.id; };
 const write = (user, params) => { manage(user); return uuid(params.id); };
 route('GET', '/api/projects/:id/billing', async ({ user, params }) => bl.getBilling(await view(user, params)));
+// billing notes: anyone who can see the billing adds them; the writer or an admin changes or removes one
+route('GET', '/api/projects/:id/billing-notes', async ({ user, params }) => bl.billingNotes(uuid(await view(user, params)), user));
+route('POST', '/api/projects/:id/billing-notes', async ({ user, params, body }) => bl.addBillingNote(uuid(await view(user, params)), user, body));
+route('PUT', '/api/projects/:id/billing-notes/:nid', async ({ user, params, body }) => bl.updateBillingNote(uuid(await view(user, params)), user, uuid(params.nid), body));
+route('DELETE', '/api/projects/:id/billing-notes/:nid', async ({ user, params }) => bl.deleteBillingNote(uuid(await view(user, params)), user, uuid(params.nid)));
 route('POST', '/api/projects/:id/invoices', async ({ user, params, body }) => bl.addInvoice(write(user, params), body));
 route('GET', '/api/projects/:id/retainage-check', async ({ user, params }) => { const c = await bl.retainageCheck(write(user, params)); return { pct: c.pct, rows: c.rows, unclear: c.unclear, totals: c.totals }; });
 route('POST', '/api/projects/:id/retainage-apply', async ({ user, params }) => bl.retainageApply(write(user, params)));

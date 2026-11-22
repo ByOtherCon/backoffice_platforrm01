@@ -316,3 +316,5 @@ table tr.grp th{text-align:center;border-bottom:1px solid var(--line);padding-bo
 .trade-bubbles{display:flex;flex-wrap:wrap;gap:.4rem;margin-top:.5rem;align-items:center}
 .trade-bubble{border-radius:99px;padding:.3rem .8rem;font-size:13px;font-weight:600;background:#fff;color:var(--navy);border:1px solid #c9cedb}
 .trade-bubble.on{background:var(--navy);color:#fff;border-color:var(--navy)}
+.billing-note{border-top:1px solid var(--line);padding:.6rem 0}
+.billing-note:first-child{border-top:0}

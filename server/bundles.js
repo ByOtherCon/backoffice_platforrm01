@@ -141,7 +141,7 @@ export async function combineDuplicates() {
   }
   return { combined, groups: done };
 }
-async function absorbDuplicates(primaryId, otherIds) {
+async function absorbDuplicates(primaryId, otherIds, user = null) {
   return tx(async (t) => {
     const rows = await t('SELECT * FROM opportunities WHERE id = ANY($1::uuid[]) ORDER BY id FOR UPDATE', [[primaryId, ...otherIds].sort()]);
     const by = new Map(rows.map((r) => [r.id, r])), main = by.get(primaryId); if (!main || main.merged_into || main.project_id) return 0;
@@ -163,8 +163,8 @@ async function absorbDuplicates(primaryId, otherIds) {
       await t('INSERT INTO opportunity_considered_trades(opportunity_id,trade_id) SELECT $1, trade_id FROM opportunity_considered_trades WHERE opportunity_id=$2 ON CONFLICT DO NOTHING', [primaryId, id]);
       await t(`UPDATE record_links SET record_id=$1 WHERE kind='opportunity' AND record_id=$2 AND NOT EXISTS (SELECT 1 FROM record_links x WHERE x.owner_kind=record_links.owner_kind AND x.owner_id=record_links.owner_id AND x.kind='opportunity' AND x.record_id=$1)`, [primaryId, id]);
       await t('UPDATE opportunities SET merged_into=$2 WHERE id=$1', [id, primaryId]);
-      await note(t, id, null, `This was the same job from the same GC as "${main.name}" (${main.gc_name}), on the list twice. The two were combined into that lead; this one's notes and files moved there.`);
-      await note(t, primaryId, null, `Combined with a duplicate of this job from ${o.gc_name}: "${o.name}"${o.address ? ', ' + o.address : ''}. Same job and same GC, so it is one lead; the duplicate's notes and files are here now.`);
+      await note(t, id, user, `This was the same job from the same GC as "${main.name}" (${main.gc_name}), on the list twice. The two were combined into that lead${user ? ` by ${who(user)}` : ''}; this one's notes and files moved there.`);
+      await note(t, primaryId, user, `${user ? `Joined by ${who(user)}: c` : 'C'}ombined with a duplicate of this job from ${o.gc_name}: "${o.name}"${o.address ? ', ' + o.address : ''}. Same job and same GC, so it is one lead; the duplicate's notes and files are here now.`);
       n++;
     }
     if (!n) return 0;
@@ -268,4 +268,49 @@ export async function fixClientNames() {
   }
   await q(`INSERT INTO app_settings(key,value) VALUES ('client_fix_v1',$1) ON CONFLICT (key) DO NOTHING`, [{ fixed: n, at: new Date().toISOString() }]);
   return n;
+}
+
+// ------------------------------------------------------------------ the same job, found or joined by a person
+const pair = (x, y) => (x < y ? [x, y] : [y, x]);
+const hasOwn = async (t, o) => !!o.proposal_id || (await t('SELECT 1 FROM submissions WHERE opportunity_id=$1 AND voided_at IS NULL LIMIT 1', [o.id])).length > 0;
+const sameGc = (a, b) => gcList(a).some((g) => gcList(b).some((x) => R.gcKey(g) === R.gcKey(x)));
+// What joining `other` into `keep` would do, or why it cannot: the same GC is combined into one lead; another GC is bundled with it.
+async function mergeCheck(t, keep, other) {
+  if (keep.id === other.id) return 'Choose a different lead.';
+  if (keep.merged_into || other.merged_into) return 'One of them is already joined into another lead.';
+  if (other.project_id) return `"${other.name}" already has a project. Open it and join this one into it instead.`;
+  if (keep.project_id && !sameGc(keep, other)) return 'This lead already has a project.';
+  if (await hasOwn(t, other)) return (await hasOwn(t, keep)) ? 'Both leads have their own P number or submission, so they stay as two leads.' : `"${other.name}" already has its own P number or submission. Open that lead and join this one into it instead.`;
+  if (!sameGc(keep, other)) { if (keep.split_group || other.split_group) return 'One of them is already one GC\'s own proposal for a job split by GC.'; if (![keep, other].every((o) => OPEN.includes(o.status))) return 'Only open leads can be bundled.'; }
+  return null;
+}
+// A person joins two leads that are the same job: `otherId` goes into `keepId` (its notes, files, messages, chats and GC contacts move).
+export async function mergeLeads(user, keepId, otherId) {
+  const [keep] = await q('SELECT * FROM opportunities WHERE id=$1', [keepId]), [other] = await q('SELECT * FROM opportunities WHERE id=$1', [otherId]);
+  if (!keep || !other) throw new HttpError(404, 'Opportunity not found.');
+  const why = await mergeCheck(q, keep, other); if (why) throw new HttpError(409, why);
+  if (!sameGc(keep, other)) return { ...(await mergeInto(user, keepId, [otherId])), how: 'bundled' };
+  const n = await absorbDuplicates(keepId, [otherId], user); if (!n) throw new HttpError(409, 'Those two could not be joined. Open both and check them.');
+  return { id: keepId, how: 'combined' };
+}
+export async function notSameJob(user, id, otherId) {
+  if (id === otherId) throw bad('Choose a different lead.');
+  const [a, b] = pair(id, otherId); await q('INSERT INTO lead_not_same(a,b,by_user) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING', [a, b, user.id]); return { ok: true };
+}
+// Open leads that may be the same job as this one but were not joined on their own: asked about after a proposal is submitted. Each says
+// why it looks alike, whether it can be joined in, and whether a proposal can be submitted on it too (Accepted or Started).
+export async function possibleMatches(id) {
+  const [o] = await q('SELECT * FROM opportunities WHERE id=$1', [id]); if (!o) throw new HttpError(404, 'Opportunity not found.');
+  if (o.merged_into) return [];
+  const rows = await q(`SELECT o.*, (SELECT count(*)::int FROM submissions s WHERE s.opportunity_id=o.id AND s.voided_at IS NULL) AS subs FROM opportunities o
+    WHERE o.id <> $1 AND o.merged_into IS NULL AND o.project_id IS NULL AND o.status = ANY($2::text[]) AND ($3::uuid IS NULL OR o.split_group IS DISTINCT FROM $3::uuid)
+      AND NOT EXISTS (SELECT 1 FROM lead_not_same x WHERE (x.a=$1 AND x.b=o.id) OR (x.b=$1 AND x.a=o.id))`, [id, OPEN, o.split_group ?? null]);
+  const me = { ...jobOf(o), client: o.client_name }, out = [];
+  for (const r of rows) {
+    const why = R.maybeSameJob(me, { ...jobOf(r), client: r.client_name }); if (!why) continue;
+    const block = await mergeCheck(q, o, r);
+    out.push({ id: r.id, name: r.name, gc: r.gc_name, gcs: gcList(r), city: r.city, address: r.address, due: r.due_date, status: r.status, proposalId: r.proposal_id, why, sameGc: sameGc(o, r),
+      canMerge: !block, mergeNote: block, canSubmit: ['Accepted', 'Started'].includes(r.status) && !r.subs });
+  }
+  return out.slice(0, 10);
 }

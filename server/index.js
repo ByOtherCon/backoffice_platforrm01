@@ -282,6 +282,11 @@ route('GET', '/api/calendar/bids.ics', async ({ req, res }) => {
 route('POST', '/api/opportunities/find-several', async ({ user, body }) => { estWrite(user); return es.findSeveral(body || {}); });
 route('POST', '/api/opportunities/:id/invitations/remove', async ({ user, params, body }) => bn.removeInvitation(estWrite(user), uuid(params.id), body || {}));
 route('POST', '/api/opportunities/bundle', async ({ user, body }) => { const u = estWrite(user); if (!Array.isArray(body.otherIds)) throw bad('Choose the leads to join.'); return bn.mergeInto(u, uuid(body.primaryId), body.otherIds.map(uuid), { folderPerGc: body.folderPerGc === undefined ? undefined : !!body.folderPerGc }); });
+// the same job found by a person: possible matches (asked after a submission), join two leads, or say they are not the same
+route('GET', '/api/opportunities/:id/possible-matches', async ({ user, params }) => { estRead(user); return { leads: await bn.possibleMatches(uuid(params.id)) }; });
+route('POST', '/api/opportunities/:id/merge', async ({ user, params, body }) => bn.mergeLeads(estWrite(user), uuid(params.id), uuid(body.otherId)));
+route('POST', '/api/opportunities/:id/not-same', async ({ user, params, body }) => bn.notSameJob(estWrite(user), uuid(params.id), uuid(body.otherId)));
+route('POST', '/api/opportunities/:id/files/copy', async ({ user, params, body }) => es.copyProposalFile(estWrite(user), uuid(params.id), uuid(body.fileId)));
 route('POST', '/api/opportunities/:id/unbundle', async ({ user, params }) => bn.unmerge(estWrite(user), uuid(params.id)));
 route('GET', '/api/opportunities/:id', async ({ user, params }) => { estRead(user); const d = await es.get(uuid(params.id)); return d.projectId && auth.MANAGE.includes(user.role) ? { ...d, projectDocs: await es.projectDocsForLead(d.projectId) } : d; });
 // The same lead files and job-folder listing, seen from the project (people on the project do not need Estimating access).

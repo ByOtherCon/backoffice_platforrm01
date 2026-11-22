@@ -94,3 +94,18 @@ export function sameJob(a: { name: string; city: string | null; address: string 
   // no address to compare (one or both missing): the project names have to say the same thing, every meaningful word of the shorter one
   return which >= 1 && common >= 1 && common === Math.min(wa.length, wb.length);
 }
+
+// Two leads that could be the same job although sameJob cannot be sure of it. They are asked about (when a proposal is submitted), never
+// joined on their own. Returns why they look alike, or null. Different cities, or two different suite numbers, are never asked about.
+export function maybeSameJob(a: { name: string; city: string | null; address: string | null; client?: string | null; threadId?: string | null }, b: typeof a): string | null {
+  if (sameJob(a, b)) return 'Same job: the same store at the same address.';
+  const ca = cityKey(a.city), cb = cityKey(b.city); if (ca && cb && ca !== cb) return null;
+  const aa = addressParts(a.address), ba = addressParts(b.address); if (aa.unit && ba.unit && !sameUnit(aa.unit, ba.unit)) return null;
+  const ta = tenantWords(a.name, a.city, b.city), tb = tenantWords(b.name, a.city, b.city), shared = ta.filter((t) => tb.includes(t));
+  const where = ca || cb ? 'the same city' : 'no city on file';
+  if (shared.length) return aa.street && ba.street && aa.street !== ba.street ? `The same store name (${shared.join(' ')}) in ${where}, written with a different address.` : `The same store name (${shared.join(' ')}) in ${where}.`;
+  const cla = norm(a.client || ''), clb = norm(b.client || ''); if (cla.length > 2 && cla === clb) return `The same client (${a.client}) in ${where}.`;
+  const wa = words(a.name), wb = words(b.name), both = wa.filter((w) => wb.includes(w)).length, all = new Set([...wa, ...wb]).size;
+  if (both >= 2 && all && both / all >= 0.6) return 'The project names are almost the same.';
+  return null;
+}

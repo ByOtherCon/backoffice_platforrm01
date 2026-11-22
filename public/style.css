@@ -321,3 +321,7 @@ table tr.grp th{text-align:center;border-bottom:1px solid var(--line);padding-bo
 /* the Tracking button: grey with no tracking number, white while on the way, green when delivered */
 button.track-none{background:#eef0f4;color:#8a90a0;border-color:#e1e4ea}
 button.track-done{background:#e3f4e8;color:#17632f;border-color:#9fd6b0}
+/* links that open SharePoint: teal with a SharePoint tag, so they stand apart from the files kept in the app (navy) */
+a.sp-link{color:#0e7490}
+a.sp-link::after{content:'SharePoint \2197';display:inline-block;margin-left:.35em;padding:0 .38em;border-radius:4px;background:#0e7490;color:#fff;font-size:10px;font-weight:700;letter-spacing:.02em;line-height:1.55;vertical-align:1px;text-decoration:none}
+a.chat-file.sp-link{border-color:#0e7490;background:#ecfeff}

@@ -289,3 +289,8 @@ Saved entries are changed with **Edit**, never by deleting and adding again:
 - **Documents**: name, type and expiry date (a subcontractor's W-9, insurance or exemption keeps its type).
 - **Tracking numbers**: the number (a new number starts tracking again) and what is being delivered.
 Invoices to the GC, subcontracts, change orders, trades, time entries, to-dos, overhead and billing notes already had Edit.
+
+## SharePoint links and joining leads by hand
+- **SharePoint links stand out.** Any link that opens SharePoint (a file or a folder there) is teal with a small **SharePoint ↗** tag (`public/ui.js` marks every `https://…sharepoint.com/` link); files kept in the app stay navy.
+- **Join Another Lead** (on a lead): for two leads that are the same job but were not joined on their own. It lists the leads that look like the same job first, and searches any lead. The one you open is kept: the same GC is combined into one lead; another GC is bundled in (`POST /api/opportunities/:id/merge`). A lead that already has its own P number or submission has to be the one kept; two that both have one stay two leads.
+- **After a submission**, leads that may be the same job (`maybeSameJob` in `src/lib/bidrules.ts`: the same store name in the same city with the address written differently, the same client in the same city, or almost the same project name; never different cities or different suites) are shown in **Is This The Same Job?** with why. Each one: **Submit To <GC> Too** (the same PDF is copied onto that lead and its Submit window opens with the same prices), **Same Job: Join It In**, or **Not The Same Job** (remembered in `lead_not_same`, not asked again).

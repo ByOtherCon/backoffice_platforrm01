@@ -593,3 +593,18 @@ export async function saveSettings(b) {
   if ((v.expiringDays ?? W.DEFAULT_RULES.expiringDays) > (v.expireDays ?? W.DEFAULT_RULES.expireDays)) throw bad('"Lead is expiring" has to come before Decided Not To Submit.');
   await q(`INSERT INTO app_settings(key,value) VALUES ('estimating',$1) ON CONFLICT (key) DO UPDATE SET value=$1, updated_at=now()`, [v]);
 }
+
+// The same proposal PDF, put on another lead: for submitting it to that lead's GC too. The bytes are copied (each lead keeps its own file).
+export async function copyProposalFile(user, id, fileId) {
+  const [o] = await q('SELECT id FROM opportunities WHERE id=$1', [id]); if (!o) throw new HttpError(404, 'Opportunity not found.');
+  const [f] = await q(`SELECT * FROM opportunity_files WHERE id=$1 AND kind='Proposal'`, [fileId]); if (!f || !/\.pdf$/i.test(f.name)) throw bad('Choose the proposal PDF.');
+  if (f.opportunity_id === id) return { fileId: f.id, name: f.name };
+  if (!f.storage_key) throw bad('That PDF is kept only in SharePoint. Open it there, save it, and upload it on this lead.');
+  const fsm = await import('node:fs'), crypto = await import('node:crypto'), ext = path.extname(f.storage_key) || '.pdf', key = crypto.randomBytes(16).toString('hex') + ext;
+  const bytes = await fsm.promises.readFile(path.join(UPLOAD_DIR, path.basename(f.storage_key)));
+  await fsm.promises.writeFile(path.join(UPLOAD_DIR, key), bytes, { mode: 0o600 });
+  const [row] = await q('INSERT INTO opportunity_files(opportunity_id,kind,name,storage_key,mime,size,created_by,sha256) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id', [id, 'Proposal', f.name, key, f.mime, f.size, user.id, f.sha256]);
+  folders.pushOpportunityFile(id, { kind: 'Proposal', filename: f.name, bytes, mime: f.mime }).then((up) => (up?.webUrl ? q('UPDATE opportunity_files SET sp_url=$2, sp_item_id=$3 WHERE id=$1', [row.id, up.webUrl, up.id ?? null]) : null)).catch(() => {});
+  await q(`INSERT INTO opportunity_notes(opportunity_id,user_id,kind,body) VALUES ($1,$2,'System',$3)`, [id, user.id, `Proposal "${f.name}" copied here from another lead for the same job by ${who(user)}, to submit it to this GC too.`]);
+  return { fileId: row.id, name: f.name };
+}

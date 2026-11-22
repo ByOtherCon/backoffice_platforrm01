@@ -24,6 +24,8 @@ export const h = (tag, attrs = {}, ...kids) => {
     else if ((k === 'href' || k === 'src' || k === 'action' || k === 'formaction') && /^\s*(javascript|vbscript|data):/i.test(String(v))) continue;   // never a script link, whatever the data says
     else el.setAttribute(k, v === true ? '' : v);
   }
+  // a link that opens SharePoint (a file or a folder there) is marked, so it stands apart from the files kept in the app
+  if (tag === 'a' && /^https:\/\/[^/]*sharepoint\.com\//i.test(el.getAttribute('href') || '')) { el.classList.add('sp-link'); if (!el.title) el.title = 'Opens in SharePoint'; }
   const only = kids.flat(Infinity).filter((x) => x != null && x !== false);
   if (tag === 'button' && /\bdanger\b/.test(attrs?.class || '') && only.length === 1 && typeof only[0] === 'string' && /^(delete|remove)$/i.test(only[0].trim())) {
     el.classList.add('icon'); if (!el.title) el.title = only[0].trim(); el.setAttribute('aria-label', only[0].trim()); el.append(trashIcon()); return el;

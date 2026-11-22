@@ -196,8 +196,8 @@ function acceptedModal(o, r) {
 }
 
 // ---------------------------------------------------------------- submitting: the proposal PDF is required, read, and checked by a person
-async function submitModal(o) {
-  const op = await opts(); let fileId = null, rows = (o.tradePrices || []).map((p) => ({ tradeId: p.tradeId, amount: p.amount, hint: '' }));
+async function submitModal(o, pre = null) {
+  const op = await opts(); let fileId = pre?.fileId ?? null, rows = pre ? pre.rows.map((r) => ({ ...r })) : (o.tradePrices || []).map((p) => ({ tradeId: p.tradeId, amount: p.amount, hint: '' }));
   const file = h('input', { type: 'file', accept: 'application/pdf,.pdf' }), info = h('div'), table = h('div'), total = h('strong');
   const f = { date: h('input', { type: 'date', value: todayStr(), max: todayStr() }), method: h('select', {}, op.methods.map((m) => h('option', { value: m }, m))), start: h('input', { type: 'date', value: o.plannedStart ?? '' }), note: h('textarea', { rows: 2, placeholder: 'Optional' }) };
   const sum = () => rows.reduce((n, r) => n + (Number(r.amount) || 0), 0);
@@ -216,6 +216,7 @@ async function submitModal(o) {
     redraw();
   });
   redraw();
+  if (pre) { f.date.value = pre.date; f.method.value = pre.method; notice(info, `Using the same proposal PDF (${pre.fileName}) and prices as the lead for ${pre.fromGc}. Change the prices if ${o.gc}'s are different.`, 'ok'); }
   // a proposal written in the estimating chat is already saved on the lead: pick it instead of uploading it again, and its prices fill in
   const savedList = (o.files || []).filter((x) => x.kind === 'Proposal' && /\.pdf$/i.test(x.name) && !x.used && !x.removed).sort((a, b) => String(b.at).localeCompare(String(a.at)));
   const saved = h('select', {}, h('option', { value: '' }, 'Choose a saved proposal…'), savedList.map((x) => h('option', { value: x.id }, `${x.version ? `Version ${x.version} · ` : ''}${x.name}`)));
@@ -227,8 +228,42 @@ async function submitModal(o) {
     if (!fileId) throw new Error('Upload the proposal PDF first.');
     if (rows.some((r) => !r.tradeId || !(Number(r.amount) > 0))) throw new Error('Every row needs a trade and an amount.');
     await api('POST', `/opportunities/${o.id}/submissions`, { fileId, date: f.date.value, method: f.method.value, plannedStart: f.start.value || null, noteText: f.note.value, prices: rows.map((r) => ({ tradeId: r.tradeId, amount: r.amount })) });
+    // other leads that may be the same job (not joined on their own): ask before moving on
+    let maybe = []; try { maybe = (await api('GET', `/opportunities/${o.id}/possible-matches`)).leads; } catch { /* the question is skipped */ }
+    if (maybe.length) { const file = (o.files || []).find((x) => x.id === fileId); setTimeout(() => matchesModal(o, maybe, { fileId, fileName: file?.name || 'the proposal PDF', rows: rows.map((r) => ({ tradeId: r.tradeId, amount: r.amount, hint: '' })), date: f.date.value, method: f.method.value, fromGc: o.gc }), 0); return; }
     location.hash = '#/estimating/submittals'; render();
   }, 'Record submission');
+}
+
+// After a submission: leads that may be the same job (not joined on their own), with what can be done about each. The app is not sure,
+// so it asks: join it in, submit the same proposal to that GC too, or say it is not the same job (then it is not asked again).
+function matchesModal(o, leads, pre) {
+  const err = h('div'), list = h('div'), done = () => { bg.remove(); location.hash = '#/estimating/submittals'; render(); };
+  const card = (m) => { const el = h('div', { class: 'card', style: 'margin:.5rem 0;padding:.7rem .8rem' },
+    h('div', {}, h('strong', {}, m.name), m.proposalId ? ` · ${m.proposalId}` : ''), sub([(m.gcs || [m.gc]).join(' · '), m.address || m.city, sname(m.status), m.due ? 'due ' + fmtDay(m.due) : ''].filter(Boolean).join(' · ')),
+    h('p', { style: 'margin:.35rem 0' }, h('em', {}, m.why)),
+    h('div', { class: 'row', style: 'gap:.4rem;flex-wrap:wrap' },
+      m.canSubmit ? h('button', { class: 'primary small', onclick: guard(err, async () => { const c = await api('POST', `/opportunities/${m.id}/files/copy`, { fileId: pre.fileId }), lead = await api('GET', `/opportunities/${m.id}`); bg.remove(); submitModal(lead, { ...pre, fileId: c.fileId, fileName: c.name }); }) }, `Submit To ${m.gc} Too`)
+        : ['New', 'Reviewing'].includes(m.status) ? h('a', { class: 'btn small', href: '#/estimating/' + m.id, onclick: () => bg.remove() }, 'Open It To Accept And Submit') : '',
+      m.canMerge ? h('button', { class: 'small', onclick: guard(err, async () => { if (!confirm(`Join "${m.name}" (${m.gc}) into this lead? ${m.sameGc ? 'Same GC: it becomes one lead.' : 'Another GC: it is bundled in, and any of these GCs can award it.'} Its notes and files move here.`)) return; await api('POST', `/opportunities/${o.id}/merge`, { otherId: m.id }); el.replaceChildren(h('p', { class: 'muted', style: 'margin:0' }, `"${m.name}" was joined into this lead.`)); }) }, 'Same Job: Join It In') : '',
+      h('button', { class: 'small', onclick: guard(err, async () => { await api('POST', `/opportunities/${o.id}/not-same`, { otherId: m.id }); el.remove(); if (!list.children.length) done(); }) }, 'Not The Same Job')),
+    !m.canMerge && m.mergeNote ? sub(m.mergeNote) : ''); return el; };
+  list.append(...leads.map(card));
+  const bg = modal('Is This The Same Job?', h('div', {}, h('p', { class: 'muted', style: 'margin-top:0' }, `The proposal for ${o.name} (${o.gc}) is recorded. ${leads.length === 1 ? 'This lead looks' : 'These leads look'} like it could be the same job, but the app is not sure enough to join ${leads.length === 1 ? 'it' : 'them'} on its own.`), err, list,
+    h('div', { class: 'row', style: 'justify-content:flex-end;margin-top:.6rem' }, h('button', { type: 'button', class: 'primary', onclick: done }, 'Done'))));
+}
+// Joins another lead into this one: the likely matches first, or any lead found by the search.
+async function mergeModal(o) {
+  const err = h('div'), list = h('div'), box = h('input', { type: 'search', placeholder: 'Find the other lead: name, GC, city or P number', autocomplete: 'off', style: 'width:100%' });
+  const join = (x) => guard(err, async () => { if (!confirm(`Join "${x.name}" (${x.gc}) into "${o.name}" (${o.gc})?\n\nThe same GC becomes one lead; another GC is bundled in. Its notes, files and messages move here. This lead is the one kept.`)) return; const r = await api('POST', `/opportunities/${o.id}/merge`, { otherId: x.id }); bg.remove(); notice(err, r.how === 'bundled' ? 'Bundled.' : 'Joined.', 'ok'); render(); });
+  const table = (rows, why) => h('table', { class: 'nostack' }, h('tbody', {}, rows.map((x) => h('tr', {}, h('td', { style: 'white-space:normal' }, h('strong', {}, x.name), x.proposalId ? ` · ${x.proposalId}` : '', sub([(x.gcs || [x.gc]).join(' · '), x.city, x.statusLabel || sname(x.status)].filter(Boolean).join(' · ')), why && x.why ? sub(x.why) : '', x.mergeNote ? sub(x.mergeNote) : ''),
+    h('td', {}, x.canMerge === false ? '' : h('button', { class: 'small primary', type: 'button', onclick: join(x) }, 'Join Into This Lead'))))));
+  const sugg = (await api('GET', `/opportunities/${o.id}/possible-matches`)).leads;
+  const showSugg = () => list.replaceChildren(sugg.length ? h('div', {}, h('label', {}, 'Leads that look like the same job'), table(sugg, true)) : h('p', { class: 'muted' }, 'No lead looks like the same job. Search for the other one.'));
+  let tm = 0; box.oninput = () => { clearTimeout(tm); tm = setTimeout(guard(err, async () => { const t = box.value.trim(); if (!t) return showSugg(); const rows = (await api('GET', `/opportunities?tab=search&q=${encodeURIComponent(t)}`)).rows.filter((x) => x.id !== o.id); list.replaceChildren(rows.length ? table(rows.slice(0, 25), false) : h('p', { class: 'muted' }, 'Nothing matches.')); }), 300); };
+  showSugg();
+  const bg = modal(`Join Another Lead Into ${o.name}`, h('div', {}, h('p', { class: 'muted', style: 'margin-top:0' }, 'For two leads that are the same job but were not joined on their own. The one you open is kept; the other joins it. A lead that already has its own P number or submission has to be the one kept.'), box, err, list));
+  setTimeout(() => box.focus(), 50);
 }
 
 // A status control used in every table: it lists only the moves that are allowed from here and opens the matching form.
@@ -511,7 +546,7 @@ async function opportunityDetail(id, err, w, editing) {
   const o = await api('GET', '/opportunities/' + id), op = await opts(), known = await api('GET', '/gcs/known');
   const built = buildOpportunityForm(o, op, known, { readonly: !editing }), msg = h('div');
   const save = guard(msg, async () => { await api('PUT', '/opportunities/' + id, built.body()); location.hash = '#/estimating/' + id; render(); });
-  return h('div', { class: 'card', style: 'border-color:var(--navy)' }, h('div', { class: 'row spread' }, h('h2', {}, `${o.proposalId ? o.proposalId + ' · ' : ''}${o.name}`), h('a', { href: state.estBack || '#/estimating/' + (['New', 'Declined'].includes(o.status) ? 'bids' : o.lastSubmission ? 'submittals' : 'proposals'), onclick: (e) => { e.preventDefault(); closeLead(); } }, 'Close')),
+  return h('div', { class: 'card', style: 'border-color:var(--navy)' }, h('div', { class: 'row spread' }, h('h2', {}, `${o.proposalId ? o.proposalId + ' · ' : ''}${o.name}`), h('div', { class: 'row', style: 'gap:.6rem;align-items:center' }, w && !o.mergedInto && !o.projectId ? h('button', { class: 'small', type: 'button', title: 'Two leads for the same job that were not joined on their own', onclick: () => mergeModal(o).catch((e) => alert(e.message)) }, 'Join Another Lead') : '', h('a', { href: state.estBack || '#/estimating/' + (['New', 'Declined'].includes(o.status) ? 'bids' : o.lastSubmission ? 'submittals' : 'proposals'), onclick: (e) => { e.preventDefault(); closeLead(); } }, 'Close'))),
     h('div', { class: 'row', style: 'margin:.3rem 0 .8rem;flex-wrap:wrap;gap:.5rem' }, statusSelect(o, w), o.expiry === 'expiring' ? h('span', { class: 'neg', style: 'font-size:13px;font-weight:600' }, 'Lead is expiring') : '',
       w && !editing ? h('button', { class: 'small', onclick: () => (location.hash = `#/estimating/${id}/edit`) }, 'Edit') : '', w && editing ? h('button', { class: 'small primary', onclick: save }, 'Save changes') : '', editing ? h('button', { class: 'small', onclick: () => (location.hash = '#/estimating/' + id) }, 'Cancel') : '',
       o.lastSubmission ? h('a', { href: '#/estimating/followups/' + o.id }, 'Open follow-up') : '', o.projectId ? h('a', { href: '#/projects/' + o.projectId }, 'Open the project') : ''), msg,

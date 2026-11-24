@@ -294,6 +294,7 @@ function searchResults(rows, term) {
 }
 const TABS = [['bids', 'Bid Opportunities'], ['proposals', 'Proposal Tracker'], ['submittals', 'Submittal Tracker'], ['followups', 'Follow Ups'], ['insights', 'Insights']];
 export async function estimatingView(arg, arg2) {
+  if (String(arg || '').startsWith('bcdate')) return bookmarkView();   // sent by the "Send Bid Date" bookmark from a BuildingConnected invitation
   if (arg && arg2 === 'chat') return estchat.estimateChatView(arg, canEstimate());   // Estimate With AI: its own page for one lead
   const tab = TABS.some(([t]) => t === arg) ? arg : 'bids', detailId = arg && !TABS.some(([t]) => t === arg) ? arg : null, err = h('div'), w = canEstimate();
   const search = state.estSearch || '';
@@ -433,6 +434,41 @@ const contactBlock = (o) => { const nda = (o.invitations || []).some((i) => i.nd
 const findDue = (o, btn) => async () => { btn.disabled = true; btn.textContent = 'Looking…'; try { const r = await api('POST', `/opportunities/${o.id}/find-due`); alert(r.message); if (r.found) render(); } catch (e) { alert(e.message); } finally { btn.disabled = false; btn.textContent = 'Find It'; } };
 const dueCell = (o) => { const btn = h('button', { class: 'small', type: 'button', title: 'The AI reads the invitation email and page for the bid due date' }, 'Find It'); btn.onclick = findDue(o, btn);
   return h('td', {}, o.due ? [fmtDay(o.due), o.dueTime ? sub(`${o.dueTime} Eastern`) : sub(o.countdown)] : [h('strong', { class: 'neg', style: 'font-size:13px' }, 'NO BID DUE DATE PROVIDED'), (o.invitations || []).some((i) => i.nda) ? sub('May be locked behind an NDA') : '', h('div', { style: 'margin-top:.25rem' }, btn)]); };
+// The "Send Bid Date" bookmark, made for this site: dragged once to the bookmarks bar. On a BuildingConnected invitation (signed in) one
+// click sends the page's address and the text at the top of the page (where the due date is, in red) to this app, which saves the date.
+function bookmarkTip() {
+  const code = `javascript:(()=>{const t=(document.body.innerText||'').slice(0,8000);window.open(${JSON.stringify(location.origin + '/#/estimating/bcdate?')}+new URLSearchParams({u:location.href,t:t}).toString(),'_blank');})()`;
+  const a = h('a', { class: 'btn small primary', title: 'Drag me to your bookmarks bar', onclick: (e) => { e.preventDefault(); alert('Drag this button to your bookmarks bar (on a computer). Then, on a BuildingConnected invitation, click it once.'); } }, 'Send Bid Date'); a.setAttribute('href', code);   // our own code, so it is set here directly
+  return h('details', { style: 'margin:.2rem 0 .6rem' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, 'Faster: the one-click Send Bid Date bookmark'),
+    h('p', { class: 'muted', style: 'margin:.4rem 0' }, 'Drag this button to your browser\'s bookmarks bar once. Then, signed in to BuildingConnected, open an invitation and click it: the app reads the due date shown in red at the top and saves it on the lead.'), a);
+}
+// The page the bookmark opens: reads what it sent, finds the lead, and saves the date (or asks which lead it is).
+async function bookmarkView() {
+  const p = new URLSearchParams(location.hash.split('?').slice(1).join('?')), url = p.get('u') || '', text = p.get('t') || '', box = h('div'), err = h('div');
+  const send = async (leadId) => { notice(err, 'Reading the bid date…', 'ok'); const r = await api('POST', '/opportunities/due-from-bookmark', { url, text, leadId });
+    notice(err, ''); box.replaceChildren(r.found ? h('div', {}, h('p', {}, h('span', { class: 'pill Approved' }, 'Saved'), ' ', h('strong', {}, r.lead.name), ` (${r.lead.gc}): ${r.message}`), h('p', { class: 'muted' }, 'You can close this tab and send the next invitation.'), h('a', { href: '#/estimating/' + r.lead.id }, 'Open the lead'))
+      : r.choose ? h('div', {}, h('p', {}, r.message), r.choose.length ? h('div', { class: 'row', style: 'gap:.4rem;flex-wrap:wrap' }, r.choose.map((o) => h('button', { class: 'small', onclick: guard(err, () => send(o.id)) }, `${o.name} · ${o.gc}`))) : h('p', { class: 'muted' }, 'Every open lead already has its due date, or this invitation is not in the list yet.'))
+      : h('p', {}, r.message)); };
+  setTimeout(() => guard(err, () => send(null))(), 0);
+  return C.shell('estimating', [h('h1', {}, 'Bid Date From BuildingConnected'), h('p', { class: 'muted' }, url ? 'From ' + url.slice(0, 120) : 'Nothing was sent. Use the Send Bid Date bookmark on an invitation page.'), err, h('div', { class: 'card' }, box)]);
+}
+// Leads still without a bid due date after the AI looked: one window to go through them. Open the invitation (signed in to BuildingConnected
+// in your own browser), then type the date, or copy the whole page (Ctrl+A, Ctrl+C) and paste it so the AI reads the date from it.
+async function updateDueDates() {
+  const leads = (await api('GET', '/opportunities/missing-due')).leads, err = h('div'), list = h('div');
+  const card = (o) => { const date = h('input', { type: 'date' }), time = h('input', { type: 'time' }), paste = h('textarea', { rows: 3, style: 'width:100%', placeholder: 'Or paste the whole invitation page here (on the page: Ctrl+A, then Ctrl+C) and the AI reads the date' }), msg = h('div');
+    const done = (r) => { el.replaceChildren(h('div', { class: 'row', style: 'gap:.5rem' }, h('span', { class: 'pill Approved' }, 'Updated'), h('strong', {}, o.name), h('span', { class: 'muted' }, r.message))); };
+    const el = h('div', { class: 'card', style: 'margin:.5rem 0;padding:.7rem .8rem' }, h('div', {}, h('strong', {}, o.name), sub([o.gc, o.city, sname(o.status)].filter(Boolean).join(' · '))),
+      h('div', { class: 'row', style: 'gap:.5rem;flex-wrap:wrap;margin:.5rem 0' }, o.link ? h('a', { class: 'btn small primary', href: o.link, target: '_blank', rel: 'noopener' }, o.signIn ? '1. Open The Invitation (Sign In To BuildingConnected)' : '1. Open The Invitation') : h('span', { class: 'muted' }, 'No invitation link on file.'),
+        o.emailLink ? h('a', { class: 'btn small', href: o.emailLink, target: '_blank', rel: 'noopener' }, 'Open The Email') : ''),
+      h('div', { class: 'row', style: 'gap:.4rem;flex-wrap:wrap;align-items:flex-end' }, h('div', {}, h('label', {}, '2. Bid Due Date'), date), h('div', {}, h('label', {}, 'Time (optional)'), time),
+        h('button', { class: 'primary small', type: 'button', onclick: guard(msg, async () => { if (!date.value) throw new Error('Enter the date.'); done(await api('POST', `/opportunities/${o.id}/due`, { date: date.value, time: time.value || null })); }) }, 'Save')),
+      h('div', { style: 'margin-top:.4rem' }, paste, h('button', { class: 'small', type: 'button', style: 'margin-top:.3rem', onclick: guard(msg, async () => { if (!paste.value.trim()) throw new Error('Paste the page first.'); notice(msg, 'Reading the page…', 'ok'); const r = await api('POST', `/opportunities/${o.id}/due-from-page`, { text: paste.value }); if (r.found) done(r); else notice(msg, r.message); }) }, 'Read The Date From The Page')), msg);
+    return el; };
+  list.append(...(leads.length ? leads.map(card) : [h('p', { class: 'muted' }, 'Every open lead has its bid due date.')]));
+  const bg = modal('Update Due Dates', h('div', {}, h('p', { class: 'muted', style: 'margin-top:0' }, 'The AI could not find these in the invitation emails. BuildingConnected invitations need you signed in, so open each one in your browser, then type the date or paste the page.'), bookmarkTip(), err, list,
+    h('div', { class: 'row', style: 'justify-content:flex-end;margin-top:.6rem' }, h('button', { class: 'primary', type: 'button', onclick: () => { bg.remove(); render(); } }, 'Done'))));
+}
 function bidsPanel(data, err, w, feed, dups = []) {
   const rows = data.groups.flatMap((g) => g.rows.map((o) => ({ ...o, week: g.name }))); rows.forEach((o, i) => (o.rank = i));
   const sort = state.bidSort || { key: 'week', dir: 1 };
@@ -441,7 +477,11 @@ function bidsPanel(data, err, w, feed, dups = []) {
   const head = BID_COLS.map(([k, l]) => h('th', {}, h('button', { class: 'sortbtn', onclick: () => { state.bidSort = { key: k, dir: sort.key === k ? -sort.dir : 1 }; render(); } }, l, h('span', { class: sort.key === k ? 'on' : '' }, sort.key === k ? (sort.dir === 1 ? ' ↑' : ' ↓') : ' ↕'))));
   const tip = BID_RULES(data.rules || { declineNewDays: 2 });
   const banner = dups.length ? h('div', { class: 'card', style: 'padding:.7rem 1rem;border-color:var(--navy)' }, h('div', { class: 'row spread' }, h('span', {}, h('strong', {}, `${dups.length} ${dups.length === 1 ? 'job appears' : 'jobs appear'} under more than one GC.`), ' Bundle them so each job is one lead and one submission.'), h('button', { class: 'primary small', onclick: () => bundleModal(dups) }, 'Review And Bundle'))) : '';
-  return h('div', {}, bidFeedBar(feed, err, w), banner,
+  // leads still without a bid due date: ask the estimator to open them signed in and enter it
+  const noDue = rows.filter((o) => !o.due && ['New', 'Reviewing'].includes(o.status)).length;
+  const dueBar = noDue && w ? h('div', { class: 'card', style: 'border-color:#b45309;background:#fffbeb;display:flex;gap:.8rem;align-items:center;flex-wrap:wrap' }, h('div', { style: 'flex:1;min-width:16rem' }, h('strong', {}, `${noDue} lead${noDue === 1 ? ' has' : 's have'} no bid due date.`), ' ', h('span', { class: 'muted' }, 'The AI looks in the invitation emails after every refresh. BuildingConnected invitations need you signed in: open them and enter the date.')),
+    h('button', { class: 'primary', type: 'button', onclick: () => updateDueDates().catch((e) => alert(e.message)) }, 'Update Due Dates')) : '';
+  return h('div', {}, bidFeedBar(feed, err, w), dueBar, banner,
     h('div', { class: 'card' }, h('div', { class: 'row spread' }, h('h2', {}, 'Bid Opportunities'), h('div', { class: 'row' }, h('label', { style: 'text-transform:none;letter-spacing:0;font-size:14px;font-weight:400;margin:0' }, h('input', { type: 'checkbox', checked: state.estAll ? true : null, onchange: (e) => { state.estAll = e.target.checked; render(); } }), ' Include declined (last 30 days)'), h('span', { class: 'info-tip', tabindex: '0', 'aria-label': tip, 'data-tip': tip }, 'i'))),
       rows.length ? h('div', { class: 'scroll' }, h('table', { class: 'biglist' }, h('thead', {}, h('tr', {}, ...head, h('th', {}, 'Actions'))),
         h('tbody', {}, rows.map((o) => h('tr', { class: o.status === 'Declined' ? 'muted' : '' },

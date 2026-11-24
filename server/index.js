@@ -252,6 +252,10 @@ route('POST', '/api/address/verify', async ({ user, body }) => {
 route('GET', '/api/opportunities', async ({ req, user }) => { estRead(user); return es.list({ tab: q1(req, 'tab'), search: q1(req, 'q'), showAll: q1(req, 'all') === '1', filter: q1(req, 'filter'), scope: q1(req, 'scope'), userId: user.id }); });
 route('POST', '/api/opportunities', async ({ user, body }) => es.create(estWrite(user), body));
 route('POST', '/api/opportunities/import', async ({ user, body }) => es.importLeads(estWrite(user), body));
+route('GET', '/api/opportunities/missing-due', async ({ user }) => { estRead(user); const dd = await import('./duedates.js'); return { leads: await dd.missingDueDates() }; });
+route('POST', '/api/opportunities/due-from-bookmark', async ({ user, body }) => { const dd = await import('./duedates.js'); return dd.dueFromBookmark(estWrite(user), { ...body, leadId: body.leadId ? uuid(body.leadId) : null }); });
+route('POST', '/api/opportunities/:id/due', async ({ user, params, body }) => { const dd = await import('./duedates.js'); return dd.setDueDate(estWrite(user), uuid(params.id), body); });
+route('POST', '/api/opportunities/:id/due-from-page', async ({ user, params, body }) => { const dd = await import('./duedates.js'); return dd.dueFromPaste(estWrite(user), uuid(params.id), body); });
 route('GET', '/api/opportunities/bundles', async ({ user }) => { estRead(user); return { groups: await bn.findDuplicates() }; });
 route('GET', '/api/opportunities/similar', async ({ req, user }) => { estRead(user); return { leads: await bn.similarFor({ name: q1(req, 'name'), city: q1(req, 'city'), address: q1(req, 'address'), gc: q1(req, 'gc') }) }; });
 // E-signatures (DocuSign). The owner connects the account; office staff and a project's manager send that project's PDFs for signature.

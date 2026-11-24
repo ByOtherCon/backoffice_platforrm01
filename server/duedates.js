@@ -9,6 +9,8 @@ import { HttpError } from './http.js';
 import { callClaude, aiConnected } from './ai.js';
 import { gmailClient, emailText } from './bids.js';
 import { normalizeDate } from '../src/lib/estimating.ts';
+import { text as textField, dateStr, bad } from './http.js';
+import { notifyRoles } from './compliance.js';
 
 let pageFetch = (...a) => fetch(...a);
 export const setPageFetch = (f) => { pageFetch = f; };   // tests stand in for the web
@@ -83,5 +85,57 @@ export async function findMissingDueDates({ userId = null, limit = 10 } = {}) {
     AND created_at > now() - interval '60 days' AND (due_checked_at IS NULL OR due_checked_at < now() - interval '12 hours') ORDER BY created_at DESC LIMIT $1`, [limit]);
   let c = null; try { c = await gmailClient(); } catch { c = null; }
   let found = 0; for (const r of rows) { try { if ((await findDueDate(r.id, { userId, client: c })).found) found++; } catch (e) { console.error('due date check', e.message); } }
+  // what the AI could not find: the estimators are asked (once a day) to open those invitations, signed in, and enter the date
+  const left = (await missingDueDates()).filter((x) => x.checkedAt);
+  if (left.length) await notifyRoles(EST, { kind: 'estimating', title: `${left.length} lead${left.length === 1 ? ' needs its' : 's need their'} bid due date`, body: 'The AI could not find it in the invitation emails. Invitations in BuildingConnected need you signed in: press Update Due Dates on the Bid Opportunities list.', link: '#/estimating/bids', dedupe: `missing-due:${new Date().toISOString().slice(0, 10)}` }).catch(() => {});
   return { checked: rows.length, found };
+}
+
+// ---------------------------------------------------------------- the person fills in what the AI could not reach
+const EST = ['Super Admin', 'Sub Admin', 'Estimator'];
+const OPEN = ['New', 'Reviewing', 'Accepted', 'Started'];
+// Open leads still without a bid due date, with the invitation link to open (signed in) and the invitation email.
+export async function missingDueDates() {
+  const rows = await q(`SELECT id, name, gc_name, city, status, invitation_link, email_link, invitations, due_checked_at, created_at FROM opportunities WHERE due_date IS NULL AND merged_into IS NULL AND status = ANY($1::text[]) AND created_at > now() - interval '60 days' ORDER BY created_at DESC LIMIT 100`, [OPEN]);
+  return rows.map((r) => { const links = [r.invitation_link, ...(Array.isArray(r.invitations) ? r.invitations.map((x) => x.link) : [])].filter((l) => /^https:\/\//.test(l || ''));
+    return { id: r.id, name: r.name, gc: r.gc_name, city: r.city, status: r.status, link: links[0] || null, signIn: links.some((l) => /buildingconnected\.com/i.test(l)), emailLink: r.email_link || null, checkedAt: r.due_checked_at }; });
+}
+// The date typed in by the person who opened the invitation.
+export async function setDueDate(user, id, b = {}) {
+  const date = dateStr(b.date, 'Bid due date', true), time = b.time ? String(b.time) : null; if (time && !/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) throw bad('Enter the time as HH:MM.');
+  const [o] = await q('UPDATE opportunities SET due_date=$2, due_time=COALESCE($3,due_time), due_found_by=$4 WHERE id=$1 RETURNING id', [id, date, time, 'person']); if (!o) throw new HttpError(404, 'Opportunity not found.');
+  await q(`INSERT INTO opportunity_notes(opportunity_id,user_id,kind,body) VALUES ($1,$2,'System',$3)`, [id, user.id, `Bid due date ${date}${time ? ' ' + time : ''} entered from the invitation by ${user.name || user.email}.`]);
+  return { found: true, date, time, message: `Due ${date}${time ? ' at ' + time : ''}.` };
+}
+// The invitation page as the person sees it signed in (Ctrl+A, Ctrl+C, pasted): the AI reads the due date from it, quoted as always.
+export async function dueFromPaste(user, id, b = {}) {
+  const pasted = textField(b.text, 'The copied page', { max: 200000 });
+  const [o] = await q('SELECT * FROM opportunities WHERE id=$1', [id]); if (!o) throw new HttpError(404, 'Opportunity not found.');
+  if (!aiConnected()) throw new HttpError(503, 'AI is not connected yet. Type the date instead.');
+  const r = await callClaude({ userId: user.id, kind: 'duedate', label: `Due date (pasted): ${o.name}`, system: SYSTEM, tool: TOOL, maxTokens: 1500, prompt: `Job: ${o.name}\nGC: ${o.gc_name}\nCity: ${o.city || ''}\n\n=== INVITATION PAGE (copied by the estimator) ===\n${pasted.slice(0, 60000)}` });
+  const date = r.found ? normalizeDate(r.date) : null;
+  if (!date || !r.evidence || squash(r.evidence).length < 6 || !squash(pasted).includes(squash(r.evidence))) return { found: false, message: 'The copied page does not state the bid due date. Check you copied the whole invitation (Ctrl+A first), or type the date.' };
+  const time = /^([01]\d|2[0-3]):[0-5]\d$/.test(r.time || '') ? r.time : null;
+  await q('UPDATE opportunities SET due_date=$2, due_time=COALESCE($3,due_time), due_found_by=$4 WHERE id=$1', [id, date, time, 'page']);
+  await q(`INSERT INTO opportunity_notes(opportunity_id,user_id,kind,body) VALUES ($1,$2,'System',$3)`, [id, user.id, `Bid due date ${date}${time ? ' ' + time : ''} read by the AI from the invitation page copied by ${user.name || user.email}: "${String(r.evidence).slice(0, 300)}".`]);
+  return { found: true, date, time, message: `Due ${date}${time ? ' at ' + time : ''}, read from the page: "${String(r.evidence).slice(0, 120)}".` };
+}
+
+// The "Send Bid Date" bookmark: on a BuildingConnected invitation, open in the estimator's own browser (signed in), the bookmark sends the
+// page's address and the text at the top of the page (where BuildingConnected shows the due date in red). The lead is found by the
+// invitation's ID in its link, or else by the store name on the page; the AI then reads the date, quoted as always.
+const R = await import('../src/lib/bidrules.ts');
+export async function dueFromBookmark(user, b = {}) {
+  const url = String(b.url || '').slice(0, 2000), pageText = String(b.text || '');
+  if (!pageText.trim()) throw bad('Nothing was sent from the page. Open the invitation and press the bookmark again.');
+  const open = await q(`SELECT id, name, gc_name, city, invitation_link, invitations, due_date FROM opportunities WHERE merged_into IS NULL AND status = ANY($1::text[]) AND created_at > now() - interval '120 days'`, [OPEN]);
+  let lead = b.leadId ? open.find((o) => o.id === b.leadId) : null;
+  if (!lead) { const ids = url.match(/[a-f0-9]{24}/gi) || [];
+    if (ids.length) lead = open.find((o) => [o.invitation_link, ...(Array.isArray(o.invitations) ? o.invitations.map((x) => x.link) : [])].some((l) => ids.some((i) => String(l || '').toLowerCase().includes(i.toLowerCase())))); }
+  if (!lead) { const low = pageText.toLowerCase(), top = open.filter((o) => !o.due_date).filter((o) => { const w = R.tenantWords(o.name, o.city); return w.length && w.every((x) => low.includes(x)); });
+    if (top.length !== 1) return { found: false, choose: top.map((o) => ({ id: o.id, name: o.name, gc: o.gc_name, city: o.city })), message: top.length ? 'More than one lead could be this invitation. Pick the right one.' : 'No open lead matches this invitation. Pick the lead it belongs to.' };
+    lead = top[0]; }
+  if (lead.due_date && !b.leadId) return { found: false, already: true, lead: { id: lead.id, name: lead.name }, message: `${lead.name} already has its due date (${String(lead.due_date instanceof Date ? lead.due_date.toISOString().slice(0, 10) : lead.due_date)}).` };
+  const r = await dueFromPaste(user, lead.id, { text: pageText.slice(0, 60000) });
+  return { ...r, lead: { id: lead.id, name: lead.name, gc: lead.gc_name } };
 }

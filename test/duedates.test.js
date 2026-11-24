@@ -63,3 +63,38 @@ test('after a Gmail refresh the leads still missing a due date are looked at, at
   assert.ok((await q('SELECT body FROM opportunity_notes WHERE opportunity_id=$1', [id])).some((n) => /^No bid due date was found in the invitation email/.test(n.body)));
   assert.deepEqual(await dd.findMissingDueDates(), { checked: 0, found: 0 }); assert.equal(prompts.length, 1);   // not again within 12 hours
 });
+
+test('what the AI could not find: the estimators are asked once a day, and the person who opened the invitation types the date or pastes the page', async () => {
+  const [{ id }] = await q(`INSERT INTO opportunities(name,gc_name,city,status,source_key,invitation_link,due_checked_at) VALUES ('Ulta Brandon','CW Hayes','Brandon','New','dd4','https://app.buildingconnected.com/goto/abc', now()) RETURNING id`);
+  const list = (await call('GET', '/api/opportunities/missing-due', null, est)).body.leads, mine = list.find((x) => x.id === id);
+  assert.deepEqual([mine.link, mine.signIn], ['https://app.buildingconnected.com/goto/abc', true]);
+  await dd.findMissingDueDates(); await dd.findMissingDueDates();
+  const asked = await q(`SELECT n.title, n.link FROM notifications n JOIN app_users u ON u.id=n.user_id WHERE u.email='est@x.net' AND n.title LIKE '%bid due date%'`);
+  assert.equal(asked.length, 1); assert.match(asked[0].title, /need their bid due date|needs its bid due date/); assert.equal(asked[0].link, '#/estimating/bids');   // once a day
+  // pasted page: only a quoted date counts
+  answer = { found: true, date: '2026-12-12', time: '11:00', evidence: 'Due Date Dec 12, 2026 11:00 AM EST', source: 'invitation page' };
+  let r = await call('POST', `/api/opportunities/${id}/due-from-page`, { text: 'Ulta Brandon · Bid Package · Due Date Dec 13, 2026' }, est); assert.equal(r.body.found, false);
+  r = await call('POST', `/api/opportunities/${id}/due-from-page`, { text: 'Ulta Brandon · Bid Package · Due Date Dec 12, 2026 11:00 AM EST · Files (24)' }, est); assert.equal(r.body.found, true, JSON.stringify(r.body));
+  assert.deepEqual((await q('SELECT due_date::text AS d, due_time FROM opportunities WHERE id=$1', [id]))[0], { d: '2026-12-12', due_time: '11:00' });
+  // typed in
+  const [{ id: id2 }] = await q(`INSERT INTO opportunities(name,gc_name,city,status,source_key) VALUES ('Five Below Lakeland','CW Hayes','Lakeland','Reviewing','dd5') RETURNING id`);
+  assert.equal((await call('POST', `/api/opportunities/${id2}/due`, { date: '2026-12-15', time: '25:00' }, est)).status, 400);
+  assert.equal((await call('POST', `/api/opportunities/${id2}/due`, { date: '2026-12-15', time: '14:00' }, est)).status, 200);
+  assert.ok((await q('SELECT body FROM opportunity_notes WHERE opportunity_id=$1', [id2])).some((n) => /^Bid due date 2026-12-15 14:00 entered from the invitation by Juliana\./.test(n.body)));
+  assert.ok(!(await call('GET', '/api/opportunities/missing-due', null, est)).body.leads.some((x) => [id, id2].includes(x.id)));
+});
+
+test('the Send Bid Date bookmark: the lead is found by the invitation ID in its link, or by the store name on the page, and the date at the top is saved', async () => {
+  const [{ id }] = await q(`INSERT INTO opportunities(name,gc_name,city,status,source_key,invitation_link) VALUES ('Ross Dress For Less - Ocala','Diamond','Ocala','New','bm1','https://app.buildingconnected.com/opportunities/65a1b2c3d4e5f60718293a4b/info') RETURNING id`);
+  answer = { found: true, date: '2026-12-18', time: '14:00', evidence: 'Due Dec 18, 2026 2:00 PM', source: 'invitation page' };
+  let r = await call('POST', '/api/opportunities/due-from-bookmark', { url: 'https://app.buildingconnected.com/opportunities/65a1b2c3d4e5f60718293a4b/info?tab=overview', text: 'Ross Ocala Interior\nDue Dec 18, 2026 2:00 PM\nOverview Files Messages' }, est);
+  assert.equal(r.status, 200, JSON.stringify(r.body)); assert.equal(r.body.found, true); assert.equal(r.body.lead.id, id);
+  assert.equal((await q('SELECT due_date::text AS d FROM opportunities WHERE id=$1', [id]))[0].d, '2026-12-18');
+  // no ID in common: the store name on the page picks the lead; two that could match are offered to choose from
+  const [{ id: a }] = await q(`INSERT INTO opportunities(name,gc_name,city,status,source_key) VALUES ('Hobby Lobby - Lakeland','CW Hayes','Lakeland','New','bm2') RETURNING id`);
+  answer = { found: true, date: '2026-12-19', time: '', evidence: 'Bids due 12/19/2026', source: 'invitation page' };
+  r = await call('POST', '/api/opportunities/due-from-bookmark', { url: 'https://app.buildingconnected.com/opportunities/ffffffffffffffffffffffff/info', text: 'Hobby Lobby Lakeland FL\nBids due 12/19/2026' }, est); assert.equal(r.body.lead.id, a);
+  await q(`INSERT INTO opportunities(name,gc_name,city,status,source_key) VALUES ('Michaels - Lakeland','CW Hayes','Lakeland','New','bm3'), ('Michaels - Lakeland Remodel','Elkins','Lakeland','New','bm4')`);
+  r = await call('POST', '/api/opportunities/due-from-bookmark', { url: 'https://app.buildingconnected.com/x', text: 'Michaels Lakeland\nDue soon' }, est); assert.equal(r.body.found, false); assert.equal(r.body.choose.length, 2);
+  assert.equal((await call('POST', '/api/opportunities/due-from-bookmark', { url: 'x', text: '' }, est)).status, 400);
+});

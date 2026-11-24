@@ -47,7 +47,7 @@ const lastMailbox = async () => (await stored())?.email ?? (await q(`SELECT valu
 const stored = async () => (await q(`SELECT data FROM integrations WHERE name='gmail'`))[0]?.data ?? null;
 
 let cached = { token: null, exp: 0 };
-async function gmailClient() {
+export async function gmailClient() {
   const d = await stored(); if (!d) throw new HttpError(409, 'Gmail is not connected. Connect it in Admin.');
   const token = async (force) => {
     if (!force && cached.token && cached.exp > Date.now() + 30000) return cached.token;
@@ -257,6 +257,7 @@ export async function runRefresh({ trigger = 'Manual', userId = null, days = 14 
       }
       const declined = await sweepDeclines();
       await (await import('./bundles.js')).combineDuplicates().catch(() => {});   // the same job from the same GC that came in twice becomes one lead
+      import('./duedates.js').then((m) => m.findMissingDueDates({ userId })).catch((e) => console.error('due dates', e.message));   // leads with no due date: the AI looks for it
       await q(`UPDATE bid_refresh_runs SET status='Done', finished_at=now(), threads=$2, added=$3, updated=$4, skipped=$5, declined=$6 WHERE id=$1`, [run.id, threads, added, updated, skipped, declined]);
       if (waiting > 0) setTimeout(() => runRefresh({ trigger: 'Scheduled', userId, days }).catch(() => {}), 120000).unref();   // more emails are waiting: carry on in two minutes
     } catch (e) {

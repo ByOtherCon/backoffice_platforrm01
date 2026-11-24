@@ -422,14 +422,17 @@ function bidFeedBar(feed, err, w) {
   return bar;
 }
 const weekLabel = (n) => (n.startsWith('Week Of ') ? fmtDay(n.slice(8)) : n === 'Due This Week — Too Tight To Bid' ? 'This week — too tight to bid' : n === 'Missed / Past Due' ? 'Missed / past due' : n === 'No Bid Due Date Provided' ? 'No bid due date provided' : n);
-const BID_COLS = [['week', 'Week Of'], ['project', 'Project / Location'], ['gc', 'General Contractors / Contact'], ['due', 'Bid Due'], ['status', 'Status'], ['invitation', 'Invitation'], ['onedrive', 'Plans']];
+const BID_COLS = [['week', 'Week Of'], ['project', 'Project / Location'], ['gc', 'General Contractors / Contact'], ['due', 'Bid Due'], ['status', 'Status'], ['invitation', 'Invitation']];
 function inviteCell(o) {
   const inv = (o.invitations || []).filter((i) => i.link), list = inv.length ? inv : o.link ? [{ gc: o.gc, link: o.link }] : [];
   return h('td', { style: 'white-space:nowrap' }, list.length ? list.map((i) => h('div', {}, h('a', { href: i.link, target: '_blank', rel: 'noopener', title: `Open the ${i.gc} invitation on BuildingConnected` }, list.length > 1 ? `View · ${i.gc.split(/[ ,]/)[0]}` : 'View Invitation'))) : '—', o.emailLink ? h('div', {}, h('a', { href: o.emailLink, target: '_blank', rel: 'noopener', class: 'muted', style: 'font-size:13px' }, 'Email')) : '');
 }
 const contactBlock = (o) => { const nda = (o.invitations || []).some((i) => i.nda) && !o.email;
   return [h('strong', {}, o.gc), o.additionalGcs ? sub('Also: ' + o.additionalGcs) : '', o.contact ? sub(o.contact) : '', o.email ? h('div', {}, h('a', { href: 'mailto:' + o.email, style: 'font-size:13px' }, o.email)) : '', o.phone ? sub(o.phone) : '', nda ? h('div', { class: 'neg', style: 'font-size:13px' }, 'Contact is locked behind an NDA') : (!o.contact && !o.email && !o.phone ? sub('No contact on file') : '')]; };
-const dueCell = (o) => h('td', {}, o.due ? [fmtDay(o.due), o.dueTime ? sub(`${o.dueTime} Eastern`) : sub(o.countdown)] : [h('strong', { class: 'neg', style: 'font-size:13px' }, 'NO BID DUE DATE PROVIDED'), (o.invitations || []).some((i) => i.nda) ? sub('May be locked behind an NDA') : '']);
+// No due date on the invitation: the AI looks for it after every Gmail refresh; Find It asks it to look right now.
+const findDue = (o, btn) => async () => { btn.disabled = true; btn.textContent = 'Looking…'; try { const r = await api('POST', `/opportunities/${o.id}/find-due`); alert(r.message); if (r.found) render(); } catch (e) { alert(e.message); } finally { btn.disabled = false; btn.textContent = 'Find It'; } };
+const dueCell = (o) => { const btn = h('button', { class: 'small', type: 'button', title: 'The AI reads the invitation email and page for the bid due date' }, 'Find It'); btn.onclick = findDue(o, btn);
+  return h('td', {}, o.due ? [fmtDay(o.due), o.dueTime ? sub(`${o.dueTime} Eastern`) : sub(o.countdown)] : [h('strong', { class: 'neg', style: 'font-size:13px' }, 'NO BID DUE DATE PROVIDED'), (o.invitations || []).some((i) => i.nda) ? sub('May be locked behind an NDA') : '', h('div', { style: 'margin-top:.25rem' }, btn)]); };
 function bidsPanel(data, err, w, feed, dups = []) {
   const rows = data.groups.flatMap((g) => g.rows.map((o) => ({ ...o, week: g.name }))); rows.forEach((o, i) => (o.rank = i));
   const sort = state.bidSort || { key: 'week', dir: 1 };
@@ -446,7 +449,7 @@ function bidsPanel(data, err, w, feed, dups = []) {
           h('td', { style: 'white-space:normal;min-width:240px' }, h('strong', {}, o.name), o.client && o.client !== o.gc ? sub('Client: ' + o.client) : '', sub([addrLine(o), o.mall ? 'Shopping center' : '', o.type, o.sourceType].filter(Boolean).join(' · '))),
           h('td', { style: 'white-space:normal;min-width:200px' }, contactBlock(o)), dueCell(o),
           h('td', {}, statusSelect(o, w), o.autoDeclined ? sub('Auto-declined') : o.declinedReason ? sub(o.declinedReason) : ''),
-          inviteCell(o), h('td', {}, h('div', { class: 'stack' }, o.spPath ? openPlansButton(o) : h('span', { class: 'muted' }, '—'))),
+          inviteCell(o),
           h('td', {}, h('div', { class: 'stack' }, h('button', { class: 'small', onclick: () => (location.hash = '#/estimating/' + o.id) }, 'Open'), w ? h('button', { class: 'small', onclick: () => (location.hash = `#/estimating/${o.id}/edit`) }, 'Edit') : ''))))))) : h('p', { class: 'muted', style: 'padding:1rem 0' }, feed.connected ? 'No new opportunities. They appear after the next refresh (8:00 AM and 1:00 PM), or press Refresh now.' : 'No opportunities yet. Connect Gmail in Admin, or add one with + Opportunity.')));
 }
 

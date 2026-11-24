@@ -286,6 +286,7 @@ route('POST', '/api/opportunities/bundle', async ({ user, body }) => { const u =
 route('GET', '/api/opportunities/:id/possible-matches', async ({ user, params }) => { estRead(user); return { leads: await bn.possibleMatches(uuid(params.id)) }; });
 route('POST', '/api/opportunities/:id/merge', async ({ user, params, body }) => bn.mergeLeads(estWrite(user), uuid(params.id), uuid(body.otherId)));
 route('POST', '/api/opportunities/:id/not-same', async ({ user, params, body }) => bn.notSameJob(estWrite(user), uuid(params.id), uuid(body.otherId)));
+route('POST', '/api/opportunities/:id/find-due', async ({ user, params }) => es.findDueDateNow(estWrite(user), uuid(params.id)));
 route('POST', '/api/opportunities/:id/files/copy', async ({ user, params, body }) => es.copyProposalFile(estWrite(user), uuid(params.id), uuid(body.fileId)));
 route('POST', '/api/opportunities/:id/unbundle', async ({ user, params }) => bn.unmerge(estWrite(user), uuid(params.id)));
 route('GET', '/api/opportunities/:id', async ({ user, params }) => { estRead(user); const d = await es.get(uuid(params.id)); return d.projectId && auth.MANAGE.includes(user.role) ? { ...d, projectDocs: await es.projectDocsForLead(d.projectId) } : d; });

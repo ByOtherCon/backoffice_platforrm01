@@ -324,9 +324,12 @@ test('the clean-up rules are one table of settings: numbers and switches change 
   assert.equal((await call('PUT', '/api/settings/estimating', { pastDueOn: true }, sub)).status, 200); await bidsSweep(); assert.equal(await st(b), 'Declined');
 });
 
-test('whoever first moves a lead becomes its estimator; an edit never leaves it blank', async () => {
+test('only accepting a lead makes someone its estimator; reviewing it or editing it (a due date, a note) does not, and an edit never clears it', async () => {
   const id = (await q(`INSERT INTO opportunities(name,gc_name,client_name,city,due_date,status,source_key) VALUES ('No Estimator Yet','GC','Client','Orlando',$1,'New','noest') RETURNING id`, [shift(today, 9)]))[0].id;
-  assert.equal((await call('POST', `/api/opportunities/${id}/status`, { status: 'Reviewing' }, sub)).status, 200);
-  const subId = (await q(`SELECT id FROM app_users WHERE email='sub@x.net'`))[0].id; assert.equal((await q('SELECT estimator_id FROM opportunities WHERE id=$1', [id]))[0].estimator_id, subId);
-  assert.equal((await call('PUT', `/api/opportunities/${id}`, { estimatorId: '', note: 'keep it' }, est)).status, 200); assert.equal((await q('SELECT estimator_id FROM opportunities WHERE id=$1', [id]))[0].estimator_id, subId);   // clearing it does nothing
+  const estOf = async () => (await q('SELECT estimator_id FROM opportunities WHERE id=$1', [id]))[0].estimator_id;
+  assert.equal((await call('POST', `/api/opportunities/${id}/status`, { status: 'Reviewing' }, sub)).status, 200); assert.equal(await estOf(), null);
+  assert.equal((await call('PUT', `/api/opportunities/${id}`, { estimatorId: '', due: shift(today, 12), note: 'Bid date moved' }, est)).status, 200); assert.equal(await estOf(), null);   // updating the due date does not assign it
+  const r = await call('POST', `/api/opportunities/${id}/status`, { status: 'Accepted' }, sub); assert.equal(r.status, 200, JSON.stringify(r.body));
+  const subId = (await q(`SELECT id FROM app_users WHERE email='sub@x.net'`))[0].id; assert.equal(await estOf(), subId);
+  assert.equal((await call('PUT', `/api/opportunities/${id}`, { estimatorId: '', note: 'keep it' }, est)).status, 200); assert.equal(await estOf(), subId);   // clearing it does nothing
 });

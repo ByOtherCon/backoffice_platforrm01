@@ -178,7 +178,7 @@ async function readForm(b, old, user, creating) {
   if (b.dueTime !== undefined) { if (b.dueTime && !/^([01]\d|2[0-3]):[0-5]\d$/.test(b.dueTime)) throw bad('Due time looks like 17:00.'); put('due_time', b.dueTime || null); }
   if (b.plannedStart !== undefined) put('planned_start', dateStr(b.plannedStart, 'Planned start date'));
   if (b.estimatorId !== undefined || creating) {
-    if (!b.estimatorId) { if (creating) throw bad('Choose the estimator.'); if (!old?.estimator_id && EST_ROLES.includes(user.role)) put('estimator_id', user.id); }   // never cleared: left empty on a lead with none, the person saving it becomes its estimator
+    if (!b.estimatorId) { if (creating) throw bad('Choose the estimator.'); }   // left empty: stays as it is (an edit never clears it, and never makes the person saving it the estimator)   // never cleared: left empty on a lead with none, the person saving it becomes its estimator
     else put('estimator_id', b.estimatorId);
   }
   // required together: the invitation link goes with Building Connected, and only with it
@@ -307,7 +307,7 @@ export async function transition(user, id, b = {}) {
     if (!W.canMove(from, to)) throw new HttpError(409, `${W.statusName(from)} cannot move to ${W.statusName(to)}.${from === 'Declined' ? ' Reopen it to New first.' : ''}`);
     if (to === 'Submitted' && ['Accepted', 'Started'].includes(from)) throw bad('Upload the proposal PDF and record the submission. That moves it to Submitted.');
     const set = { status: to, result: W.resultFor(to) }; let detail = '';
-    if (!o.estimator_id && EST_ROLES.includes(user.role)) { set.estimator_id = user.id; detail += ` ${who(user)} is the estimator (the person who first moved it).`; }   // a lead always has an estimator once someone works on it
+    if (to === 'Accepted' && !o.estimator_id && EST_ROLES.includes(user.role)) { set.estimator_id = user.id; detail += ` ${who(user)} is the estimator (the person who accepted it).`; }   // only accepting a lead makes someone its estimator   // a lead always has an estimator once someone works on it
     if (to === 'Accepted' || to === 'Reviewing' || to === 'Started') { set.declined_reason = null; set.auto_declined = false; }
     // Put on the working lists by hand after its bid date had already passed: that is on purpose, so the clean-up does not move it again.
     if (['Reviewing', 'Accepted', 'Started'].includes(to) && o.due_date && o.due_date < today) set.keep_past_due = true;
@@ -595,6 +595,7 @@ export async function saveSettings(b) {
 }
 
 // The same proposal PDF, put on another lead: for submitting it to that lead's GC too. The bytes are copied (each lead keeps its own file).
+export async function findDueDateNow(user, id) { const dd = await import('./duedates.js'); return dd.findDueDate(id, { userId: user.id }); }
 export async function copyProposalFile(user, id, fileId) {
   const [o] = await q('SELECT id FROM opportunities WHERE id=$1', [id]); if (!o) throw new HttpError(404, 'Opportunity not found.');
   const [f] = await q(`SELECT * FROM opportunity_files WHERE id=$1 AND kind='Proposal'`, [fileId]); if (!f || !/\.pdf$/i.test(f.name)) throw bad('Choose the proposal PDF.');

@@ -98,3 +98,10 @@ test('the Send Bid Date bookmark: the lead is found by the invitation ID in its 
   r = await call('POST', '/api/opportunities/due-from-bookmark', { url: 'https://app.buildingconnected.com/x', text: 'Michaels Lakeland\nDue soon' }, est); assert.equal(r.body.found, false); assert.equal(r.body.choose.length, 2);
   assert.equal((await call('POST', '/api/opportunities/due-from-bookmark', { url: 'x', text: '' }, est)).status, 400);
 });
+
+test('the Gmail feed keeps a due date quoted with different spacing or punctuation (it used to throw it away)', async () => {
+  const text = 'Invitation to Bid\nProject: Ulta Beauty - Brandon\nGC: CW Hayes\nBrandon, FL\nBid Due Date:\n  Monday,  November 24, 2026  12:00PM EST\nContact: tanya@gc.example';
+  const rec = (dueEvidence) => ({ opportunities: [{ threadId: 'tq', name: 'Ulta Beauty - Brandon', client: '', gc: 'CW Hayes', contactName: '', email: '', phone: '', city: 'Brandon', state: 'FL', address: '', gcStreet: '', gcCity: '', gcState: '', gcZip: '', gcAddressEvidence: '', startDate: '', startEvidence: '', due: '2026-11-24', dueEvidence, dueTime: '12:00', link: '', type: 'Retail', scope: '', mall: false, nda: false }] });
+  answer = rec('Bid Due Date: Monday, November 24, 2026 12:00 PM EST'); let r = await bd.extract(null, [{ id: 'tq', text }]); assert.equal(r.records[0].due, '2026-11-24');
+  answer = rec('Bid Due Date: Monday, December 1, 2026'); r = await bd.extract(null, [{ id: 'tq', text }]); assert.equal(r.records[0].due, null);   // words that are not in the email still do not count
+});

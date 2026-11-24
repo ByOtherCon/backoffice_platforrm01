@@ -79,7 +79,7 @@ export async function findDueDate(id, { userId = null, client = null } = {}) {
 }
 
 // After each Gmail refresh: open leads with no due date, not looked at in the last 12 hours, newest first, a few at a time.
-export async function findMissingDueDates({ userId = null, limit = 10 } = {}) {
+export async function findMissingDueDates({ userId = null, limit = 25 } = {}) {
   if (!aiConnected()) return { checked: 0, found: 0 };
   const rows = await q(`SELECT id FROM opportunities WHERE due_date IS NULL AND merged_into IS NULL AND status IN ('New','Reviewing','Accepted','Started')
     AND created_at > now() - interval '60 days' AND (due_checked_at IS NULL OR due_checked_at < now() - interval '12 hours') ORDER BY created_at DESC LIMIT $1`, [limit]);

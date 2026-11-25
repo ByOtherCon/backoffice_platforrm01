@@ -39,3 +39,23 @@ export async function afterVendorUpload(user, { docId, subId, category, filename
   out.read = await readVendorDocument(user, docId, bytes, mime, filename);
   return out;
 }
+
+// Every subcontractor's W-9, insurance certificate and exemption filed in their own folder (ByOther / Subcontractors / <name>). One that was
+// never copied there, or was copied into a project folder before, is copied into the subcontractor's folder; the project copy is then taken
+// out of the project folder (it goes to the SharePoint recycle bin). Runs at start and is safe to run again.
+export async function fileComplianceDocs({ limit = 200 } = {}) {
+  if (!SP.configured()) return { filed: 0, removed: 0 };
+  const fs = await import('node:fs'), path = await import('node:path'), { UPLOAD_DIR } = await import('./documents.js');
+  const rows = await q(`SELECT d.id, d.category, d.name, d.mime, d.storage_key, d.sp_url, s.id AS sub_id FROM subcontractors s CROSS JOIN LATERAL (VALUES (s.w9_document_id), (s.coi_document_id), (s.exemption_document_id)) AS x(doc)
+    JOIN documents d ON d.id=x.doc WHERE d.storage_key IS NOT NULL AND (d.sp_url IS NULL OR d.sp_url NOT ILIKE '%/' || $1 || '/%') LIMIT $2`, [FOLDER_NAME, limit]);
+  let filed = 0, removed = 0;
+  for (const d of rows) {
+    try {
+      const bytes = await fs.promises.readFile(path.join(UPLOAD_DIR, path.basename(d.storage_key)));
+      const up = await pushSubFile(d.sub_id, { category: d.category, filename: d.name, bytes, mime: d.mime || 'application/pdf' }); if (!up?.webUrl) continue;
+      const old = d.sp_url; await q('UPDATE documents SET sp_url=$2, project_id=NULL WHERE id=$1', [d.id, up.webUrl]); filed++;
+      if (old) { const item = await SP.itemFromUrl(old).catch(() => null); if (item && !item.folder) { await SP.deleteItem(item.id).catch(() => {}); removed++; } }
+    } catch { /* tried again at the next start */ }
+  }
+  return { filed, removed };
+}

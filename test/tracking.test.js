@@ -66,12 +66,12 @@ test('with the tracking service: registered at once, checked every hour; deliver
     assert.deepEqual([s.status, s.detail, s.estDelivery, s.link], ['In transit', 'arrived at facility', '2026-11-25', 'https://track.easypost.com/x1']);
     await call('POST', '/api/shipments', { supplierInvoiceId: inv, numbers: '771234567890' }, office);
     // delivered: everyone on the job and the office get an alert that opens the project
-    trackers.get('trk_1').status = 'delivered'; trackers.get('trk_1').tracking_details = [{ status: 'delivered', datetime: '2026-11-22T15:04:00Z' }];
+    trackers.get('trk_1').status = 'delivered'; trackers.get('trk_1').tracking_details = [{ status: 'delivered', datetime: new Date(Date.now() - 86400000).toISOString().slice(0, 10) + 'T15:04:00Z' }];
     trackers.get('trk_2').status = 'available_for_pickup';
     assert.equal((await tk.checkAll()).checked, 2);
     const notes = await q(`SELECT u.email, n.title, n.body, n.link FROM notifications n JOIN app_users u ON u.id=n.user_id WHERE n.kind='Delivery' ORDER BY n.title, u.email`);
     assert.deepEqual(notes.filter((n) => /^Delivered/.test(n.title)).map((n) => n.email), ['office@x.net', 'pm@x.net']); assert.ok(!notes.some((n) => n.email === 'pm2@x.net'));
-    const d = notes.find((n) => /^Delivered/.test(n.title)); assert.equal(d.title, 'Delivered: Door hardware for C26001 Burlington Ocala'); assert.equal(d.link, `#/projects/${pid}/costs`); assert.match(d.body, /^UPS 1Z999AA10123456784: Delivered, Nov 22/);
+    const d = notes.find((n) => /^Delivered/.test(n.title)); assert.equal(d.title, 'Delivered: Door hardware for C26001 Burlington Ocala'); assert.equal(d.link, `#/projects/${pid}/costs`); assert.match(d.body, new RegExp('^UPS 1Z999AA10123456784: Delivered, ' + new Date(Date.now() - 86400000).toLocaleString('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric' })));
     assert.ok(notes.some((n) => n.title === 'Ready for pickup: Masonite #INV-77 Doors for C26001 Burlington Ocala'));
     await tk.checkAll(); assert.equal((await q(`SELECT count(*)::int AS n FROM notifications WHERE kind='Delivery'`))[0].n, notes.length);   // each alert once
     s = (await call('GET', `/supplier-invoices/${inv}/shipments`.replace(/^/, '/api'), null, office)).body.shipments[0]; assert.equal(s.status, 'Ready for pickup');
@@ -79,7 +79,7 @@ test('with the tracking service: registered at once, checked every hour; deliver
     // the dashboard's Alerts & Deadlines lists them too, each one cleared on its own; the costs list knows each invoice's tracking state
     let home = (await call('GET', '/api/projects/home', null, pm)).body.alerts.filter((x) => x.kind === 'delivery');
     assert.deepEqual(home.map((x) => [x.severity, x.title]).sort(), [['info', 'Delivered: Door hardware · Burlington Ocala'], ['medium', 'Ready For Pickup: Masonite #INV-77 Doors · Burlington Ocala']]);
-    assert.ok(home.every((x) => x.link === `#/projects/${pid}/costs`)); assert.match(home.find((x) => x.severity === 'info').detail, /^UPS 1Z999AA10123456784 · Nov 22/);
+    assert.ok(home.every((x) => x.link === `#/projects/${pid}/costs`)); assert.match(home.find((x) => x.severity === 'info').detail, new RegExp('^UPS 1Z999AA10123456784 · ' + new Date(Date.now() - 86400000).toLocaleString('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric' })));
     assert.equal((await call('POST', '/api/projects/home/alerts/clear', { keys: [home.find((x) => x.severity === 'info').key] }, pm)).status, 200);
     home = (await call('GET', '/api/projects/home', null, pm)).body.alerts.filter((x) => x.kind === 'delivery'); assert.deepEqual(home.map((x) => x.severity), ['medium']);
     const costRow = (await call('GET', `/api/projects/${pid}/costs`, null, office)).body.suppliers.find((x) => x.invoiceId === inv); assert.deepEqual(costRow.shipments, { n: 1, delivered: 0 });

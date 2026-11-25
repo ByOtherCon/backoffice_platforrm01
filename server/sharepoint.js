@@ -158,6 +158,11 @@ export async function listPath(itemId, rel) {
   for (let i = 0; i < 10 && next; i++) { const r = await graph('GET', next, { absolute: next.startsWith('http') }); if (!r) break; out.push(...(r.value || [])); next = r['@odata.nextLink'] || null; }
   return out.map((c) => ({ id: c.id, name: c.name, folder: !!c.folder, webUrl: c.webUrl, modified: c.lastModifiedDateTime ?? null, size: c.size ?? null }));
 }
+// The item a SharePoint web address points to, or null (Graph's /shares lookup).
+export async function itemFromUrl(url) {
+  const r = await graph('GET', `/shares/u!${Buffer.from(String(url)).toString('base64url')}/driveItem?$select=id,name,webUrl,folder,parentReference`).catch(() => null);
+  return r && r.id ? { id: r.id, name: r.name, webUrl: r.webUrl, folder: !!r.folder } : null;
+}
 // One item as it is now, or null when it is no longer in the library (deleted, or moved somewhere this app cannot see).
 export async function getItem(itemId) {
   const d = await driveId(), r = await graph('GET', `/drives/${d}/items/${encodeURIComponent(itemId)}?$select=id,name,webUrl,folder,file,size`);

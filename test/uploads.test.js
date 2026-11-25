@@ -53,14 +53,23 @@ test('a lead file is a duplicate too, and the project Documents list holds every
   assert.equal((await up(`/api/opportunities/${o.id}/files?kind=Other`, lead, 'Lead Doc.pdf', est)).status, 200);
   assert.equal((await up(`/api/opportunities/${o.id}/files?kind=Other`, lead, 'Lead Doc 2.pdf', est)).status, 409);   // the lead refuses its own duplicate
   assert.equal((await up(`/api/documents/upload?category=Other&projectId=${pid}`, lead, 'Same As Lead.pdf')).status, 409);
-  // a receipt split onto the project, a client-invoice file and a subcontractor's W-9 all show on the project
+  // a receipt split onto the project shows on it; a subcontractor's W-9 never does (it belongs to the subcontractor, not to a project)
   const r = await up('/api/receipts/parse', pdf(5), 'hd.pdf'); assert.equal(r.status, 200);
   const rec = await fetch(base + '/api/receipts', { method: 'POST', headers: { 'content-type': 'application/json', cookie: office }, body: JSON.stringify({ supplierName: 'Home Depot', saveVendor: false, reference: 'HD-1', date: '2026-11-10', documentId: r.body.documentId, lines: [{ description: 'Screws', amount: 20, projectId: pid, projectTradeId: pt }] }) }); assert.equal(rec.status, 200);
   const [sub] = await q(`INSERT INTO subcontractors(name) VALUES ('Rivera') RETURNING id`);
   assert.equal((await up(`/api/documents/upload?category=W-9&subcontractorId=${sub.id}`, pdf(6), 'w9.pdf')).status, 200);
   await q(`INSERT INTO sub_commitments(project_id,project_trade_id,subcontractor_id,contract_amount) VALUES ($1,$2,$3,1000)`, [pid, pt, sub.id]);
   const list = (await get(`/api/documents?projectId=${pid}`)).body.map((d) => [d.category, d.name]).sort((x, y) => String(x).localeCompare(String(y)));
-  assert.deepEqual(list.map((x) => x[1]).sort(), ['Contract.pdf', 'Different.pdf', 'Spec Sheet.pdf', 'hd.pdf', 'w9.pdf'].sort());
+  assert.deepEqual(list.map((x) => x[1]).sort(), ['Contract.pdf', 'Different.pdf', 'Spec Sheet.pdf', 'hd.pdf'].sort());
+  // a W-9, insurance certificate or exemption cannot be put on a project, by upload or by link
+  for (const cat of ['W-9', 'COI', 'Exemption']) {
+    const r = await up(`/api/documents/upload?category=${cat}&projectId=${pid}&subcontractorId=${sub.id}&expiresOn=2027-12-31`, pdf(60 + cat.length), cat + '.pdf'); assert.equal(r.status, 400); assert.match(r.body.error, /belongs to the subcontractor, not to a project/);
+  }
+  const ln = await fetch(base + '/api/documents', { method: 'POST', headers: { 'content-type': 'application/json', cookie: office }, body: JSON.stringify({ category: 'COI', projectId: pid, subcontractorId: sub.id, url: 'https://byother.sharepoint.com/x.pdf', name: 'COI', expiresOn: '2027-12-31' }) });
+  assert.equal(ln.status, 400);
+  // one put on a project before this rule is not listed there either
+  const [{ id: oldCoi }] = await q(`INSERT INTO documents(category,name,project_id,url) VALUES ('COI','old coi.pdf',$1,'https://byother.sharepoint.com/old.pdf') RETURNING id`, [pid]);
+  assert.ok(!(await get(`/api/documents?projectId=${pid}`)).body.some((d) => d.id === oldCoi));
   assert.deepEqual((await get(`/api/documents?projectId=${pid2}`)).body, []);   // the other project sees none of it
 });
 

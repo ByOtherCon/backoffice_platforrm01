@@ -9,6 +9,7 @@ import { afterVendorUpload, readVendorDocument } from './subVerify.js';
 export const UPLOAD_DIR = path.resolve(process.env.UPLOAD_DIR || 'uploads');
 export const CATEGORIES = ['Contract', 'Proposal', 'COI', 'W-9', 'Exemption', 'Approved CO', 'Invoice', 'Client Invoice', 'Vendor Invoice', 'Receipt', 'Plans', 'Notice to Owner', 'Supplier Statement', 'Employee ID', 'Other'];
 const VENDOR_DOC = { 'W-9': 'w9_document_id', COI: 'coi_document_id', Exemption: 'exemption_document_id' };
+const NOT_ON_PROJECT = 'A W-9, insurance certificate or exemption belongs to the subcontractor, not to a project. Add it on the Compliance page (Add / Update on the subcontractor); it is filed in their own folder under Subcontractors.';
 // Only these file types are accepted, and the first bytes must match the type, not just the name.
 const TYPES = {
   '.pdf': ['application/pdf', (b) => b.subarray(0, 5).toString() === '%PDF-'],
@@ -76,6 +77,7 @@ export async function adoptFile(tmpPath, filename, allow = ['.pdf', '.zip']) {
 export async function uploadDocument(user, { category, name, filename, bytes, projectId, subcontractorId, employeeId, expiresOn }) {
   if (!CATEGORIES.includes(category)) throw bad('Choose a document category.');
   const exp = dateStr(expiresOn, 'Expiration date', category === 'COI');
+  if (projectId && VENDOR_DOC[category]) throw bad(NOT_ON_PROJECT);
   const f = await saveFile(bytes, filename);
   try {
     return await tx(async (t) => {
@@ -102,6 +104,7 @@ export async function uploadDocument(user, { category, name, filename, bytes, pr
 }
 export async function addLink(user, { category, name, url, projectId, expiresOn }) {
   if (!CATEGORIES.includes(category)) throw bad('Choose a document category.');
+  if (projectId && VENDOR_DOC[category]) throw bad(NOT_ON_PROJECT);
   const u = httpsUrl(url, 'Link'); if (!u) throw bad('Enter the document link.');
   const [same] = await q('SELECT d.name, d.created_at, p.name AS project FROM documents d LEFT JOIN projects p ON p.id=d.project_id WHERE d.url=$1 AND d.project_id IS NOT DISTINCT FROM $2 LIMIT 1', [u, projectId || null]); if (same) throw new DuplicateFile({ ...same });   // the same link is not kept twice either
   const [d] = await q('INSERT INTO documents(category,name,url,project_id,expires_on,created_by) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id', [category, text(name, 'Name', { max: 200, required: false }) || `${category} link`, u, projectId || null, dateStr(expiresOn, 'Expiration date', category === 'COI'), user.id]);
@@ -118,8 +121,8 @@ export const listDocuments = ({ projectId, category } = {}) => {
       OR d.id IN (SELECT document_id FROM client_invoices WHERE project_id=${P} AND document_id IS NOT NULL)
       OR d.id IN (SELECT si.document_id FROM sub_invoices si JOIN sub_commitments c ON c.id=si.commitment_id WHERE c.project_id=${P} AND si.document_id IS NOT NULL)
       OR d.id IN (SELECT si.document_id FROM supplier_invoices si JOIN supplier_allocations sa ON sa.supplier_invoice_id=si.id WHERE sa.project_id=${P} AND si.document_id IS NOT NULL)
-      OR d.id IN (SELECT tr.document_id FROM takeoff_runs tr JOIN opportunities o ON o.id=tr.opportunity_id WHERE o.project_id=${P} AND tr.document_id IS NOT NULL)
-      OR d.id IN (SELECT x.doc FROM sub_commitments c JOIN subcontractors s ON s.id=c.subcontractor_id CROSS JOIN LATERAL (VALUES (s.w9_document_id), (s.coi_document_id), (s.exemption_document_id)) AS x(doc) WHERE c.project_id=${P} AND x.doc IS NOT NULL))`);
+      OR d.id IN (SELECT tr.document_id FROM takeoff_runs tr JOIN opportunities o ON o.id=tr.opportunity_id WHERE o.project_id=${P} AND tr.document_id IS NOT NULL))`);
+    w.push(`d.category NOT IN ('W-9','COI','Exemption')`);   // a subcontractor's compliance paperwork is kept with the subcontractor, never on a project
   }
   if (category) { v.push(category); w.push(`d.category=$${v.length}`); }
   return q(`SELECT d.id, d.category, d.name, d.url, d.expires_on, d.size, d.mime, d.created_at, d.project_id, (d.storage_key IS NOT NULL) AS has_file, u.name AS uploaded_by FROM documents d LEFT JOIN app_users u ON u.id=d.created_by WHERE ${w.join(' AND ')} ORDER BY d.created_at DESC LIMIT 500`, v);

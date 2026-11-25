@@ -46,6 +46,8 @@ const graph = async (url, init = {}) => {
   if ((g = r.match(/^\/drives\/drv1\/items\/([^/]+)\/content$/)) && m === 'GET') { const n = nodes.get(g[1]); if (!n?.bytes) return res({}, 404); return { ok: true, status: 200, headers: { get: () => null }, arrayBuffer: async () => n.bytes.buffer.slice(n.bytes.byteOffset, n.bytes.byteOffset + n.bytes.length) }; }
   if ((g = r.match(/^\/drives\/drv1\/items\/([^/]+)$/)) && m === 'GET') { const n = nodes.get(g[1]); if (!n) return res({}, 404); return res(item(n)); }
   if ((g = r.match(/^\/drives\/drv1\/items\/([^/]+):\/(.+):\/createUploadSession$/))) { const key = '/' + (++seq); uploads.parent = { ...(uploads.parent || {}), [key]: g[1] }; uploads.name = { ...(uploads.name || {}), [key]: g[2] }; return res({ uploadUrl: 'https://upload.fake' + key }); }
+  // a web address looked up through /shares/u!<base64url>/driveItem
+  if ((g = r.match(/^\/shares\/u!([^/]+)\/driveItem$/)) && m === 'GET') { const want = Buffer.from(g[1], 'base64url').toString(); const n = [...nodes.values()].find((x) => x.parent && item(x).webUrl === want); return n ? res(item(n)) : res({}, 404); }
   return res({ error: { code: 'notFound' } }, 404);
 };
 const tree = () => { const out = []; const walk = (id, depth) => { for (const n of kids(id).sort((a, b) => a.name.localeCompare(b.name))) { out.push('  '.repeat(depth) + n.name + (n.folder ? '/' : '')); if (n.folder) walk(n.id, depth + 1); } }; walk('root', 0); return out; };
@@ -458,4 +460,25 @@ test('plans: SharePoint\'s own second copy of a plan file ("name 1.pdf", same si
   // a copy SharePoint made earlier is left alone in the folder but listed once
   add(dl.id, '01 CK Bunnell, FL- Combined- OTB 1.pdf', false, { size: body.length, bytes: body }); add(dl.id, 'A-2.0 Other Sheet.pdf', false, { size: 9, bytes: Buffer.from('%PDF-1.4 ') });
   assert.deepEqual((await plans.planSources(id)).map((p) => p.name), ['01 CK Bunnell, FL- Combined- OTB.pdf', 'A-2.0 Other Sheet.pdf']);
+});
+
+test('a subcontractor\'s W-9 and insurance are filed in ByOther / Subcontractors / <name>, never a project folder; an old project copy is moved there', async () => {
+  const fs = await import('node:fs'), path = await import('node:path'), { UPLOAD_DIR } = await import('../server/documents.js'), sv = await import('../server/subVerify.js');
+  await fs.promises.mkdir(UPLOAD_DIR, { recursive: true });
+  const save = async (key, text) => { await fs.promises.writeFile(path.join(UPLOAD_DIR, key), Buffer.from('%PDF-1.4 ' + text)); return key; };
+  const [{ id: subId }] = await q(`INSERT INTO subcontractors(name) VALUES ('Rivera Drywall LLC') RETURNING id`);
+  const [{ id: pid }] = await q('SELECT id FROM projects LIMIT 1');
+  // the COI was filed in a project folder before; the W-9 was never copied anywhere
+  const projDir = SP.settings().root.reduce((at, n) => kids(at.id).find((x) => x.name === n) || add(at.id, n), nodes.get('root'));
+  const old = add(add(projDir.id, 'Some Project').id, 'COI - rivera coi.pdf', false, { size: 10 });
+  const [{ id: coi }] = await q(`INSERT INTO documents(category,name,mime,storage_key,project_id,sp_url) VALUES ('COI','rivera coi.pdf','application/pdf',$1,$2,$3) RETURNING id`, [await save('fil-coi.pdf', 'coi'), pid, item(old).webUrl]);
+  const [{ id: w9 }] = await q(`INSERT INTO documents(category,name,mime,storage_key) VALUES ('W-9','rivera w9.pdf','application/pdf',$1) RETURNING id`, [await save('fil-w9.pdf', 'w9')]);
+  await q('UPDATE subcontractors SET coi_document_id=$2, w9_document_id=$3 WHERE id=$1', [subId, coi, w9]);
+  assert.deepEqual(await sv.fileComplianceDocs(), { filed: 2, removed: 1 });
+  const folder = find(...SP.settings().root, 'Subcontractors', 'Rivera Drywall LLC'); assert.ok(folder);
+  assert.deepEqual(kids(folder.id).map((n) => n.name).sort(), ['COI - rivera coi.pdf', 'W-9 - rivera w9.pdf']);
+  assert.ok(!nodes.get(old.id));   // the project copy is gone (SharePoint keeps it in its recycle bin)
+  const docs = await q('SELECT category, project_id, sp_url FROM documents WHERE id = ANY($1::uuid[]) ORDER BY category', [[coi, w9]]);
+  assert.ok(docs.every((d) => d.project_id === null && /\/Subcontractors\/Rivera%20Drywall%20LLC\//.test(d.sp_url)), JSON.stringify(docs));
+  assert.deepEqual(await sv.fileComplianceDocs(), { filed: 0, removed: 0 });   // run again: nothing to do
 });

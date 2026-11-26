@@ -6,9 +6,9 @@ export type Status = (typeof STATUSES)[number];
 export const LABEL: Record<string, string> = { 'No Communication': 'No Communication From GC', Awarded: 'Awarded — Create Project in JC' };
 export const statusName = (s: string) => (s === 'No Communication' ? 'No Communication From GC' : s);
 
-export const SOURCES = ['Building Connected', 'PlanHub', 'Website', 'In-Person', 'Referral'] as const;
+export const SOURCES = ['Building Connected', 'PlanHub', 'GC Bid Portal', 'Website', 'In-Person', 'Referral'] as const;
 export const PROJECT_TYPES = ['Retail', 'Restaurant', 'Office / Medical / Other', 'Other'] as const;   // the third reads "Medical / Office" on screen
-export const METHODS = ['Email', 'via BuildingConnected', 'PlanHub', 'Other'] as const;
+export const METHODS = ['Email', 'via BuildingConnected', 'PlanHub', 'GC Bid Portal', 'Other'] as const;
 
 // Pre-selected reasons, so results can be reported on. Notes stay open text.
 export const DECLINE_REASONS = ['Too far / outside our area', 'Wrong trade or scope for us', 'No capacity right now', 'Schedule too tight', 'Project too small', 'Project too large', 'GC not a good fit', 'Duplicate invitation', 'Other (see notes)'];
@@ -176,4 +176,17 @@ export function followupDrafts(c: Ctx) {
     voicemail: `Hi ${first}, this is ${c.caller || '[your name]'} with byOther Construction, following up on our proposal for ${c.project} at ${c.address} for ${c.trades}. Please call me at ${c.callerPhone || '[your phone]'} or reply to estimates@byother.net with an update on the award and whether we're still being considered. Again, this is ${c.caller || '[your name]'} at ${c.callerPhone || '[your phone]'}. Thank you.`,
     replyPending: `Thanks for the update, ${first}. We'll keep ${c.project} open as awaiting the GC's award. ${c.estimator} is available if you need anything on ${c.trades}. When would you like us to check back?`,
     replyNotSelected: `Thank you for letting us know, ${first}. We appreciate the opportunity to bid ${c.project}. If you're able to share any feedback on our scope or pricing for ${c.trades}, we'd value it and would welcome consideration on future projects.` };
+}
+
+// The invitation link with any Accept / Decline answer taken off (a plan room's ACCEPT / DECLINE buttons answer the invitation when opened).
+export function safeInviteLink(link) {
+  const s = String(link || '').trim(); if (!/^https:\/\//i.test(s)) return null;
+  return s.replace(/\/?[?&]response=(accept|decline)[^#]*$/i, '') || null;
+}
+// Where an emailed invitation came from: BuildingConnected, PlanHub, or the GC's own plan room / bid portal (any other web link).
+export function inviteSource(link, fromLine = '') {
+  const host = (() => { try { return new URL(link).hostname.toLowerCase(); } catch { return ''; } })();
+  if (/buildingconnected\.com/i.test(fromLine) || /(^|\.)buildingconnected\.com$/.test(host)) return 'Building Connected';
+  if (/(^|\.)planhub\.com$/.test(host)) return 'PlanHub';
+  return host ? 'GC Bid Portal' : 'Building Connected';
 }

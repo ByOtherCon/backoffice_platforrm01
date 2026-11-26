@@ -183,7 +183,7 @@ async function readForm(b, old, user, creating) {
   }
   // required together: the invitation link goes with Building Connected, and only with it
   const merged = { ...(old ?? {}), ...v };
-  if (merged.source_type === 'Building Connected' && !merged.invitation_link && (creating || b.sourceType !== undefined || b.link !== undefined)) throw bad('An invitation link is required when the source is Building Connected.');
+  if (['Building Connected', 'GC Bid Portal'].includes(merged.source_type) && !merged.invitation_link && (creating || b.sourceType !== undefined || b.link !== undefined)) throw bad(`An invitation link is required when the source is ${merged.source_type}.`);
   if (v.estimator_id) {
     const t = (await q(`SELECT 1 FROM app_users WHERE id=$1 AND active AND role = ANY($2::text[])`, [v.estimator_id, EST_ROLES]));
     if (!t.length) throw bad('Choose an estimator from the team list.');

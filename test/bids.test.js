@@ -333,3 +333,22 @@ test('only accepting a lead makes someone its estimator; reviewing it or editing
   const subId = (await q(`SELECT id FROM app_users WHERE email='sub@x.net'`))[0].id; assert.equal(await estOf(), subId);
   assert.equal((await call('PUT', `/api/opportunities/${id}`, { estimatorId: '', note: 'keep it' }, est)).status, 200); assert.equal(await estOf(), subId);   // clearing it does nothing
 });
+
+test('an invitation from a GC\'s own plan room: source GC Bid Portal, the View Drawings link kept, never an Accept or Decline link', async () => {
+  const text = ['From: ROXIE DEHNERT <cwhayes@cwhayesconstructionplans.com>', 'Subject: Invitation to Bid from CW HAYES CONSTRUCTION COMPANY FOR TACO BELL HAINES CITY',
+    'ACCEPT<https://www.cwhayesconstructionplans.com?accesskey=TESTKEY0001#projects/100001/?response=ACCEPT> DECLINE<https://www.cwhayesconstructionplans.com?accesskey=TESTKEY0001#projects/100001/?response=DECLINE> VIEW DRAWINGS<https://www.cwhayesconstructionplans.com?accesskey=TESTKEY0001#projects/100001>',
+    'Project/Location: TACO BELL - HAINES CITY', '35995 HIGHWAY 27 NORTH', 'HAINES CITY, FL 33844', 'Bid Due: 12/10/2037 05:00 PM Eastern', 'Estimator: Rob Richardson - rrichardson@cwhayesconstruction.com'].join('\n');
+  // the model picks the Accept button link: it is cut back to the project link
+  extraRecords = [{ threadId: 'cw1', name: 'Taco Bell - Haines City', client: 'Taco Bell', gc: 'CW Hayes Construction Company', contactName: 'Rob Richardson', email: 'rrichardson@cwhayesconstruction.com', phone: '', city: 'Haines City', state: 'FL', address: '35995 Highway 27 North', gcStreet: '', gcCity: '', gcState: '', gcZip: '', gcAddressEvidence: '', startDate: '', startEvidence: '', due: '2037-12-10', dueEvidence: 'Bid Due: 12/10/2037 05:00 PM Eastern', dueTime: '17:00', link: 'https://www.cwhayesconstructionplans.com?accesskey=TESTKEY0001#projects/100001/?response=ACCEPT', type: 'Restaurant', mall: false, nda: false, scope: '' }];
+  const { records } = await bd.extract(null, [{ id: 'cw1', text }]); extraRecords = [];
+  const rec = records.find((r) => r.threadId === 'cw1'); assert.equal(rec.link, 'https://www.cwhayesconstructionplans.com?accesskey=TESTKEY0001#projects/100001'); assert.equal(rec.sourceType, 'GC Bid Portal');
+  await bd.mergeRecords([rec], 'benny@byother.net');
+  const o = await lead('Taco Bell - Haines City'); assert.equal(o.source_type, 'GC Bid Portal'); assert.equal(o.invitation_link, 'https://www.cwhayesconstructionplans.com?accesskey=TESTKEY0001#projects/100001');
+  assert.ok((await q('SELECT body FROM opportunity_notes WHERE opportunity_id=$1', [o.id])).some((n) => /^Added from an invitation from the GC's own bid portal in Gmail/.test(n.body)));
+  // BuildingConnected and PlanHub stay as they are; the due-date reader never opens an answer link
+  const W = await import('../src/lib/workflow.ts');
+  assert.equal(W.inviteSource('https://app.buildingconnected.com/projects/x', 'From: a@b.com'), 'Building Connected'); assert.equal(W.inviteSource('https://app.planhub.com/p/1'), 'PlanHub'); assert.equal(W.inviteSource('', 'From: x@buildingconnected.com'), 'Building Connected');
+  const dd = await import('../server/duedates.js'); assert.equal(await dd.pageText('https://www.cwhayesconstructionplans.com?accesskey=K#projects/1/?response=DECLINE'), '');
+  // a portal lead needs its link, like a BuildingConnected one
+  assert.equal((await call('PUT', `/api/opportunities/${o.id}`, { link: '' }, est)).status, 400);
+});

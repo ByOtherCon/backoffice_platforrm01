@@ -22,6 +22,7 @@ export const setLookup = (f) => { lookup = f; };
 const privateIp = (ip) => { if (net.isIPv6(ip)) return /^(::1|::|f[cd]|fe80|::ffff:(10|127|169\.254|192\.168|172\.(1[6-9]|2\d|3[01]))\.)/i.test(ip);
   const [a, b] = ip.split('.').map(Number); return a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127); };
 export async function pageText(url) {
+  if (/[?&]response=(accept|decline)/i.test(String(url))) return '';   // opening it would answer the invitation
   let u = new URL(url);
   for (let hop = 0; hop < 4; hop++) {
     if (u.protocol !== 'https:' || /(^|\.)(localhost|internal|local)$/i.test(u.hostname)) return '';
